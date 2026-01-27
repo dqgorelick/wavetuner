@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      Stereo Audio Output with Four Oscillators and State Indicators
+    </title>
+    <style>
+      html,
+      body {
+        font-size: 16px;
+        padding: 0;
+        margin: 0;
+        background-color: #000;
+        transition: background-color 0.5s ease;
+        font-family: Arial, sans-serif;
+        color: #fff;
+        overflow: hidden;
+      }
+      h1,
+      h2,
+      h3,
+      h4,
+      h5,
+      p {
+        padding: 0;
+        margin: 0;
+      }
+
+      #wrapper {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      #scope {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      #start-button {
+        font-size: 1.3rem;
+        padding: 0.8rem 1.5rem;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: background-color 0.3s;
+      }
+      #start-button:hover {
+        background-color: #45a049;
+      }
+
+      #blur {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        width: 100vw;
+        height: 100vh;
+        filter: blur(2px);
+      }
+      #output {
+        user-select: none;
+        position: absolute;
+        bottom: 1.8rem;
+        left: 1.5rem;
+        color: #fff;
+        font-size: 1.4rem;
+        z-index: 999;
+        color: rgba(255, 255, 255, 0.6);
+      }
+      #start-wrapper {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        justify-content: center;
+        align-items: center;
+        background-color: rgba(0, 0, 0, 0.8);
+        z-index: 1000;
+        position: relative;
+      }
+      #start-text {
+        text-align: center;
+        max-width: 600px;
+        margin: 2rem 0;
+        line-height: 1.6;
+      }
+      #start-wrapper.hidden {
+        display: none;
+      }
+      .active {
+        background-color: rgba(255, 255, 255, 0.2);
+      }
+      .osc-info {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0.5rem;
+      }
+      .osc-box {
+        width: 40px;
+        height: 40px;
+        border: 2px solid;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-right: 1rem;
+        font-weight: bold;
+        transition: all 0.3s ease;
+        cursor: pointer;
+      }
+
+      .osc-box:hover {
+        opacity: 0.8;
+      }
+      .osc-box.active {
+        color: white;
+      }
+      #osc1-box {
+        /*border-color: #ff4136;*/
+      }
+      #osc2-box {
+        /*border-color: #2ecc40;*/
+      }
+      #osc3-box {
+        /*border-color: #0074d9;*/
+      }
+      #osc4-box {
+        /*border-color: #ffdc00;*/
+      }
+      #osc1-box.active {
+        background-color: #ff4136;
+      }
+      #osc2-box.active {
+        background-color: #2ecc40;
+      }
+      #osc3-box.active {
+        background-color: #0074d9;
+      }
+      #osc4-box.active {
+        background-color: #ffdc00;
+      }
+
+      /* Add to existing CSS */
+      .button-container {
+        position: absolute;
+        bottom: 1.8rem;
+        right: 1.5rem;
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      #play-pause-button,
+      #share-button {
+        padding: 0.5rem 1rem;
+        background-color: #333;
+        color: #fff;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: background-color 0.3s;
+      }
+
+      #play-pause-button:hover,
+      #share-button:hover {
+        background-color: #555;
+      }
+
+      #play-pause-button.paused {
+        background-color: #4caf50;
+      }
+
+      #play-pause-button.paused:hover {
+        background-color: #45a049;
+      }
+
+      #share-button {
+    display: none;
+}
+      
+#frequencies {
+    position: absolute;
+    bottom: 1.8rem;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 0.8rem;
+    text-align: right;
+    font-family: monospace;
+}
+    </style>
+  </head>
+  <body>
+    <div id="wrapper">
+      <div id="start-wrapper">
+        <button id="start-button">Start</button>
+        <div id="start-text">
+          <p>Headphones on, I'm ready!</p>
+          <p>
+            Press keys '1', '2', '3', and '4' or click the boxes to toggle
+            oscillator control
+          </p>
+          <p>Move mouse left/right to control frequency</p>
+          <p>Move mouse up/down to control volume</p>
+          <p>Hold Shift for fine-tune control</p>
+          <p>Press Space to play/pause</p>
+          <p>Press 'S' to share your current settings</p>
+        </div>
+      </div>
+      <div id="blur">
+        <canvas id="scope"></canvas>
+      </div>
+      <div id="output">
+        <div class="osc-info">
+          <div id="osc1-box" class="osc-box">1 L</div>
+          <p id="osc1"><span>0</span>hz, vol: <span>50</span>%</p>
+        </div>
+        <div class="osc-info">
+          <div id="osc2-box" class="osc-box">2 R</div>
+          <p id="osc2"><span>0</span>hz, vol: <span>50</span>%</p>
+        </div>
+        <div class="osc-info">
+          <div id="osc3-box" class="osc-box">3 L</div>
+          <p id="osc3"><span>0</span>hz, vol: <span>0</span>%</p>
+        </div>
+        <div class="osc-info">
+          <div id="osc4-box" class="osc-box">4 R</div>
+          <p id="osc4"><span>0</span>hz, vol: <span>0</span>%</p>
+        </div>
+      </div>
+      <div class="button-container">
+        <button id="play-pause-button">Play / Pause</button>
+        <button id="share-button">Share Formula</button>
+      </div>
+      <div id="frequencies">
+        A: 55.00 Hz • B: 61.74 Hz • C: 65.41 Hz • D: 73.42 Hz • E: 82.41 Hz • F: 87.31 Hz • G: 98.00 Hz
+    </div>
+    </div>
+    <script>
+      var mouseX,
+        mouseY,
+        mouseOriginX = [],
+        mouseOriginY = [];
+      var oscillators = [],
+        gainNodes = [];
+      var isOscillatorActive = [false, false, false, false];
+      var ctx, width, height, scaleX, scaleY;
+      var isFineTuning = false;
+      var isAudioInitialized = false;
+      let isPaused = false;
+      let masterGainNode;
+
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      const audioContext = new AudioContext();
+
+      // Initialize frequency values from URL or defaults
+      var frequencyValues = [60, 60.3, 60, 60];
+      var initialVolumes = [50, 50, 0, 0];
+
+      // Load settings from URL parameters if they exist
+      function loadSettingsFromURL() {
+        // Remove any leading '?' and split by '&'
+        const params = window.location.search.replace("?", "").split("&");
+        let settings = {};
+
+        // Parse each parameter
+        params.forEach((param) => {
+          const [key, value] = param.split("=");
+          if (key && value) {
+            settings[key] = value;
+          }
+        });
+
+        // Parse frequencies and volumes if they exist
+        const f = settings.f?.split(",").map(Number);
+        const v = settings.v?.split(",").map(Number);
+
+        if (f && v && f.length === 4 && v.length === 4) {
+          frequencyValues = f; // Update the single frequencyValues array
+          initialVolumes = v;
+
+          // Update display immediately
+          for (let i = 0; i < 4; i++) {
+            document.querySelector(
+              `#osc${i + 1} span:first-child`
+            ).textContent = frequencyValues[i].toFixed(2);
+            document.querySelector(`#osc${i + 1} span:last-child`).textContent =
+              initialVolumes[i].toFixed(0);
+          }
+
+          // If audio is already initialized, update the audio nodes
+          if (isAudioInitialized && gainNodes.length === 4) {
+            for (let i = 0; i < 4; i++) {
+              oscillators[i].frequency.setValueAtTime(
+                frequencyValues[i],
+                audioContext.currentTime
+              );
+              gainNodes[i].gain.setValueAtTime(
+                initialVolumes[i] / 100,
+                audioContext.currentTime
+              );
+            }
+          }
+        }
+      }
+
+      // Load settings immediately when the page loads
+      loadSettingsFromURL();
+
+      function generateSettingsURL() {
+        const frequencies = frequencyValues.map(
+          (f) => Math.round(f * 100) / 100
+        );
+        const volumes = gainNodes.map((g) => Math.round(g.gain.value * 100));
+
+        // Create plain text URL parameters
+        return `${window.location.pathname}?f=${frequencies.join(
+          ","
+        )}&v=${volumes.join(",")}`;
+      }
+
+      function updateURLWithoutReload(url) {
+        window.history.pushState({ path: url }, "", url);
+      }
+
+      function shareSettings() {
+        if (confirm("Copy current settings URL to clipboard?")) {
+          const url = window.location.origin + generateSettingsURL();
+
+          // Show preview of the URL before copying
+          const confirmMessage = `URL to be copied:\n${url}\n\nCopy to clipboard?`;
+          if (confirm(confirmMessage)) {
+            navigator.clipboard
+              .writeText(url)
+              .then(() => {
+                alert("Settings URL copied to clipboard!");
+              })
+              .catch((err) => {
+                console.error("Failed to copy URL:", err);
+                alert("Failed to copy URL to clipboard");
+              });
+          }
+        }
+      }
+
+      document.addEventListener("mousemove", updateMousePosition);
+      document.addEventListener("keydown", handleKeyDown);
+      document.addEventListener("keyup", handleKeyUp);
+
+      function updateMousePosition(event) {
+        mouseX = event.clientX;
+        mouseY = event.clientY;
+        if (isAudioInitialized) {
+          updateFrequenciesAndVolumes();
+        }
+      }
+
+      // Function to toggle oscillator state
+      function toggleOscillator(index) {
+        if (!isAudioInitialized) return;
+
+        isOscillatorActive[index] = !isOscillatorActive[index];
+        const oscBox = document.getElementById(`osc${index + 1}-box`);
+
+        if (isOscillatorActive[index]) {
+          mouseOriginX[index] = mouseX;
+          mouseOriginY[index] = mouseY;
+          oscBox.classList.add("active");
+        } else {
+          oscBox.classList.remove("active");
+        }
+
+        // Update URL when toggling oscillators
+        const newURL = generateSettingsURL();
+        updateURLWithoutReload(newURL);
+      }
+
+      // Add click handlers for oscillator boxes
+      for (let i = 0; i < 4; i++) {
+        document
+          .getElementById(`osc${i + 1}-box`)
+          .addEventListener("click", () => {
+            toggleOscillator(i);
+          });
+      }
+
+      function fadeOut() {
+        const currentTime = audioContext.currentTime;
+        // Cancel any scheduled values
+        masterGainNode.gain.cancelScheduledValues(currentTime);
+        // Get current value
+        const currentGain = masterGainNode.gain.value;
+        // Set current value at current time to ensure continuity
+        masterGainNode.gain.setValueAtTime(currentGain, currentTime);
+        // Exponential fade out (can't go to 0, so we use a very small number)
+        masterGainNode.gain.exponentialRampToValueAtTime(
+          0.001,
+          currentTime + 0.5
+        );
+        // Set to 0 after the fade
+        masterGainNode.gain.setValueAtTime(0, currentTime + 0.5);
+      }
+
+      function fadeIn() {
+        const currentTime = audioContext.currentTime;
+        // Cancel any scheduled values
+        masterGainNode.gain.cancelScheduledValues(currentTime);
+        // Start from a very small value (not 0, as exponentialRamp can't start from 0)
+        masterGainNode.gain.setValueAtTime(0.001, currentTime);
+        // Exponential fade in
+        masterGainNode.gain.exponentialRampToValueAtTime(1, currentTime + 1);
+      }
+
+      const playPauseButton = document.getElementById("play-pause-button");
+
+      playPauseButton.addEventListener("click", () => {
+        togglePlayPause();
+      });
+
+      // Modify the existing togglePlayPause function
+      function togglePlayPause() {
+        if (!isAudioInitialized) return;
+
+        isPaused = !isPaused;
+
+        if (isPaused) {
+          fadeOut();
+          document.body.classList.add("paused");
+          document.getElementById("wrapper").classList.add("paused");
+          playPauseButton.classList.add("paused");
+          playPauseButton.textContent = "Play";
+        } else {
+          fadeIn();
+          document.body.classList.remove("paused");
+          document.getElementById("wrapper").classList.remove("paused");
+          playPauseButton.classList.remove("paused");
+          playPauseButton.textContent = "Pause";
+        }
+      }
+      // Modify the handleKeyDown function to include spacebar
+      function handleKeyDown(event) {
+        const key = event.key.toLowerCase();
+        if (key === " ") {
+          event.preventDefault(); // Prevent page scrolling
+          togglePlayPause();
+        } else if (key >= "1" && key <= "4") {
+          const index = parseInt(key) - 1;
+          toggleOscillator(index);
+        } else if (key === "shift") {
+          isFineTuning = true;
+        } else if (key === "s") {
+          shareSettings();
+        }
+      }
+
+      function handleKeyUp(event) {
+        if (event.key.toLowerCase() === "shift") {
+          isFineTuning = false;
+        }
+      }
+
+      // Modified updateFrequenciesAndVolumes to update URL when changes settle
+      let updateURLTimeout;
+      function updateFrequenciesAndVolumes() {
+        const minFreq = 0;
+        const maxFreq = 1000;
+        const sensitivity = isFineTuning ? 0.0005 : 0.005;
+
+        let valuesChanged = false;
+
+        for (let i = 0; i < 4; i++) {
+          if (isOscillatorActive[i]) {
+            const mouseDeltaX = mouseX - mouseOriginX[i];
+            const mouseDeltaY = mouseY - mouseOriginY[i];
+
+            // Store previous values to check for changes
+            const prevFreq = frequencyValues[i];
+            const prevGain = gainNodes[i].gain.value;
+
+            // Update frequency value (logarithmic only)
+            const frequencyChange =
+              Math.exp(Math.abs(mouseDeltaX) * sensitivity) - 1;
+            if (mouseDeltaX > 0) {
+              frequencyValues[i] = Math.min(
+                maxFreq,
+                frequencyValues[i] * (1 + frequencyChange)
+              );
+            } else {
+              frequencyValues[i] = Math.max(
+                minFreq,
+                frequencyValues[i] / (1 + frequencyChange)
+              );
+            }
+
+            // Set the new frequency
+            oscillators[i].frequency.setTargetAtTime(
+              frequencyValues[i],
+              audioContext.currentTime,
+              0.01
+            );
+
+            // Smooth volume adjustment
+            const volumeChange = (mouseDeltaY / window.innerHeight) * -1;
+            const newVolume = Math.max(
+              0,
+              Math.min(1, gainNodes[i].gain.value - volumeChange)
+            );
+            gainNodes[i].gain.setTargetAtTime(
+              newVolume,
+              audioContext.currentTime,
+              0.01
+            );
+
+            mouseOriginX[i] = mouseX;
+            mouseOriginY[i] = mouseY;
+
+            // Check if values changed significantly (reduced precision for URL updates)
+            if (
+              Math.abs(prevFreq - frequencyValues[i]) > 0.1 ||
+              Math.abs(prevGain - newVolume) > 0.01
+            ) {
+              valuesChanged = true;
+            }
+          }
+
+          // Update display with full precision
+          document.querySelector(`#osc${i + 1} span:first-child`).textContent =
+            frequencyValues[i].toFixed(2);
+          document.querySelector(`#osc${i + 1} span:last-child`).textContent = (
+            gainNodes[i].gain.value * 100
+          ).toFixed(0);
+        }
+
+        // Update URL with debouncing
+        if (valuesChanged) {
+          clearTimeout(updateURLTimeout);
+          updateURLTimeout = setTimeout(() => {
+            const newURL = generateSettingsURL();
+            updateURLWithoutReload(newURL);
+          }, 500);
+        }
+      }
+
+      // Handle browser back/forward buttons
+      window.addEventListener("popstate", function (event) {
+        loadSettingsFromURL();
+      });
+
+      function drawScope() {
+        requestAnimationFrame(drawScope);
+
+        if (!isAudioInitialized) return; // Early return if audio not ready
+
+        const timeData1 = new Float32Array(analyserNode1.fftSize);
+        const timeData2 = new Float32Array(analyserNode2.fftSize);
+
+        analyserNode1.getFloatTimeDomainData(timeData1);
+        analyserNode2.getFloatTimeDomainData(timeData2);
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.beginPath();
+        ctx.lineWidth = 20 * Math.min(scaleX, scaleY);
+        ctx.lineCap = "round";
+        // ctx.strokeStyle = `rgba(${(mouseY / height) * 105 + 100}, 100, ${
+        //   (mouseX / width) * 105 + 100
+        // }, 1)`;
+
+        // Calculate color based on time for 20 minute cycle
+        // const cycleTime = 20 * 60 * 1000; // 20 minutes in milliseconds
+        const cycleTime = 20 * 60 * 1000; // 20 minutes in milliseconds
+        const timestamp = Date.now() % cycleTime;
+        const position = timestamp / cycleTime;
+
+        // Calculate RGB values
+        const r = Math.sin(position * 2 * Math.PI) * 127 + 128;
+        const g = Math.sin(position * 2 * Math.PI + 2 * Math.PI / 3) * 127 + 128;
+        const b = Math.sin(position * 2 * Math.PI + 4 * Math.PI / 3) * 127 + 128;
+
+        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 1)`;
+
+        let prevX = null;
+        let prevY = null;
+        const smoothingFactor = 0.8;
+
+        const scopeSize = Math.min(width, height) * 0.9;
+        const scopeOffsetX = (width - scopeSize) / 2;
+        const scopeOffsetY = (height - scopeSize) / 2;
+
+        for (let x = 0; x < timeData1.length; x++) {
+          let x1 = ((timeData1[x] + 1) / 2) * scopeSize + scopeOffsetX;
+          let y1 = ((timeData2[x] + 1) / 2) * scopeSize + scopeOffsetY;
+
+          if (prevX !== null && prevY !== null) {
+            x1 = prevX * smoothingFactor + x1 * (1 - smoothingFactor);
+            y1 = prevY * smoothingFactor + y1 * (1 - smoothingFactor);
+          }
+
+          if (x === 0) {
+            ctx.moveTo(x1, y1);
+          } else {
+            ctx.lineTo(x1, y1);
+          }
+
+          prevX = x1;
+          prevY = y1;
+        }
+        ctx.stroke();
+
+        // Draw the white line (scaled and centered)
+        ctx.beginPath();
+        ctx.lineWidth = 5 * Math.min(scaleX, scaleY);
+        ctx.lineCap = "round";
+        ctx.strokeStyle = `rgba(255,255,255,1)`;
+
+        for (let x = 0; x < timeData1.length; x++) {
+          const x1 = ((timeData1[x] + 1) / 2) * scopeSize + scopeOffsetX;
+          const y1 = ((timeData2[x] + 1) / 2) * scopeSize + scopeOffsetY;
+          if (x === 0) {
+            ctx.moveTo(x1, y1);
+          } else {
+            ctx.lineTo(x1, y1);
+          }
+        }
+        ctx.stroke();
+      }
+
+      // Declare analyzer nodes at module level
+      let analyserNode1, analyserNode2;
+
+      document
+        .getElementById("start-button")
+        .addEventListener("click", function () {
+          document.getElementById("start-wrapper").classList.add("hidden");
+
+          analyserNode1 = audioContext.createAnalyser();
+          analyserNode2 = audioContext.createAnalyser();
+
+          analyserNode1.fftSize = 16384 / 8;
+          analyserNode2.fftSize = 16384 / 8;
+
+          // Create and configure master gain node
+          masterGainNode = audioContext.createGain();
+          masterGainNode.gain.setValueAtTime(0, audioContext.currentTime);
+
+          // Create stereo merger for combining oscillators
+          const oscMerger = audioContext.createChannelMerger(2);
+
+          // Create second merger for final audio output
+          const finalMerger = audioContext.createChannelMerger(2);
+
+          // Create oscillators and gain nodes
+          for (let i = 0; i < 4; i++) {
+            oscillators[i] = audioContext.createOscillator();
+            gainNodes[i] = audioContext.createGain();
+            oscillators[i].connect(gainNodes[i]);
+
+            // Connect to first merger for oscillator combining
+            if (i === 0 || i === 2) {
+              gainNodes[i].connect(oscMerger, 0, 0); // Left channel
+            } else {
+              gainNodes[i].connect(oscMerger, 0, 1); // Right channel
+            }
+
+            oscillators[i].frequency.setValueAtTime(
+              frequencyValues[i],
+              audioContext.currentTime
+            );
+            gainNodes[i].gain.setValueAtTime(
+              initialVolumes[i] / 100,
+              audioContext.currentTime
+            );
+            oscillators[i].start();
+          }
+
+          // Connect first merger to master gain
+          oscMerger.connect(masterGainNode);
+
+          // Create a splitter to separate the channels after master gain
+          const splitter = audioContext.createChannelSplitter(2);
+          masterGainNode.connect(splitter);
+
+          // Connect each channel to its analyzer
+          splitter.connect(analyserNode1, 0); // Left channel to analyzer1
+          splitter.connect(analyserNode2, 1); // Right channel to analyzer2
+
+          // Connect analyzers to final merger
+          analyserNode1.connect(finalMerger, 0, 0); // Left
+          analyserNode2.connect(finalMerger, 0, 1); // Right
+
+          // Connect final merger to destination
+          finalMerger.connect(audioContext.destination);
+
+          // Initial fade in with slight curve to prevent clicks
+          masterGainNode.gain.setTargetAtTime(1, audioContext.currentTime, 0.1);
+
+          ctx = document.getElementById("scope").getContext("2d");
+          resizeCanvas();
+
+          isAudioInitialized = true;
+
+          requestAnimationFrame(drawScope);
+        });
+
+      function resizeCanvas() {
+        const canvas = document.getElementById("scope");
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        width = canvas.width;
+        height = canvas.height;
+
+        // Update scaleX and scaleY
+        scaleX = width / 1024;
+        scaleY = height / 1024;
+
+        // Redraw the scope immediately after resizing
+        if (typeof drawScope === "function") {
+          drawScope();
+        }
+      }
+
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+
+      // Add event listener for the share button
+      document
+        .getElementById("share-button")
+        .addEventListener("click", shareSettings);
+    </script>
+  </body>
+</html>

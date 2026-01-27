@@ -64,6 +64,31 @@ p {
   box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
 }
 
+.headphones-note {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0.5rem 0;
+  font-style: italic;
+}
+
+.created-by {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 0.5rem;
+}
+
+.created-by a {
+  color: rgba(255, 255, 255, 0.6);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+  transition: all 0.2s ease;
+}
+
+.created-by a:hover {
+  color: #fff;
+  border-bottom-color: #fff;
+}
+
 /* Oscilloscope container - positions the canvas */
 .oscilloscope-container {
   position: absolute;

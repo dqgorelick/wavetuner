@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "homepage": "https://dang.github.io/wavetuner/",
+  "homepage": "https://dqgorelick.github.io/wavetuner/",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

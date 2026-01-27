@@ -22,15 +22,28 @@ class AudioEngine {
     this.isPaused = false;
     
     // Dynamic oscillator management
-    this.oscillatorCount = 2;
+    this.oscillatorCount = 4;
     this.maxOscillators = 10;
     this.minOscillators = 2;
     
+    // Generate random default frequencies
+    // First two oscillators: 50-130 Hz, 1-4 Hz apart
+    const baseFreq1 = 50 + Math.random() * 80; // 50-130 Hz
+    const offset1 = 1 + Math.random() * 3; // 1-4 Hz
+    const freq1 = baseFreq1;
+    const freq2 = baseFreq1 + (Math.random() > 0.5 ? offset1 : -offset1);
+    
+    // Second two oscillators: 2x the base, also 1-4 Hz apart
+    const baseFreq2 = baseFreq1 * 2;
+    const offset2 = 1 + Math.random() * 3; // 1-4 Hz
+    const freq3 = baseFreq2;
+    const freq4 = baseFreq2 + (Math.random() > 0.5 ? offset2 : -offset2);
+    
     // Store frequency/volume values separately from oscillator nodes
-    this.frequencyValues = [60, 60.3];
-    this.volumeValues = [0.5, 0.5];
-    this.mutedStates = [false, false];
-    this.preMuteVolumes = [0.5, 0.5];
+    this.frequencyValues = [freq1, freq2, freq3, freq4];
+    this.volumeValues = [0.5, 0.5, 0.5, 0.5];
+    this.mutedStates = [false, false, true, true]; // 3rd and 4th muted by default
+    this.preMuteVolumes = [0.5, 0.5, 0.5, 0.5];
     
     // Multi-channel routing - maps oscillator index to array of output channels
     this.routingMap = {}; // { oscIndex: [outputChannel1, outputChannel2, ...] }

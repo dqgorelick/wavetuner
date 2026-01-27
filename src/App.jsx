@@ -39,7 +39,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { count: 2, frequencies: null, volumes: null, routing: null };
+  return { count: 4, frequencies: null, volumes: null, routing: null };
 }
 
 // Compute once at module load
@@ -266,7 +266,6 @@ function App() {
       {(!isStarted || isHelpOpen) && (
         <StartScreen 
           onStart={isStarted ? handleCloseHelp : handleStart} 
-          isHelpMode={isStarted && isHelpOpen}
         />
       )}
       

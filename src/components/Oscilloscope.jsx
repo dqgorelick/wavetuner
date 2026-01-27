@@ -68,21 +68,51 @@ export default function Oscilloscope() {
       const lineScale = Math.min(scaleX, scaleY);
       const dataLen = timeData1.length;
       
+      // Detect waveform complexity by counting direction changes (proxy for frequency)
+      let directionChanges = 0;
+      let prevDiff = 0;
+      for (let i = 2; i < Math.min(dataLen, 256); i++) {
+        const diff = timeData1[i] - timeData1[i - 1];
+        if ((diff > 0 && prevDiff < 0) || (diff < 0 && prevDiff > 0)) {
+          directionChanges++;
+        }
+        prevDiff = diff;
+      }
+      
+      // Calculate adaptive parameters based on complexity
+      // More direction changes = higher frequency = need more adaptation
+      const complexity = Math.min(directionChanges / 50, 1); // Normalize to 0-1
+      
+      // Adaptive sampling: sample fewer points at high frequencies
+      const minStep = 1;
+      const maxStep = 8;
+      const sampleStep = Math.round(minStep + complexity * (maxStep - minStep));
+      
+      // Adaptive line width: thicker at high frequencies
+      const baseColorWidth = 20;
+      const baseWhiteWidth = 5;
+      const colorWidth = (baseColorWidth + complexity * 10) * lineScale;
+      const whiteWidth = (baseWhiteWidth + complexity * 3) * lineScale;
+      
+      // Adaptive smoothing: more smoothing at high frequencies
+      const baseSmoothingFactor = 0.6;
+      const smoothingFactor = baseSmoothingFactor + complexity * 0.3;
+      
       // Draw colored line (with smoothing) - with glow effect
       ctx.beginPath();
-      ctx.lineWidth = 20 * lineScale;
+      ctx.lineWidth = colorWidth;
       ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.strokeStyle = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 1)`;
       
-      // Add glow via canvas shadow
+      // Add glow via canvas shadow - constant at all frequencies
       ctx.shadowBlur = 25 * lineScale;
       ctx.shadowColor = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 0.8)`;
       
       let prevX = null;
       let prevY = null;
-      const smoothingFactor = 0.8;
       
-      for (let i = 0; i < dataLen; i++) {
+      for (let i = 0; i < dataLen; i += sampleStep) {
         let x1 = ((timeData1[i] + 1) / 2) * scopeSize + scopeOffsetX;
         let y1 = ((timeData2[i] + 1) / 2) * scopeSize + scopeOffsetY;
         
@@ -102,23 +132,36 @@ export default function Oscilloscope() {
       }
       ctx.stroke();
       
-      // Draw white line (no smoothing) - with subtle glow
+      // Draw white line (with light smoothing at high freq) - with subtle glow
       ctx.beginPath();
-      ctx.lineWidth = 5 * lineScale;
+      ctx.lineWidth = whiteWidth;
       ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
       ctx.shadowBlur = 10 * lineScale;
       ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
       
-      for (let i = 0; i < dataLen; i++) {
-        const x1 = ((timeData1[i] + 1) / 2) * scopeSize + scopeOffsetX;
-        const y1 = ((timeData2[i] + 1) / 2) * scopeSize + scopeOffsetY;
+      prevX = null;
+      prevY = null;
+      
+      // Use same smoothing as colored line to keep them aligned
+      for (let i = 0; i < dataLen; i += sampleStep) {
+        let x1 = ((timeData1[i] + 1) / 2) * scopeSize + scopeOffsetX;
+        let y1 = ((timeData2[i] + 1) / 2) * scopeSize + scopeOffsetY;
+        
+        if (prevX !== null && prevY !== null) {
+          x1 = prevX * smoothingFactor + x1 * (1 - smoothingFactor);
+          y1 = prevY * smoothingFactor + y1 * (1 - smoothingFactor);
+        }
         
         if (i === 0) {
           ctx.moveTo(x1, y1);
         } else {
           ctx.lineTo(x1, y1);
         }
+        
+        prevX = x1;
+        prevY = y1;
       }
       ctx.stroke();
       

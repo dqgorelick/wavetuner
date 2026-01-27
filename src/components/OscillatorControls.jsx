@@ -1,8 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import audioEngine from '../audio/AudioEngine';
 
 // Convert frequency to musical note + cents
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+// Oscillator colors for up to 10 oscillators
+const OSCILLATOR_COLORS = [
+  '#ff4136', // 1 - red
+  '#2ecc40', // 2 - green
+  '#0074d9', // 3 - blue
+  '#ffdc00', // 4 - yellow
+  '#bb8fce', // 5 - purple
+  '#85c1e9', // 6 - light blue
+  '#82e0aa', // 7 - mint
+  '#f8b500', // 8 - orange
+  '#e74c3c', // 9 - coral
+  '#1abc9c', // 10 - teal
+];
 
 function freqToNote(freq) {
   if (freq <= 0) return { note: '--', octave: 0, cents: 0 };
@@ -17,20 +31,41 @@ function freqToNote(freq) {
   return { note: NOTE_NAMES[noteIndex], octave, cents };
 }
 
-// Convert position (0-100) to frequency (logarithmic 20-500Hz)
+// Frequency range constants
+const FREQ_RANGE = { min: 0.1, max: 20000 };
+
+// Convert position (0-100) to frequency (logarithmic scale)
 function positionToFreq(pos) {
-  const logMin = Math.log(20);
-  const logMax = Math.log(500);
+  // Use 0.1 as minimum for log scale (can't log 0)
+  const logMin = Math.log(FREQ_RANGE.min);
+  const logMax = Math.log(FREQ_RANGE.max);
   const logFreq = logMin + (pos / 100) * (logMax - logMin);
   return Math.exp(logFreq);
 }
 
 // Convert frequency to position (0-100)
 function freqToPosition(freq) {
-  const logMin = Math.log(20);
-  const logMax = Math.log(500);
-  const logFreq = Math.log(Math.max(20, Math.min(500, freq)));
+  const logMin = Math.log(FREQ_RANGE.min);
+  const logMax = Math.log(FREQ_RANGE.max);
+  const clampedFreq = Math.max(FREQ_RANGE.min, Math.min(FREQ_RANGE.max, freq));
+  const logFreq = Math.log(Math.max(0.1, clampedFreq));
   return ((logFreq - logMin) / (logMax - logMin)) * 100;
+}
+
+// Get oscillator label with channel indicator from actual routing
+function getOscillatorLabel(index, routingMap = {}, outputChannels = 2) {
+  const num = index + 1;
+  const outputs = routingMap[index] ?? [index % 2];
+  const outputList = Array.isArray(outputs) ? outputs : [outputs];
+  
+  // Only show routing arrow for stereo with single output
+  if (outputChannels <= 2 && outputList.length === 1) {
+    const channelLabel = outputList[0] === 0 ? 'L' : 'R';
+    return `${num}→${channelLabel}`;
+  }
+  
+  // For multiple outputs or multi-channel, just show the number
+  return `${num}`;
 }
 
 /**
@@ -124,12 +159,25 @@ function OscillatorRow({ index, label, color, isActive, isBeingDragged, isMuted,
 
 /**
  * Combined oscillator controls with draggable XY pad
+ * Supports dynamic oscillator count (2-10)
  */
-export default function OscillatorControls() {
-  const [activeOscillators, setActiveOscillators] = useState([false, false, false, false]);
-  const [mutedOscillators, setMutedOscillators] = useState([false, false, false, false]);
-  const [freqPositions, setFreqPositions] = useState([50, 50, 50, 50]);
-  const [volPositions, setVolPositions] = useState([50, 50, 0, 0]);
+export default function OscillatorControls({ 
+  oscillatorCount = 2, 
+  routingMap = {},
+  onShare,
+  onSettingsToggle,
+  isSettingsOpen,
+  onShowHelp
+}) {
+  // Get output channel count from audio engine
+  const outputChannels = audioEngine.outputChannelCount || 2;
+  // Initialize state arrays based on oscillator count
+  const createInitialArray = (defaultValue, length) => Array(length).fill(defaultValue);
+  
+  const [activeOscillators, setActiveOscillators] = useState(() => createInitialArray(false, oscillatorCount));
+  const [mutedOscillators, setMutedOscillators] = useState(() => createInitialArray(false, oscillatorCount));
+  const [freqPositions, setFreqPositions] = useState(() => createInitialArray(50, oscillatorCount));
+  const [volPositions, setVolPositions] = useState(() => createInitialArray(50, oscillatorCount));
   const [xyControlEnabled, setXyControlEnabled] = useState(true);
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   const [shiftHeld, setShiftHeld] = useState(false);
@@ -140,20 +188,52 @@ export default function OscillatorControls() {
   // Refs
   const xyPadRef = useRef(null);
   const currentMouseRef = useRef({ x: 0, y: 0 });
-  const mouseOriginRef = useRef({ x: [0, 0, 0, 0], y: [0, 0, 0, 0] });
-  const activeRef = useRef([false, false, false, false]);
+  const mouseOriginRef = useRef({ x: createInitialArray(0, 10), y: createInitialArray(0, 10) });
+  const activeRef = useRef(createInitialArray(false, 10));
   const dragStartRef = useRef({ x: 0, y: 0 });
+  const oscillatorCountRef = useRef(oscillatorCount);
   
   const isFineTuning = fineTuneEnabled || shiftHeld;
   const isFineTuningRef = useRef(isFineTuning);
   isFineTuningRef.current = isFineTuning;
   
-  const oscillators = [
-    { index: 0, label: '1 L', color: '#ff4136' },
-    { index: 1, label: '2 R', color: '#2ecc40' },
-    { index: 2, label: '3 L', color: '#0074d9' },
-    { index: 3, label: '4 R', color: '#ffdc00' },
-  ];
+  // Update ref when prop changes
+  useEffect(() => {
+    oscillatorCountRef.current = oscillatorCount;
+  }, [oscillatorCount]);
+  
+  // Resize state arrays when oscillator count changes
+  useEffect(() => {
+    setActiveOscillators(prev => {
+      const newArr = [...prev];
+      while (newArr.length < oscillatorCount) newArr.push(false);
+      return newArr.slice(0, oscillatorCount);
+    });
+    setMutedOscillators(prev => {
+      const newArr = [...prev];
+      while (newArr.length < oscillatorCount) newArr.push(false);
+      return newArr.slice(0, oscillatorCount);
+    });
+    setFreqPositions(prev => {
+      const newArr = [...prev];
+      while (newArr.length < oscillatorCount) newArr.push(50);
+      return newArr.slice(0, oscillatorCount);
+    });
+    setVolPositions(prev => {
+      const newArr = [...prev];
+      while (newArr.length < oscillatorCount) newArr.push(50);
+      return newArr.slice(0, oscillatorCount);
+    });
+  }, [oscillatorCount]);
+  
+  // Generate oscillator configs dynamically
+  const oscillators = useMemo(() => {
+    return Array.from({ length: oscillatorCount }, (_, i) => ({
+      index: i,
+      label: getOscillatorLabel(i, routingMap, outputChannels),
+      color: OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length]
+    }));
+  }, [oscillatorCount, routingMap, outputChannels]);
   
   // Sync with audio engine using requestAnimationFrame for smooth updates
   useEffect(() => {
@@ -161,12 +241,21 @@ export default function OscillatorControls() {
     
     const sync = () => {
       if (audioEngine.initialized) {
-        const freqs = audioEngine.getAllFrequencies();
-        const vols = audioEngine.getAllVolumes();
-        const muted = audioEngine.getAllMutedStates();
-        setFreqPositions(freqs.map(f => freqToPosition(f)));
-        setVolPositions(vols);
-        setMutedOscillators(muted);
+        try {
+          const count = oscillatorCountRef.current;
+          const freqs = audioEngine.getAllFrequencies();
+          const vols = audioEngine.getAllVolumes();
+          const muted = audioEngine.getAllMutedStates();
+          
+          // Only update if we have enough data
+          if (freqs.length >= count && vols.length >= count && muted.length >= count) {
+            setFreqPositions(freqs.slice(0, count).map(f => freqToPosition(f)));
+            setVolPositions(vols.slice(0, count));
+            setMutedOscillators(muted.slice(0, count));
+          }
+        } catch (e) {
+          // Ignore sync errors during transitions
+        }
       }
       animationId = requestAnimationFrame(sync);
     };
@@ -175,16 +264,18 @@ export default function OscillatorControls() {
     return () => cancelAnimationFrame(animationId);
   }, []);
   
-  // Map shift+number symbols to indices (for keyboards that produce !@#$ with shift)
-  const shiftSymbolMap = { '!': 0, '@': 1, '#': 2, '$': 3 };
+  // Map shift+number symbols to indices (for keyboards that produce !@#$%^&*() with shift)
+  const shiftSymbolMap = { '!': 0, '@': 1, '#': 2, '$': 3, '%': 4, '^': 5, '&': 6, '*': 7, '(': 8, ')': 9 };
   
   // Global keyboard handler
   useEffect(() => {
     const handleKeyDown = (e) => {
+      const count = oscillatorCountRef.current;
+      
       if (e.key === 'Escape') {
         // Release all toggles
-        activeRef.current = [false, false, false, false];
-        setActiveOscillators([false, false, false, false]);
+        activeRef.current = Array(10).fill(false);
+        setActiveOscillators(Array(count).fill(false));
       } else if (e.key === ' ') {
         // Space = play/pause
         e.preventDefault();
@@ -193,19 +284,22 @@ export default function OscillatorControls() {
         setShiftHeld(true);
       } else if (e.key === 'm' || e.key === 'M') {
         setXyControlEnabled(prev => !prev);
-      } else if (e.key >= '1' && e.key <= '4') {
-        const index = parseInt(e.key) - 1;
-        if (e.shiftKey) {
-          // Shift + number = mute/unmute
-          handleMuteToggle(index);
-        } else {
-          // Just number = toggle XY movement
-          handleToggle(index);
+      } else if (e.key >= '0' && e.key <= '9') {
+        // 1-9 = oscillators 0-8, 0 = oscillator 9
+        const index = e.key === '0' ? 9 : parseInt(e.key) - 1;
+        if (index < count) {
+          if (e.shiftKey) {
+            handleMuteToggle(index);
+          } else {
+            handleToggle(index);
+          }
         }
       } else if (shiftSymbolMap[e.key] !== undefined) {
-        // Handle !@#$ as Shift+1234 on US keyboards
+        // Handle shift+number symbols on US keyboards
         const index = shiftSymbolMap[e.key];
-        handleMuteToggle(index);
+        if (index < count) {
+          handleMuteToggle(index);
+        }
       }
     };
     
@@ -235,8 +329,9 @@ export default function OscillatorControls() {
       if (!audioEngine.initialized || !xyControlEnabled) return;
       
       const sensitivity = isFineTuningRef.current ? 0.0005 : 0.005;
+      const count = oscillatorCountRef.current;
       
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < count; i++) {
         if (activeRef.current[i]) {
           const mouseDeltaX = mouseX - mouseOriginRef.current.x[i];
           const mouseDeltaY = mouseY - mouseOriginRef.current.y[i];
@@ -247,9 +342,9 @@ export default function OscillatorControls() {
           
           let newFreq;
           if (mouseDeltaX > 0) {
-            newFreq = Math.min(1000, currentFreq * (1 + frequencyChange));
+            newFreq = Math.min(FREQ_RANGE.max, currentFreq * (1 + frequencyChange));
           } else {
-            newFreq = Math.max(0, currentFreq / (1 + frequencyChange));
+            newFreq = Math.max(FREQ_RANGE.min, currentFreq / (1 + frequencyChange));
           }
           
           // Volume change (up = louder) - 4x faster for full range coverage
@@ -266,8 +361,30 @@ export default function OscillatorControls() {
       }
     };
     
+    // Click handler to release active oscillators (when clicking outside control panels)
+    const handleClick = (e) => {
+      // Don't release if clicking inside the XY pad or any control panel
+      const xyPad = document.querySelector('.xy-indicator');
+      const oscPanel = document.querySelector('.osc-panel');
+      const oscControlsPanel = document.querySelector('.osc-controls-panel');
+      
+      if (xyPad && xyPad.contains(e.target)) return;
+      if (oscPanel && oscPanel.contains(e.target)) return;
+      if (oscControlsPanel && oscControlsPanel.contains(e.target)) return;
+      
+      // Release all active oscillators
+      if (activeRef.current.some(a => a)) {
+        activeRef.current = Array(10).fill(false);
+        setActiveOscillators(Array(oscillatorCountRef.current).fill(false));
+      }
+    };
+    
     document.addEventListener('mousemove', handleMouseMove);
-    return () => document.removeEventListener('mousemove', handleMouseMove);
+    document.addEventListener('click', handleClick);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('click', handleClick);
+    };
   }, [xyControlEnabled]);
   
   // Dot dragging handler (mouse and touch) - scrubbing behavior
@@ -298,9 +415,9 @@ export default function OscillatorControls() {
         
         let newFreq;
         if (deltaX > 0) {
-          newFreq = Math.min(1000, currentFreq * (1 + frequencyChange));
+          newFreq = Math.min(FREQ_RANGE.max, currentFreq * (1 + frequencyChange));
         } else {
-          newFreq = Math.max(0, currentFreq / (1 + frequencyChange));
+          newFreq = Math.max(FREQ_RANGE.min, currentFreq / (1 + frequencyChange));
         }
         
         // Volume change (up = louder) - 4x faster for full range coverage
@@ -365,7 +482,8 @@ export default function OscillatorControls() {
       // This ensures they all move together at the same rate
       const mouseX = currentMouseRef.current.x;
       const mouseY = currentMouseRef.current.y;
-      for (let i = 0; i < 4; i++) {
+      const count = oscillatorCountRef.current;
+      for (let i = 0; i < count; i++) {
         if (activeRef.current[i]) {
           mouseOriginRef.current.x[i] = mouseX;
           mouseOriginRef.current.y[i] = mouseY;
@@ -373,7 +491,7 @@ export default function OscillatorControls() {
       }
     }
     
-    setActiveOscillators([...activeRef.current]);
+    setActiveOscillators([...activeRef.current.slice(0, oscillatorCountRef.current)]);
   };
   
   const handleMuteToggle = (index) => {
@@ -435,6 +553,17 @@ export default function OscillatorControls() {
   const hasActiveXY = xyControlEnabled && activeOscillators.some(a => a);
   const showZoom = isDragging || hasActiveXY;
   
+  // Add scrubbing class to body when XY control is active (for cursor)
+  useEffect(() => {
+    if (hasActiveXY) {
+      document.body.classList.add('xy-control-active');
+    } else {
+      document.body.classList.remove('xy-control-active');
+    }
+    return () => document.body.classList.remove('xy-control-active');
+  }, [hasActiveXY]);
+  
+  
   // Get the primary dot for zoom view centering
   // Priority: first dragged dot, then first active XY-controlled dot
   let primaryIndex = null;
@@ -447,67 +576,90 @@ export default function OscillatorControls() {
   
   
   return (
-    <div className="osc-panel">
-      {/* Zoomed frequency scale - appears when dragging or XY controlling */}
-      {showZoom && primaryIndex !== null && (
-        <div className="freq-zoom-wrapper">
-          <div className="freq-zoom">
-            {/* Grid lines every 1Hz across the 10Hz range */}
-            {Array.from({ length: 11 }, (_, i) => {
-              const freq = Math.floor(zoomCenterFreq) - 5 + i;
-              const offset = ((freq - zoomCenterFreq) / 10) * 100 + 50; // Map to 0-100%
-              const isMajor = freq % 5 === 0;
-              return (
-                <div
-                  key={i}
-                  className={`zoom-grid-line ${isMajor ? 'major' : ''}`}
-                  style={{ left: `${offset}%` }}
-                >
-                  {isMajor && <span className="zoom-freq-label">{freq}</span>}
-                </div>
-              );
-            })}
-            
-            {/* Show all oscillator positions as vertical lines */}
-            {oscillators.map((osc) => {
-              const freq = frequencies[osc.index];
-              const diff = freq - zoomCenterFreq;
-              const offset = (diff / 10) * 100 + 50; // Map to percentage
-              const isInRange = offset >= -5 && offset <= 105;
-              const isPrimary = osc.index === primaryIndex;
-              const isMuted = mutedOscillators[osc.index];
-              
-              if (!isInRange) return null;
-              
-              // Format the label: primary shows Hz, others show +/- difference
-              const label = isPrimary 
-                ? `${freq.toFixed(2)}Hz`
-                : `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`;
-              
-              return (
-                <div
-                  key={osc.index}
-                  className={`zoom-line ${isPrimary ? 'primary' : ''} ${isMuted ? 'muted' : ''}`}
-                  style={{
-                    left: `${offset}%`,
-                    '--line-color': osc.color
-                  }}
-                >
-                  <div className={`zoom-label ${isPrimary ? 'primary' : ''}`}>
-                    <span className="zoom-label-text">{label}</span>
-                  </div>
-                </div>
-              );
-            })}
-            
-            {/* Center indicator */}
-            <div className="zoom-center-line" />
-          </div>
+    <>
+      {/* Oscillator Controls - Bottom Left */}
+      <div className="osc-controls-panel">
+        <div className="osc-controls-wrapper">
+          {oscillators.map((osc) => (
+            <OscillatorRow
+              key={osc.index}
+              index={osc.index}
+              label={osc.label}
+              color={osc.color}
+              isActive={activeOscillators[osc.index] || false}
+              isBeingDragged={isDragging && draggedDots.includes(osc.index)}
+              isMuted={mutedOscillators[osc.index] || false}
+              onToggle={handleToggle}
+              onMuteToggle={handleMuteToggle}
+              freq={frequencies[osc.index] ?? 60}
+              volume={volPositions[osc.index] ?? 50}
+            />
+          ))}
         </div>
-      )}
+      </div>
       
-      {/* XY Pad - draggable dots with scrubbing behavior */}
-      <div className="xy-indicator-wrapper">
+      {/* XY Pad and Controls - Bottom Right */}
+      <div className="osc-panel">
+        {/* Zoomed frequency scale - appears when dragging or XY controlling */}
+        {showZoom && primaryIndex !== null && (
+          <div className="freq-zoom-wrapper">
+            <div className="freq-zoom">
+              {/* Grid lines every 1Hz across the 10Hz range */}
+              {Array.from({ length: 11 }, (_, i) => {
+                const freq = Math.floor(zoomCenterFreq) - 5 + i;
+                const offset = ((freq - zoomCenterFreq) / 10) * 100 + 50; // Map to 0-100%
+                const isMajor = freq % 5 === 0;
+                return (
+                  <div
+                    key={i}
+                    className={`zoom-grid-line ${isMajor ? 'major' : ''}`}
+                    style={{ left: `${offset}%` }}
+                  >
+                    {isMajor && <span className="zoom-freq-label">{freq}</span>}
+                  </div>
+                );
+              })}
+              
+              {/* Show all oscillator positions as vertical lines */}
+              {oscillators.map((osc) => {
+                const freq = frequencies[osc.index] ?? 60;
+                const diff = freq - zoomCenterFreq;
+                const offset = (diff / 10) * 100 + 50; // Map to percentage
+                const isInRange = offset >= -5 && offset <= 105;
+                const isPrimary = osc.index === primaryIndex;
+                const isMuted = mutedOscillators[osc.index] || false;
+                
+                if (!isInRange) return null;
+                
+                // Format the label: primary shows Hz, others show +/- difference
+                const label = isPrimary 
+                  ? `${freq.toFixed(2)}Hz`
+                  : `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`;
+                
+                return (
+                  <div
+                    key={osc.index}
+                    className={`zoom-line ${isPrimary ? 'primary' : ''} ${isMuted ? 'muted' : ''}`}
+                    style={{
+                      left: `${offset}%`,
+                      '--line-color': osc.color
+                    }}
+                  >
+                    <div className={`zoom-label ${isPrimary ? 'primary' : ''}`}>
+                      <span className="zoom-label-text">{label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+              
+              {/* Center indicator */}
+              <div className="zoom-center-line" />
+            </div>
+          </div>
+        )}
+        
+        {/* XY Pad - draggable dots with scrubbing behavior */}
+        <div className="xy-indicator-wrapper">
         <div className={`xy-indicator ${isDragging ? 'is-dragging' : ''}`} ref={xyPadRef}>
           <span className="xy-label freq">Freq</span>
           <span className="xy-label vol">Vol</span>
@@ -518,9 +670,11 @@ export default function OscillatorControls() {
             return oscillators.map((osc) => {
               const isBeingDragged = isDragging && draggedDots.includes(osc.index);
               const isActive = activeOscillators[osc.index] || isBeingDragged;
-              const isMuted = mutedOscillators[osc.index];
-              const x = 10 + (freqPositions[osc.index] * 0.8);
-              const y = 90 - (volPositions[osc.index] * 0.8);
+              const isMuted = mutedOscillators[osc.index] || false;
+              const freqPos = freqPositions[osc.index] ?? 50;
+              const volPos = volPositions[osc.index] ?? 50;
+              const x = 10 + (freqPos * 0.8);
+              const y = 90 - (volPos * 0.8);
               
               return (
                 <div key={osc.index}>
@@ -549,24 +703,24 @@ export default function OscillatorControls() {
             });
           })()}
         </div>
+      </div>
         
         {/* Toggle buttons - below XY pad */}
         <div className="control-toggles">
           <button
-            className={`control-toggle ${isPaused ? '' : 'active'}`}
+            className={`control-toggle icon-button ${isPaused ? '' : 'active'}`}
             onClick={handlePlayPause}
             title={isPaused ? 'Play (Space)' : 'Pause (Space)'}
           >
-            {isPaused ? 'Play' : 'Pause'}
-          </button>
-          
-          <button
-            className={`control-toggle xy-toggle ${xyControlEnabled ? 'active' : ''}`}
-            onClick={() => setXyControlEnabled(!xyControlEnabled)}
-            aria-pressed={xyControlEnabled}
-            title="When ON, toggled oscillators follow mouse movement"
-          >
-            Mouse {xyControlEnabled ? 'ON' : 'OFF'}
+            {isPaused ? (
+              <svg viewBox="0 0 24 24" className="button-icon">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" className="button-icon">
+                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+              </svg>
+            )}
           </button>
           
           <button
@@ -575,29 +729,47 @@ export default function OscillatorControls() {
             aria-pressed={fineTuneEnabled}
             title="Fine tune mode for precise adjustments (hold Shift)"
           >
-            Fine {isFineTuning ? 'ON' : 'OFF'}
+            Fine Tune
+          </button>
+          
+          <button
+            className="control-toggle icon-button"
+            onClick={onShare}
+            title="Save/Share Formula (S)"
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/>
+            </svg>
+          </button>
+          
+          <button
+            className={`control-toggle icon-button ${isSettingsOpen ? 'active' : ''}`}
+            onClick={onSettingsToggle}
+            title="Settings"
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+            </svg>
+          </button>
+          
+          <button
+            className="control-toggle icon-button"
+            onClick={onShowHelp}
+            title="Help / Controls"
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/>
+            </svg>
           </button>
         </div>
       </div>
       
-      {/* Controls */}
-      <div className="osc-controls-wrapper">
-        {oscillators.map((osc) => (
-          <OscillatorRow
-            key={osc.index}
-            index={osc.index}
-            label={osc.label}
-            color={osc.color}
-            isActive={activeOscillators[osc.index]}
-            isBeingDragged={isDragging && draggedDots.includes(osc.index)}
-            isMuted={mutedOscillators[osc.index]}
-            onToggle={handleToggle}
-            onMuteToggle={handleMuteToggle}
-            freq={frequencies[osc.index]}
-            volume={volPositions[osc.index]}
-          />
-        ))}
-      </div>
-    </div>
+      {/* XY control active notice at bottom center */}
+      {hasActiveXY && (
+        <div className="xy-active-notice">
+          <span>Shifting frequencies with mouse movement, click or ESC to release</span>
+        </div>
+      )}
+    </>
   );
 }

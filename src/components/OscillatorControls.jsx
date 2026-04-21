@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { memo, useEffect, useRef, useState, useMemo } from 'react';
 import audioEngine from '../audio/AudioEngine';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -26,49 +26,105 @@ function freqToNote(freq) {
   return { note: NOTE_NAMES[noteIndex], octave, cents };
 }
 
-function getOscillatorLabel(index, routingMap = {}, outputChannels = 2) {
-  const num = index + 1;
-  const outputs = routingMap[index] ?? [index % 2];
-  const outputList = Array.isArray(outputs) ? outputs : [outputs];
-  if (outputChannels <= 2 && outputList.length === 1) {
-    const channelLabel = outputList[0] === 0 ? 'L' : 'R';
-    return `${num}→${channelLabel}`;
-  }
-  return `${num}`;
+function getOscillatorLabel(index) {
+  return `${index + 1}`;
 }
 
-function VolumeGauge({ volume, color, isMuted }) {
-  const bars = 5;
-  const filledBars = isMuted ? 0 : Math.ceil((volume / 100) * bars);
-  return (
-    <div className={`volume-gauge ${isMuted ? 'muted' : ''}`}>
-      {Array.from({ length: bars }, (_, i) => {
-        const barIndex = bars - 1 - i;
-        const isFilled = barIndex < filledBars;
-        return (
-          <div
-            key={i}
-            className={`gauge-bar ${isFilled ? 'filled' : ''}`}
-            style={{
-              backgroundColor: isFilled ? color : 'transparent',
-              borderColor: color,
-            }}
-          />
-        );
-      })}
-    </div>
-  );
+function formatFreq(freq) {
+  // Always show two decimals so small freq changes are visible.
+  if (freq >= 10000) return `${(freq / 1000).toFixed(1)}k`; // "12.3k"
+  if (freq >= 1000) return `${(freq / 1000).toFixed(2)}k`;  // "1.23k"
+  return freq.toFixed(2);                                    // "144.32", "44.00", "0.12"
 }
 
-function OscillatorRow({ index, label, color, isMuted, onMuteToggle, freq, volume }) {
-  const noteInfo = freqToNote(freq);
-  const centsStr = noteInfo.cents >= 0 ? `+${noteInfo.cents}` : `${noteInfo.cents}`;
+const VolumeFader = memo(function VolumeFader({ oscIndex, volume, color, isMuted }) {
+  const ref = useRef(null);
+  const draggingRef = useRef(false);
+
+  const setFromY = (clientY) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const relY = clientY - rect.top;
+    const v = 1 - Math.max(0, Math.min(1, relY / rect.height));
+    audioEngine.setVolume(oscIndex, v);
+  };
+
+  const handlePointerDown = (e) => {
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+    draggingRef.current = true;
+    setFromY(e.clientY);
+  };
+  const handlePointerMove = (e) => {
+    if (!draggingRef.current) return;
+    e.preventDefault();
+    setFromY(e.clientY);
+  };
+  const handlePointerUp = (e) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+  };
+
+  const fillPct = isMuted ? 0 : volume;
 
   return (
     <div
-      className={`osc-row ${isMuted ? 'muted' : ''}`}
+      ref={ref}
+      className={`volume-fader ${isMuted ? 'muted' : ''}`}
+      style={{ '--fader-color': color }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div className="volume-fader-fill" style={{ height: `${fillPct}%` }} />
+      <div className="volume-fader-thumb" style={{ bottom: `${fillPct}%` }} />
+    </div>
+  );
+});
+
+const OscillatorCol = memo(function OscillatorCol({ index, label, color, isMuted, isActive, onMuteToggle, freq, volume }) {
+  const noteInfo = freqToNote(freq);
+  const centsStr = noteInfo.cents >= 0 ? `+${noteInfo.cents}` : `${noteInfo.cents}`;
+
+  const shiftOctave = (factor) => {
+    const cur = audioEngine.getFrequency(index);
+    const next = Math.max(0.1, Math.min(20000, cur * factor));
+    audioEngine.setFrequency(index, next);
+  };
+
+  return (
+    <div
+      className={`osc-col ${isMuted ? 'muted' : ''} ${isActive ? 'active' : ''}`}
       style={{ '--row-color': color }}
     >
+      <div className="osc-col-readout">
+        <span className="freq-hz">{formatFreq(freq)}</span>
+        <span className="freq-note-cents">
+          <span className="freq-note" style={{ color }}>{noteInfo.note}{noteInfo.octave}</span>
+          <span className="freq-cents">{centsStr}</span>
+        </span>
+      </div>
+
+      <div className="osc-octave-buttons">
+        <button
+          className="osc-octave-btn"
+          onClick={() => shiftOctave(2)}
+          title="Double frequency (up an octave)"
+          aria-label="Double frequency"
+        >×2</button>
+        <button
+          className="osc-octave-btn"
+          onClick={() => shiftOctave(0.5)}
+          title="Halve frequency (down an octave)"
+          aria-label="Halve frequency"
+        >/2</button>
+      </div>
+
+      <VolumeFader oscIndex={index} volume={volume} color={color} isMuted={isMuted} />
+
       <div
         className={`osc-mute-indicator ${!isMuted ? 'unmuted' : ''}`}
         style={{ '--dot-color': color }}
@@ -80,29 +136,21 @@ function OscillatorRow({ index, label, color, isMuted, onMuteToggle, freq, volum
       >
         {label}
       </div>
-
-      <VolumeGauge volume={volume} color={color} isMuted={isMuted} />
-
-      <div className="freq-readout">
-        <span className="freq-hz">{freq.toFixed(1)}Hz</span>
-        <span className="freq-note" style={{ color }}>{noteInfo.note}{noteInfo.octave}</span>
-        <span className="freq-cents">{centsStr}¢</span>
-      </div>
     </div>
   );
-}
+});
 
-export default function OscillatorControls({
+function OscillatorControls({
   oscillatorCount = 2,
-  routingMap = {},
   onShare,
   onSettingsToggle,
   isSettingsOpen,
   onShowHelp,
   fineTuneEnabled = false,
   onFineTuneToggle,
+  onOscillatorCountChange,
+  activeOscs,
 }) {
-  const outputChannels = audioEngine.outputChannelCount || 2;
   const createInitialArray = (defaultValue, length) => Array(length).fill(defaultValue);
 
   const [mutedOscillators, setMutedOscillators] = useState(() => createInitialArray(false, oscillatorCount));
@@ -131,13 +179,37 @@ export default function OscillatorControls({
   const oscillators = useMemo(() => {
     return Array.from({ length: oscillatorCount }, (_, i) => ({
       index: i,
-      label: getOscillatorLabel(i, routingMap, outputChannels),
+      label: getOscillatorLabel(i),
       color: OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length],
     }));
-  }, [oscillatorCount, routingMap, outputChannels]);
+  }, [oscillatorCount]);
+
+  // Desktop wraps >6 oscs into two balanced rows; mobile stays single-row
+  // and lets CSS overflow-x handle the horizontal scroll.
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 768px)');
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  const rows = useMemo(() => {
+    if (isMobile || oscillators.length <= 6) return [oscillators];
+    const half = Math.ceil(oscillators.length / 2);
+    return [oscillators.slice(0, half), oscillators.slice(half)];
+  }, [oscillators, isMobile]);
 
   useEffect(() => {
     let animationId;
+    const arraysEqual = (a, b) => {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
     const sync = () => {
       if (audioEngine.initialized) {
         try {
@@ -145,9 +217,12 @@ export default function OscillatorControls({
           const vols = audioEngine.getAllVolumes();
           const muted = audioEngine.getAllMutedStates();
           if (freqs.length >= oscillatorCount && vols.length >= oscillatorCount && muted.length >= oscillatorCount) {
-            setFrequencies(freqs.slice(0, oscillatorCount));
-            setVolumes(vols.slice(0, oscillatorCount));
-            setMutedOscillators(muted.slice(0, oscillatorCount));
+            const nf = freqs.slice(0, oscillatorCount);
+            const nv = vols.slice(0, oscillatorCount);
+            const nm = muted.slice(0, oscillatorCount);
+            setFrequencies((prev) => (arraysEqual(prev, nf) ? prev : nf));
+            setVolumes((prev) => (arraysEqual(prev, nv) ? prev : nv));
+            setMutedOscillators((prev) => (arraysEqual(prev, nm) ? prev : nm));
           }
         } catch {
           // ignore
@@ -163,6 +238,14 @@ export default function OscillatorControls({
     if (!audioEngine.initialized) return;
     audioEngine.togglePlayPause();
     setIsPaused(audioEngine.paused);
+  };
+
+  const shiftAllOctaves = (factor) => {
+    for (let i = 0; i < oscillatorCount; i++) {
+      const cur = audioEngine.getFrequency(i);
+      const next = Math.max(0.1, Math.min(20000, cur * factor));
+      audioEngine.setFrequency(i, next);
+    }
   };
 
   useEffect(() => {
@@ -187,18 +270,61 @@ export default function OscillatorControls({
     <>
       <div className="osc-controls-panel">
         <div className="osc-controls-wrapper">
-          {oscillators.map((osc) => (
-            <OscillatorRow
-              key={osc.index}
-              index={osc.index}
-              label={osc.label}
-              color={osc.color}
-              isMuted={mutedOscillators[osc.index] || false}
-              onMuteToggle={handleMuteToggle}
-              freq={frequencies[osc.index] ?? 60}
-              volume={volumes[osc.index] ?? 50}
-            />
+          {rows.map((row, rowIdx) => (
+            <div key={rowIdx} className="osc-fader-row">
+              {row.map((osc) => (
+                <OscillatorCol
+                  key={osc.index}
+                  index={osc.index}
+                  label={osc.label}
+                  color={osc.color}
+                  isMuted={mutedOscillators[osc.index] || false}
+                  isActive={activeOscs?.has(osc.index) || false}
+                  onMuteToggle={handleMuteToggle}
+                  freq={frequencies[osc.index] ?? 60}
+                  volume={volumes[osc.index] ?? 50}
+                />
+              ))}
+            </div>
           ))}
+          <div className="osc-count-controls">
+            <div className="osc-count-group">
+              <button
+                className="osc-count-btn"
+                onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+                disabled={oscillatorCount <= 2}
+                title="Remove oscillator"
+                aria-label="Remove oscillator"
+              >
+                −
+              </button>
+              <button
+                className="osc-count-btn"
+                onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+                disabled={oscillatorCount >= 10}
+                title="Add oscillator"
+                aria-label="Add oscillator"
+              >
+                +
+              </button>
+            </div>
+            <div className="osc-count-group">
+              <button
+                className="osc-all-octave-btn"
+                onClick={() => shiftAllOctaves(0.5)}
+                title="Halve all frequencies (down an octave)"
+              >
+                ALL /2
+              </button>
+              <button
+                className="osc-all-octave-btn"
+                onClick={() => shiftAllOctaves(2)}
+                title="Double all frequencies (up an octave)"
+              >
+                ALL ×2
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -263,3 +389,5 @@ export default function OscillatorControls({
     </>
   );
 }
+
+export default memo(OscillatorControls);

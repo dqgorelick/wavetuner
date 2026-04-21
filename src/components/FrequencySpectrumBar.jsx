@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 
 const OSCILLATOR_COLORS = [
@@ -15,10 +15,14 @@ const DOT_GAP = 10;
 
 const PADDING_RATIO = 0.15;
 const MIN_LOG_SPAN = 0.5;
-const ZOOM_EASE = 0.18;
+const ZOOM_EASE = 0.25;
 
 const SENSITIVITY_NORMAL = 0.5;
 const SENSITIVITY_FINE = 0.1;
+
+// Grab mode: vertical cursor motion adjusts volume. Scalar is in range-units / screen-height.
+// Times getSensitivity() → normal ≈ 1 range/screen, fine ≈ 0.2 range/screen.
+const GRAB_VOL_SCALAR = 2;
 
 const ABSOLUTE_LOG_MIN = Math.log2(FREQ_MIN);
 const ABSOLUTE_LOG_MAX = Math.log2(FREQ_MAX);
@@ -87,6 +91,13 @@ function formatTick(freq) {
   return short(freq);
 }
 
+// Two-decimal readout for the "active" label that appears below a dragged/grabbed dot.
+function formatActiveFreq(freq) {
+  if (freq >= 10000) return `${(freq / 1000).toFixed(1)}k`;
+  if (freq >= 1000) return `${(freq / 1000).toFixed(2)}k`;
+  return freq.toFixed(2);
+}
+
 const DOT_CENTER_Y = DOT_SIZE / 2;
 const BAR_TOP_Y = DOT_SIZE + DOT_GAP;
 const TOTAL_HEIGHT = BAR_TOP_Y + BAR_LINE_HEIGHT + 4;
@@ -150,10 +161,9 @@ function offsetLine(x1, y1, x2, y2, r1, r2) {
   };
 }
 
-// Anchored dots (dragging / grabbed) stay pinned at their true freq position and
-// push the rest out of the way. Non-anchored pairs split the overlap 50/50.
-// Re-sorts each pass so dots can "flow around" an anchor moving through them.
-function resolveCollisions(targetsPx, dotSize, anchoredSet) {
+// All dots collision-resolve equally. Activation (dragging/grabbed) is purely
+// a CSS/state concern — positions don't snap when an orb becomes active.
+function resolveCollisions(targetsPx, dotSize) {
   const minGap = dotSize * 0.85;
   const resolved = [...targetsPx];
   if (resolved.length < 2) return resolved;
@@ -167,15 +177,8 @@ function resolveCollisions(targetsPx, dotSize, anchoredSet) {
       const gap = resolved[b] - resolved[a];
       if (gap < minGap) {
         const overlap = minGap - gap;
-        const aAnchored = anchoredSet.has(a);
-        const bAnchored = anchoredSet.has(b);
-        if (aAnchored && bAnchored) continue; // both pinned — can't resolve
-        if (aAnchored) resolved[b] += overlap;
-        else if (bAnchored) resolved[a] -= overlap;
-        else {
-          resolved[a] -= overlap / 2;
-          resolved[b] += overlap / 2;
-        }
+        resolved[a] -= overlap / 2;
+        resolved[b] += overlap / 2;
         moved = true;
       }
     }
@@ -184,7 +187,7 @@ function resolveCollisions(targetsPx, dotSize, anchoredSet) {
   return resolved;
 }
 
-export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false }) {
+function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, onActiveChange }) {
   const [barWidth, setBarWidth] = useState(500 - 2 * BAR_H_PADDING);
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
@@ -194,6 +197,7 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
   const [range, setRange] = useState({ logMin: ABSOLUTE_LOG_MIN, logMax: ABSOLUTE_LOG_MAX });
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [activeOrder, setActiveOrder] = useState([]); // indices sorted by first-activation
 
   const containerRef = useRef(null);
   const dragRef = useRef({});
@@ -203,6 +207,7 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
   const fineTuneRef = useRef(fineTuneEnabled);
   const shiftRef = useRef(shiftHeld);
   const lastGrabXRef = useRef(null); // tracks cursor X between grab-driven frames
+  const lastGrabYRef = useRef(null); // tracks cursor Y between grab-driven frames (volume)
   const mousePosRef = useRef({ x: 0, y: 0 }); // latest client-space cursor, always tracked
 
   useEffect(() => { barWidthRef.current = barWidth; }, [barWidth]);
@@ -227,6 +232,11 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
   // below avoids the cursor-position feedback loop that would otherwise be a problem.
   useEffect(() => {
     let rafId;
+    const arraysEqual = (a, b) => {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
     const tick = () => {
       if (audioEngine.initialized) {
         try {
@@ -234,8 +244,9 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
           const m = audioEngine.getAllMutedStates();
           if (f.length >= oscillatorCount && m.length >= oscillatorCount) {
             const newFreqs = f.slice(0, oscillatorCount);
-            setFrequencies(newFreqs);
-            setMuted(m.slice(0, oscillatorCount));
+            const newMuted = m.slice(0, oscillatorCount);
+            setFrequencies((prev) => (arraysEqual(prev, newFreqs) ? prev : newFreqs));
+            setMuted((prev) => (arraysEqual(prev, newMuted) ? prev : newMuted));
 
             const target = computeTargetRange(newFreqs);
             const cur = rangeRef.current;
@@ -263,14 +274,9 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
     () => frequencies.map((f) => BAR_H_PADDING + freqToFraction(f, range.logMin, range.logMax) * barWidth),
     [frequencies, barWidth, range.logMin, range.logMax]
   );
-  const anchored = useMemo(() => {
-    const s = new Set(draggingDots);
-    for (const g of grabbedOscs) s.add(g);
-    return s;
-  }, [draggingDots, grabbedOscs]);
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, DOT_SIZE, anchored),
-    [freqXs, anchored]
+    () => resolveCollisions(freqXs, DOT_SIZE),
+    [freqXs]
   );
 
   const getSensitivity = () =>
@@ -280,7 +286,10 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
     setGrabbedOscs((prev) => {
       const next = new Set(prev);
       if (next.has(index)) next.delete(index);
-      else next.add(index);
+      else {
+        next.add(index);
+        if (audioEngine.isMuted(index)) audioEngine.unmuteOscillator(index);
+      }
       return next;
     });
   };
@@ -293,13 +302,17 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
     e.preventDefault();
     e.stopPropagation();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+    // Selecting a muted osc with the mouse unmutes it.
+    if (audioEngine.isMuted(index)) audioEngine.unmuteOscillator(index);
     const rect = containerRef.current.getBoundingClientRect();
     dragRef.current[e.pointerId] = {
       index,
       containerLeft: rect.left,
       containerTop: rect.top,
       startX: e.clientX,
+      startY: e.clientY,
       lastX: e.clientX,
+      lastY: e.clientY,
       didDrag: false,
     };
     setDraggingDots((prev) => {
@@ -317,26 +330,37 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
     const drag = dragRef.current[e.pointerId];
     if (!drag) return;
     e.preventDefault();
-    if (!drag.didDrag && Math.abs(e.clientX - drag.startX) > 2) {
+    const totalDx = e.clientX - drag.startX;
+    const totalDy = e.clientY - drag.startY;
+    if (!drag.didDrag && (totalDx * totalDx + totalDy * totalDy) > 4) {
       drag.didDrag = true;
     }
     if (drag.didDrag) {
-      // Incremental: per-frame delta × current sensitivity × current log-per-px.
-      // Keeps sensitivity changes (shift/fine-tune) from retroactively scaling
-      // the accumulated motion, and lets auto-zoom run continuously.
-      const delta = e.clientX - drag.lastX;
-      if (delta !== 0) {
-        const r = rangeRef.current;
-        const logDelta =
-          (delta / barWidthRef.current) * (r.logMax - r.logMin) * getSensitivity();
-        const curFreq = audioEngine.getFrequency(drag.index);
-        const newFreq = Math.max(
-          FREQ_MIN,
-          Math.min(FREQ_MAX, curFreq * 2 ** logDelta)
-        );
-        audioEngine.setFrequency(drag.index, newFreq);
-      }
+      const deltaX = e.clientX - drag.lastX;
+      const deltaY = e.clientY - drag.lastY;
       drag.lastX = e.clientX;
+      drag.lastY = e.clientY;
+      if (deltaX !== 0 || deltaY !== 0) {
+        const sens = getSensitivity();
+        if (deltaX !== 0) {
+          const r = rangeRef.current;
+          const logDelta =
+            (deltaX / barWidthRef.current) * (r.logMax - r.logMin) * sens;
+          const curFreq = audioEngine.getFrequency(drag.index);
+          audioEngine.setFrequency(
+            drag.index,
+            Math.max(FREQ_MIN, Math.min(FREQ_MAX, curFreq * 2 ** logDelta))
+          );
+        }
+        if (deltaY !== 0) {
+          const volDelta = (-deltaY / window.innerHeight) * GRAB_VOL_SCALAR * sens;
+          const curVol = audioEngine.getVolume(drag.index);
+          audioEngine.setVolume(
+            drag.index,
+            Math.max(0, Math.min(1, curVol + volDelta))
+          );
+        }
+      }
     }
     const x = e.clientX - drag.containerLeft;
     const y = e.clientY - drag.containerTop;
@@ -354,6 +378,15 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
       toggleGrab(index);
     } else if (didDrag && !cancelled) {
       releaseAllGrabs();
+      // Snap range to target instead of letting it ease over ~58 frames.
+      // The post-release ease was causing 1s of re-renders, which on cold JIT
+      // reads as a UI freeze.
+      try {
+        const f = audioEngine.getAllFrequencies();
+        const target = computeTargetRange(f.slice(0, oscillatorCount));
+        rangeRef.current = target;
+        setRange(target);
+      } catch { /* no-op */ }
     }
 
     setDraggingDots((prev) => {
@@ -384,20 +417,35 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
 
       if (lastGrabXRef.current === null) {
         lastGrabXRef.current = e.clientX;
+        lastGrabYRef.current = e.clientY;
         return;
       }
-      const delta = e.clientX - lastGrabXRef.current;
+      const deltaX = e.clientX - lastGrabXRef.current;
+      const deltaY = e.clientY - lastGrabYRef.current;
       lastGrabXRef.current = e.clientX;
-      if (delta === 0) return;
+      lastGrabYRef.current = e.clientY;
+      if (deltaX === 0 && deltaY === 0) return;
 
+      const sens = getSensitivity();
       const r = rangeRef.current;
-      const logDelta =
-        (delta / barWidthRef.current) * (r.logMax - r.logMin) * getSensitivity();
-      const factor = 2 ** logDelta;
+      const factor = deltaX !== 0
+        ? 2 ** ((deltaX / barWidthRef.current) * (r.logMax - r.logMin) * sens)
+        : 1;
+      const volDelta = deltaY !== 0
+        ? (-deltaY / window.innerHeight) * GRAB_VOL_SCALAR * sens
+        : 0;
+
       for (const idx of grabbedRef.current) {
-        const cur = audioEngine.getFrequency(idx);
-        const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * factor));
-        audioEngine.setFrequency(idx, next);
+        if (factor !== 1) {
+          const cur = audioEngine.getFrequency(idx);
+          const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * factor));
+          audioEngine.setFrequency(idx, next);
+        }
+        if (volDelta !== 0) {
+          const curVol = audioEngine.getVolume(idx);
+          const nextVol = Math.max(0, Math.min(1, curVol + volDelta));
+          audioEngine.setVolume(idx, nextVol);
+        }
       }
     };
     document.addEventListener('pointermove', onPointerMove);
@@ -410,6 +458,7 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
     if (grabbedOscs.size === 0) {
       setGrabCursor(null);
       lastGrabXRef.current = null;
+      lastGrabYRef.current = null;
       return;
     }
     if (lastGrabXRef.current === null) {
@@ -421,6 +470,7 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
         });
       }
       lastGrabXRef.current = mousePosRef.current.x;
+      lastGrabYRef.current = mousePosRef.current.y;
     }
   }, [grabbedOscs]);
 
@@ -440,6 +490,114 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
     };
   }, [grabbedOscs]);
 
+  // When oscillators are removed, drop any drag/grab state that referenced them
+  // before the next render tries to read frequencies[idx] at an out-of-range index.
+  useEffect(() => {
+    const filterSet = (s) => {
+      const next = new Set();
+      for (const i of s) if (i < oscillatorCount) next.add(i);
+      return next.size === s.size ? s : next;
+    };
+    setDraggingDots((prev) => filterSet(prev));
+    setGrabbedOscs((prev) => filterSet(prev));
+    setActiveOrder((prev) => {
+      const next = prev.filter((i) => i < oscillatorCount);
+      return next.length === prev.length ? prev : next;
+    });
+    setGhosts((prev) => {
+      let changed = false;
+      const next = {};
+      for (const pid in prev) {
+        if (prev[pid].index < oscillatorCount) next[pid] = prev[pid];
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    for (const pid of Object.keys(dragRef.current)) {
+      if (dragRef.current[pid].index >= oscillatorCount) delete dragRef.current[pid];
+    }
+  }, [oscillatorCount]);
+
+  // Notify parent of the current active set (dragging ∪ grabbed).
+  // Bail-out when identical to prior set so we don't force parent re-renders.
+  useEffect(() => {
+    if (!onActiveChange) return;
+    const next = new Set([...draggingDots, ...grabbedOscs]);
+    onActiveChange((prev) => {
+      if (prev instanceof Set && prev.size === next.size) {
+        let same = true;
+        for (const v of prev) if (!next.has(v)) { same = false; break; }
+        if (same) return prev;
+      }
+      return next;
+    });
+  }, [draggingDots, grabbedOscs, onActiveChange]);
+
+  // Reconcile active-order (first-selected-wins) when drag/grab sets change.
+  useEffect(() => {
+    setActiveOrder((prev) => {
+      const activeSet = new Set([...draggingDots, ...grabbedOscs]);
+      const filtered = prev.filter((i) => activeSet.has(i));
+      const existing = new Set(filtered);
+      for (const i of grabbedOscs) {
+        if (!existing.has(i)) { filtered.push(i); existing.add(i); }
+      }
+      for (const i of draggingDots) {
+        if (!existing.has(i)) { filtered.push(i); existing.add(i); }
+      }
+      // Bail if unchanged
+      if (filtered.length === prev.length && filtered.every((v, i) => v === prev[i])) {
+        return prev;
+      }
+      return filtered;
+    });
+  }, [draggingDots, grabbedOscs]);
+
+  // Global safety-net cleanup for drag/grab state — protects against stuck
+  // drags when pointerup is lost (browser chrome, right-click, capture drop,
+  // pointer leaving the window, Cmd/Alt-Tab, tab switch, minimize, etc).
+  useEffect(() => {
+    const resetDragOnly = () => {
+      const anyDrag = Object.keys(dragRef.current).length > 0;
+      if (!anyDrag) return;
+      dragRef.current = {};
+      setDraggingDots((prev) => (prev.size === 0 ? prev : new Set()));
+      setGhosts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    };
+    const releaseAll = () => {
+      dragRef.current = {};
+      setDraggingDots((prev) => (prev.size === 0 ? prev : new Set()));
+      setGhosts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      setGrabbedOscs((prev) => (prev.size === 0 ? prev : new Set()));
+      setShiftHeld(false);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') releaseAll();
+    };
+    // If pointer leaves the document entirely (mouse goes off-screen), reset.
+    const onPointerLeave = (e) => {
+      if (e.relatedTarget === null && e.target === document.documentElement) {
+        resetDragOnly();
+      }
+    };
+    // Global pointerup/cancel as a fallback for when the dot never got its own.
+    const onDocPointerUp = () => resetDragOnly();
+    const onDocPointerCancel = () => resetDragOnly();
+
+    window.addEventListener('blur', releaseAll);
+    document.addEventListener('visibilitychange', onVisibility);
+    document.addEventListener('pointerleave', onPointerLeave);
+    document.addEventListener('pointerup', onDocPointerUp);
+    document.addEventListener('pointercancel', onDocPointerCancel);
+    return () => {
+      window.removeEventListener('blur', releaseAll);
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('pointerleave', onPointerLeave);
+      document.removeEventListener('pointerup', onDocPointerUp);
+      document.removeEventListener('pointercancel', onDocPointerCancel);
+    };
+  }, []);
+
   // Keyboard: 1-9/0 toggle grab; shift+digit (or shifted symbol) mutes; Esc releases.
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -449,6 +607,12 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
       }
       if (e.key === 'Escape') {
         releaseAllGrabs();
+        // Also force-reset any stuck drag state.
+        if (Object.keys(dragRef.current).length > 0) {
+          dragRef.current = {};
+          setDraggingDots((prev) => (prev.size === 0 ? prev : new Set()));
+          setGhosts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+        }
         return;
       }
       if (e.key >= '0' && e.key <= '9') {
@@ -629,7 +793,7 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
         return (
           <div
             key={`ghost-${pid}`}
-            className="fsb-ghost"
+            className="fsb-ghost fsb-ghost-drag"
             style={{
               left: g.x - DOT_SIZE / 2,
               top: g.y - DOT_SIZE / 2,
@@ -659,6 +823,47 @@ export default function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnab
             />
           );
         })}
+
+      {(() => {
+        // Greedy stacking: first-selected keeps row 0; each subsequent label takes the
+        // lowest row where its X is at least MIN_SEP away from every label already there.
+        const MIN_SEP = 55;
+        const rowsPlaced = []; // rowsPlaced[r] = array of label X already placed at row r
+        const placements = [];
+        for (const idx of activeOrder) {
+          if (frequencies[idx] === undefined || dotXs[idx] === undefined) continue;
+          const x = dotXs[idx];
+          let row = 0;
+          while (true) {
+            if (!rowsPlaced[row]) rowsPlaced[row] = [];
+            const collides = rowsPlaced[row].some((ex) => Math.abs(ex - x) < MIN_SEP);
+            if (!collides) {
+              rowsPlaced[row].push(x);
+              placements.push({ idx, row, x });
+              break;
+            }
+            row++;
+          }
+        }
+        return placements.map(({ idx, row, x }) => {
+          const color = OSCILLATOR_COLORS[idx % OSCILLATOR_COLORS.length];
+          return (
+            <div
+              key={`active-freq-${idx}`}
+              className="fsb-active-freq"
+              style={{
+                left: x,
+                top: BAR_TOP_Y + BAR_LINE_HEIGHT + 6 + row * 16,
+                color,
+              }}
+            >
+              {formatActiveFreq(frequencies[idx])}
+            </div>
+          );
+        });
+      })()}
     </div>
   );
 }
+
+export default memo(FrequencySpectrumBar);

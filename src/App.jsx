@@ -54,6 +54,7 @@ function App() {
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
+  const [activeOscs, setActiveOscs] = useState(() => new Set());
   
   const initializedRef = useRef(false);
   
@@ -255,6 +256,10 @@ function App() {
   }, []);
 
 
+  const handleFineTuneToggle = useCallback(() => {
+    setFineTuneEnabled((v) => !v);
+  }, []);
+
   const handleShowHelp = useCallback(() => {
     setIsHelpOpen(true);
   }, []);
@@ -278,16 +283,18 @@ function App() {
           <FrequencySpectrumBar
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
+            onActiveChange={setActiveOscs}
           />
           <OscillatorControls
             oscillatorCount={oscillatorCount}
-            routingMap={routingMap}
             onShare={handleShare}
             onSettingsToggle={handleSettingsToggle}
             isSettingsOpen={isSettingsOpen}
             onShowHelp={handleShowHelp}
             fineTuneEnabled={fineTuneEnabled}
-            onFineTuneToggle={() => setFineTuneEnabled((v) => !v)}
+            onFineTuneToggle={handleFineTuneToggle}
+            onOscillatorCountChange={handleOscillatorCountChange}
+            activeOscs={activeOscs}
           />
           <SettingsPanel
             isOpen={isSettingsOpen}

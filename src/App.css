@@ -32,7 +32,7 @@ p {
 #wrapper {
   position: relative;
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -95,7 +95,7 @@ p {
   top: 0;
   left: 0;
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
   pointer-events: none;
 }
 
@@ -107,7 +107,7 @@ p {
 #start-wrapper {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   justify-content: center;
   align-items: center;
   background-color: rgba(0, 0, 0, 0.9);
@@ -203,10 +203,6 @@ kbd {
 
 #start-wrapper.hidden {
   display: none;
-}
-
-.active {
-  background-color: rgba(255, 255, 255, 0.2);
 }
 
 .osc-info {
@@ -567,17 +563,23 @@ kbd {
   gap: 12px;
 }
 
-/* Combined Oscillator Controls */
+/* Oscillator Controls — vertical stack of fader rows + count controls */
 .osc-controls-wrapper {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 12px 14px;
+  padding: 8px;
   background: rgba(0, 0, 0, 0.8);
   border-radius: 10px;
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  min-width: 260px;
+}
+
+.osc-fader-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 0;
 }
 
 
@@ -645,26 +647,127 @@ kbd {
   margin-top: 4px;
 }
 
-.osc-row {
+.osc-count-controls {
   display: flex;
+  flex-direction: row;
+  justify-content: space-between;
   align-items: center;
-  gap: 6px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  transition: border-color 0.2s ease, background-color 0.2s ease;
+  gap: 8px;
+  margin-top: 2px;
 }
 
-/* Row with active movement */
-.osc-row.moving {
-  border-color: var(--row-color);
-  background: rgba(255, 255, 255, 0.03);
+.osc-count-group {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+}
+
+.osc-all-octave-btn {
+  height: 26px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.osc-all-octave-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.osc-count-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.75);
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.osc-count-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+.osc-count-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.osc-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 48px;
+  padding: 4px 2px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+.osc-col-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  gap: 2px;
+  font-family: monospace;
+}
+
+.osc-octave-buttons {
+  display: flex;
+  flex-direction: column;
+  width: 26px;
+  gap: 1px;
+  align-items: stretch;
+}
+
+.osc-octave-btn {
+  width: 100%;
+  padding: 1px 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: monospace;
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.2;
+  letter-spacing: -0.3px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.osc-octave-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 /* Mute indicator square - lit when unmuted, compact */
 .osc-mute-indicator {
-  width: 36px;
-  height: 28px;
+  width: 26px;
+  height: 18px;
   border: 2px solid var(--dot-color);
   border-radius: 4px;
   display: flex;
@@ -689,106 +792,163 @@ kbd {
   background: var(--dot-color);
   opacity: 0.9;
   color: #000;
-  box-shadow: 0 0 10px var(--dot-color), 0 0 5px var(--dot-color);
 }
 
-/* Muted row styling */
-.osc-row.muted .freq-readout {
+
+.osc-col.muted .osc-col-readout {
   opacity: 0.4;
-}
-
-/* Frequency control (horizontal slider + readout) */
-.freq-control {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
-
-/* Frequency readout - compact display with note info */
-.freq-readout {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  font-family: monospace;
-  flex: 1;
 }
 
 .freq-hz {
-  font-size: 1rem;
-  font-weight: bold;
-  color: rgba(255, 255, 255, 0.9);
-  width: 68px;
-  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ccc;
+  letter-spacing: -0.5px;
 }
 
-/* Note and cents grouped together */
+/* Active freq text: white on desktop, osc color on mobile. */
+.osc-col.active .freq-hz {
+  color: #fff;
+}
+
+.freq-note-cents {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 11px;
+  letter-spacing: -0.4px;
+}
+
 .freq-note {
-  font-size: 0.95rem;
-  font-weight: bold;
-  width: 28px;
-  text-align: right;
+  font-weight: 600;
 }
 
 .freq-cents {
-  font-size: 0.6rem;
-  color: rgba(255, 255, 255, 0.5);
-  width: 34px;
-  text-align: left;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 /* Volume gauge - 5 vertical bars (display only) */
-.volume-gauge {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 3px 4px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+.volume-fader {
+  position: relative;
+  width: 22px;
+  height: 80px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: ns-resize;
+  touch-action: none;
   flex-shrink: 0;
 }
 
-.volume-gauge.muted {
+.volume-fader.muted {
   opacity: 0.4;
+  cursor: default;
 }
 
-.gauge-bar {
-  width: 16px;
-  height: 3px;
-  border: 1px solid;
-  border-radius: 1px;
-  transition: background-color 0.1s ease, opacity 0.1s ease;
-  opacity: 0.3;
+.volume-fader-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  /* background is snapped (not transitioned) — interpolating rgba-white →
+     osc-color blends through a bright midpoint that reads as a flash. */
 }
 
-.gauge-bar.filled {
-  opacity: 1;
+.volume-fader-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.55);
+  transform: translateY(1px);
+  pointer-events: none;
+  transition: box-shadow 0.2s;
+}
+
+/* Active — fader takes on the osc color. Glow is inside overflow:hidden
+   on .volume-fader, so it doesn't bleed out onto the column. */
+.osc-col.active .volume-fader-fill {
+  background: var(--row-color);
+  opacity: 0.35;
+}
+.osc-col.active .volume-fader-thumb {
+  background: var(--row-color);
+  box-shadow: 0 0 6px var(--row-color);
+}
+
+.volume-fader.muted .volume-fader-thumb {
+  box-shadow: none;
+  opacity: 0.5;
 }
 
 /* Mobile responsive styles */
-@media (max-width: 480px) {
-  /* Hide left panel on mobile to save space */
+@media (max-width: 768px) {
+  /* Mobile stack (top → bottom): spectrum bar, faders, control buttons.
+     Use dvh-safe positioning (fixed bottom values), so the mobile browser
+     URL bar appearing/disappearing keeps everything anchored at the true bottom. */
   .osc-controls-panel {
-    display: none;
+    display: block;
+    bottom: 72px;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 20px);
   }
 
   .osc-panel {
-    bottom: 10px;
-    right: 10px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
     gap: 8px;
   }
 
+  /* Active freq readouts under the bar are redundant on mobile —
+     the fader column's Hz label turns the osc color when active instead. */
+  .fsb-active-freq {
+    display: none;
+  }
+
+  /* On mobile, selected Hz text uses the osc color instead of white. */
+  .osc-col.active .freq-hz {
+    color: var(--row-color);
+  }
+
+
   .osc-controls-wrapper {
-    min-width: unset;
-    padding: 12px 14px;
-    gap: 8px;
+    padding: 8px 6px;
+    gap: 2px;
+    max-width: 100%;
   }
-  
-  .osc-row {
-    gap: 8px;
+
+  /* Single fader row on mobile — horizontal scroll instead of wrapping.
+     justify-content: center centers content when it fits; ignored once overflow kicks in. */
+  .osc-fader-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    justify-content: center;
+    scrollbar-width: thin;
   }
-  
+
+  .osc-fader-row::-webkit-scrollbar {
+    height: 4px;
+  }
+  .osc-fader-row::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 2px;
+  }
+
+  /* Keep bottom control row in one line, no wrap. */
+  .control-toggles {
+    flex-wrap: nowrap;
+  }
+
+
   .osc-toggle {
     width: 36px;
     height: 36px;
@@ -840,34 +1000,12 @@ kbd {
     font-size: 0.8em;
   }
   
-  .freq-readout {
-    gap: 4px;
+  .volume-fader {
+    width: 22px;
+    height: 70px;
   }
-  
-  .freq-hz {
-    font-size: 0.85rem;
-    width: 60px;
-  }
-  
-  .freq-note {
-    font-size: 0.75rem;
-    width: 24px;
-  }
-  
-  .freq-cents {
-    font-size: 0.6rem;
-    width: 32px;
-  }
-  
-  .volume-gauge {
-    padding: 3px 4px;
-  }
-  
-  .gauge-bar {
-    width: 16px;
-    height: 4px;
-  }
-  
+
+
   .control-toggles {
     gap: 6px;
   }
@@ -883,26 +1021,14 @@ kbd {
 }
 
 /* Tablet styles */
-@media (min-width: 481px) and (max-width: 768px) {
-  .osc-controls-panel {
-    bottom: 15px;
-    left: 15px;
-  }
-
-  .osc-panel {
-    bottom: 15px;
-    right: 15px;
-  }
-}
-
 /* Frequency Spectrum Bar - centered at bottom */
 .freq-spectrum-bar {
   position: fixed;
-  bottom: 20px;
+  bottom: 70px;
   left: 50%;
   transform: translateX(-50%);
   width: min(500px, calc(100vw - 40px));
-  z-index: 100;
+  z-index: 300;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
@@ -967,16 +1093,20 @@ kbd {
   overflow: visible;
 }
 
+/* Ghost at the cursor — fully colored for both drag AND grab, so the orb feels
+   like it's following your mouse/finger. The real dot on the bar (outlined)
+   stays at its freq position. */
 .fsb-ghost {
   position: absolute;
   border-radius: 50%;
-  border: 2px solid var(--dot-color);
-  background: transparent;
-  opacity: 0.5;
+  background: var(--dot-color);
+  border: 3px solid var(--dot-color);
+  opacity: 0.95;
   mix-blend-mode: plus-lighter;
-  box-shadow: 0 0 10px var(--dot-color);
+  box-shadow: 0 0 24px var(--dot-color), 0 0 10px var(--dot-color);
   box-sizing: border-box;
   pointer-events: none;
+  z-index: 30;
 }
 
 .fsb-dot {
@@ -999,18 +1129,20 @@ kbd {
   z-index: 20;
 }
 
+/* While dragging OR grabbed, the real dot on the bar becomes an outline — the
+   filled, color-saturated orb follows the cursor via the ghost. */
+.fsb-dot.dragging,
 .fsb-dot.grabbed {
-  opacity: 0.95;
-  box-shadow: 0 0 20px var(--dot-color), 0 0 8px var(--dot-color);
-  z-index: 20;
+  background: transparent;
+  border-width: 2px;
+  opacity: 0.5;
+  box-shadow: 0 0 6px var(--dot-color);
+  transform: none;
+  z-index: 10;
 }
 
 .fsb-dot.dragging {
-  opacity: 1;
-  transform: scale(1.2);
-  box-shadow: 0 0 30px var(--dot-color), 0 0 15px var(--dot-color);
   cursor: grabbing;
-  z-index: 30;
 }
 
 .fsb-dot.muted {
@@ -1035,13 +1167,27 @@ kbd {
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
 }
 
+.fsb-active-freq {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.4px;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.85), 0 0 2px rgba(0, 0, 0, 1);
+  z-index: 200;
+}
+
 .fsb-dot-label.muted {
   opacity: 0.35;
 }
 
 /* On mobile the osc-panel fills the bottom — place spectrum bar above it */
-@media (max-width: 480px) {
+@media (max-width: 768px) {
   .freq-spectrum-bar {
-    bottom: 260px;
+    bottom: 300px;
   }
 }

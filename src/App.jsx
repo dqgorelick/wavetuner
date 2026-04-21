@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import audioEngine from './audio/AudioEngine';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
+import FrequencySpectrumBar from './components/FrequencySpectrumBar';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import './App.css';
@@ -52,6 +53,7 @@ function App() {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
+  const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   
   const initializedRef = useRef(false);
   
@@ -273,13 +275,19 @@ function App() {
       
       {isStarted && (
         <>
-          <OscillatorControls 
-            oscillatorCount={oscillatorCount} 
+          <FrequencySpectrumBar
+            oscillatorCount={oscillatorCount}
+            fineTuneEnabled={fineTuneEnabled}
+          />
+          <OscillatorControls
+            oscillatorCount={oscillatorCount}
             routingMap={routingMap}
             onShare={handleShare}
             onSettingsToggle={handleSettingsToggle}
             isSettingsOpen={isSettingsOpen}
             onShowHelp={handleShowHelp}
+            fineTuneEnabled={fineTuneEnabled}
+            onFineTuneToggle={() => setFineTuneEnabled((v) => !v)}
           />
           <SettingsPanel
             isOpen={isSettingsOpen}

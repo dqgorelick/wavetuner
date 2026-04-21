@@ -252,37 +252,6 @@ kbd {
   background-color: #ffdc00;
 }
 
-/* Button container removed - buttons now in control-toggles */
-
-/* Share button is visible next to settings */
-
-/* XY Control Active State - cursor and notice */
-body.xy-control-active {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23000' stroke-width='3'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23000'/%3E%3C/g%3E%3Cg fill='none' stroke='%23fff' stroke-width='1.5'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23fff'/%3E%3C/g%3E%3C/svg%3E") 16 16, move !important;
-}
-
-body.xy-control-active * {
-  cursor: inherit !important;
-}
-
-.xy-active-notice {
-  position: fixed;
-  bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 10px 20px;
-  background: rgba(0, 0, 0, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 8px;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 500;
-  z-index: 9999;
-  pointer-events: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-}
-
 /* Settings Panel - Expands from bottom-right */
 .settings-panel {
   position: fixed;
@@ -611,291 +580,8 @@ body.xy-control-active * {
   min-width: 260px;
 }
 
-/* XY Indicator - always visible above controls */
-.xy-indicator-wrapper {
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
 
-
-.xy-indicator {
-  width: 100%;
-  height: 200px;
-  background: rgba(0, 0, 0, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.625);
-  border-radius: 10px;
-  position: relative;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-  touch-action: none; /* Prevent scroll when dragging on mobile */
-  box-sizing: border-box;
-}
-
-/* Crosshair lines */
-.xy-indicator::before,
-.xy-indicator::after {
-  content: '';
-  position: absolute;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.xy-indicator::before {
-  /* Vertical center line */
-  left: 50%;
-  top: 10%;
-  bottom: 10%;
-  width: 1px;
-  transform: translateX(-50%);
-}
-
-.xy-indicator::after {
-  /* Horizontal center line */
-  top: 50%;
-  left: 10%;
-  right: 10%;
-  height: 1px;
-  transform: translateY(-50%);
-}
-
-/* Axis labels */
-.xy-label {
-  position: absolute;
-  font-size: 0.6rem;
-  color: rgba(255, 255, 255, 0.3);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.xy-label.freq {
-  bottom: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.xy-label.vol {
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%) rotate(-90deg);
-  transform-origin: left center;
-}
-
-/* Custom crosshair cursor with directional arrows - black with white outline (Mac style) */
-.xy-indicator {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23000' stroke-width='3'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23000'/%3E%3C/g%3E%3Cg fill='none' stroke='%23fff' stroke-width='1.5'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23fff'/%3E%3C/g%3E%3C/svg%3E") 16 16, crosshair;
-}
-
-/* Oscillator dots - draggable, always visible */
-.xy-dot {
-  position: absolute;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  transition: transform 0.1s ease, box-shadow 0.15s ease;
-  border: 3px solid var(--dot-color);
-  background: var(--dot-color);
-  opacity: 0.7;
-  mix-blend-mode: plus-lighter;
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23000' stroke-width='3'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23000'/%3E%3C/g%3E%3Cg fill='none' stroke='%23fff' stroke-width='1.5'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23fff'/%3E%3C/g%3E%3C/svg%3E") 16 16, move;
-  z-index: 10;
-  box-shadow: 0 0 12px var(--dot-color);
-}
-
-.xy-dot:hover {
-  transform: translate(-50%, -50%) scale(1.15);
-  z-index: 20;
-  opacity: 0.85;
-}
-
-.xy-dot.active {
-  opacity: 0.9;
-  box-shadow: 0 0 20px var(--dot-color), 0 0 8px var(--dot-color);
-}
-
-.xy-dot.dragging {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23000' stroke-width='3'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23000'/%3E%3C/g%3E%3Cg fill='none' stroke='%23fff' stroke-width='1.5'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23fff'/%3E%3C/g%3E%3C/svg%3E") 16 16, move;
-  transform: translate(-50%, -50%) scale(1.2);
-  z-index: 30;
-  opacity: 1;
-  box-shadow: 0 0 30px var(--dot-color), 0 0 15px var(--dot-color);
-}
-
-/* Dragging state for the whole XY pad area */
-.xy-indicator.is-dragging {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23000' stroke-width='3'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23000'/%3E%3C/g%3E%3Cg fill='none' stroke='%23fff' stroke-width='1.5'%3E%3Cline x1='16' y1='4' x2='16' y2='12'/%3E%3Cline x1='16' y1='20' x2='16' y2='28'/%3E%3Cline x1='4' y1='16' x2='12' y2='16'/%3E%3Cline x1='20' y1='16' x2='28' y2='16'/%3E%3Cpath d='M16 4 L13 8 M16 4 L19 8'/%3E%3Cpath d='M16 28 L13 24 M16 28 L19 24'/%3E%3Cpath d='M4 16 L8 13 M4 16 L8 19'/%3E%3Cpath d='M28 16 L24 13 M28 16 L24 19'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23fff'/%3E%3C/g%3E%3C/svg%3E") 16 16, move;
-}
-
-.xy-dot.muted {
-  opacity: 0.25;
-  border-style: dashed;
-}
-
-/* Vertical frequency indicator line - shows when moving dots */
-.freq-indicator-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background-color: var(--line-color);
-  opacity: 0.8;
-  mix-blend-mode: plus-lighter;
-  pointer-events: none;
-  z-index: 5;
-  transform: translateX(-50%);
-}
-
-.freq-indicator-line.muted {
-  opacity: 0.3;
-}
-
-/* Zoomed frequency scale - precision tuning view */
-.freq-zoom-wrapper {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  margin-bottom: 8px;
-}
-
-.freq-zoom {
-  width: 100%;
-  height: 40px;
-  margin-top: 50px; /* Space for labels above */
-  background: rgba(0, 0, 0, 0.9);
-  border: 1px solid rgba(100, 200, 255, 0.4);
-  border-radius: 8px;
-  position: relative;
-  overflow: visible;
-  box-shadow: 0 0 12px rgba(100, 200, 255, 0.2);
-  box-sizing: border-box;
-}
-
-/* Grid lines every 1Hz */
-.zoom-grid-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.15);
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-
-.zoom-grid-line.major {
-  background: rgba(255, 255, 255, 0.35);
-}
-
-.zoom-freq-label {
-  position: absolute;
-  bottom: 3px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 0.6rem;
-  color: rgba(255, 255, 255, 0.35);
-  font-family: monospace;
-  white-space: nowrap;
-}
-
-/* Center indicator line */
-.zoom-center-line {
-  position: absolute;
-  left: 50%;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(100, 200, 255, 0.6);
-  transform: translateX(-50%);
-  pointer-events: none;
-  z-index: 10;
-}
-
-/* Dots in zoom view */
-.zoom-dot {
-  position: absolute;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--dot-color);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  z-index: 15;
-}
-
-.zoom-dot.primary {
-  width: 16px;
-  height: 16px;
-  box-shadow: 0 0 8px var(--dot-color);
-  z-index: 20;
-}
-
-.zoom-dot.muted {
-  opacity: 0.4;
-}
-
-/* Vertical lines in zoom view - with glow and blend */
-.zoom-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--line-color);
-  transform: translateX(-50%);
-  opacity: 0.8;
-  mix-blend-mode: plus-lighter;
-  box-shadow: 0 0 8px var(--line-color), 0 0 4px var(--line-color);
-  z-index: 15;
-}
-
-.zoom-line.primary {
-  width: 4px;
-  opacity: 1;
-  box-shadow: 0 0 12px var(--line-color), 0 0 6px var(--line-color);
-  z-index: 25;
-}
-
-.zoom-line.muted {
-  opacity: 0.3;
-  box-shadow: none;
-}
-
-/* Label positioned at top of magnification box - rotated 90° vertical */
-.zoom-label {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%) rotate(-90deg) translateX(50%);
-  transform-origin: center bottom;
-  background: rgba(0, 0, 0, 0.85);
-  padding: 2px 5px;
-  z-index: 20;
-  white-space: nowrap;
-}
-
-.zoom-label.primary {
-  background: rgba(0, 0, 0, 0.95);
-  z-index: 40;
-}
-
-/* Label text - no borders */
-.zoom-label-text {
-  font-size: 0.7rem;
-  font-family: monospace;
-  color: var(--line-color);
-  font-weight: bold;
-  display: block;
-  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
-}
-
-.zoom-label.primary .zoom-label-text {
-  font-size: 0.85rem;
-}
-
-.zoom-line.muted .zoom-label {
-  opacity: 0.5;
-}
-
-/* Control toggle buttons row - below XY pad */
+/* Control toggle buttons row */
 .control-toggles {
   display: flex;
   justify-content: center;
@@ -1006,48 +692,6 @@ body.xy-control-active * {
   box-shadow: 0 0 10px var(--dot-color), 0 0 5px var(--dot-color);
 }
 
-/* Movement toggle button with crosshair icon */
-.osc-movement-toggle {
-  width: 24px;
-  height: 24px;
-  padding: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.05);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.osc-movement-toggle:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-.osc-movement-toggle.active {
-  background: rgba(100, 200, 255, 0.15);
-  border-color: var(--dot-color);
-  box-shadow: 0 0 6px var(--dot-color);
-}
-
-.movement-icon {
-  width: 100%;
-  height: 100%;
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.5);
-  stroke-width: 1.5;
-  stroke-linecap: round;
-}
-
-.osc-movement-toggle.active .movement-icon {
-  stroke: var(--dot-color);
-}
-
-.osc-movement-toggle.active .movement-icon circle {
-  fill: var(--dot-color);
-}
-
 /* Muted row styling */
 .osc-row.muted .freq-readout {
   opacity: 0.4;
@@ -1122,33 +766,19 @@ body.xy-control-active * {
   opacity: 1;
 }
 
-/* Slider styles removed - using XY pad for control */
-
 /* Mobile responsive styles */
 @media (max-width: 480px) {
-  /* Hide left panel on mobile - controls are in XY pad */
+  /* Hide left panel on mobile to save space */
   .osc-controls-panel {
     display: none;
   }
-  
+
   .osc-panel {
-    position: fixed;
     bottom: 10px;
-    left: 10px;
     right: 10px;
     gap: 8px;
   }
-  
-  .xy-indicator-wrapper {
-    width: 100%;
-  }
-  
-  .xy-indicator {
-    width: 100%;
-    min-width: 200px;
-    height: 160px;
-  }
-  
+
   .osc-controls-wrapper {
     min-width: unset;
     padding: 12px 14px;
@@ -1250,46 +880,6 @@ body.xy-control-active * {
   .osc-controls-hint {
     font-size: 0.55rem;
   }
-  
-  .xy-dot {
-    width: 24px;
-    height: 24px;
-  }
-  
-  .xy-label {
-    font-size: 0.5rem;
-  }
-  
-  
-  .freq-zoom {
-    width: 100%;
-    height: 35px;
-    margin-top: 45px;
-  }
-  
-  .zoom-line {
-    width: 2px;
-  }
-  
-  .zoom-line.primary {
-    width: 3px;
-  }
-  
-  .zoom-label-text {
-    font-size: 0.6rem;
-  }
-  
-  .zoom-label.primary .zoom-label-text {
-    font-size: 0.75rem;
-  }
-  
-  .zoom-label {
-    padding: 1px 4px;
-  }
-  
-  .zoom-freq-label {
-    font-size: 0.6rem;
-  }
 }
 
 /* Tablet styles */
@@ -1298,19 +888,160 @@ body.xy-control-active * {
     bottom: 15px;
     left: 15px;
   }
-  
+
   .osc-panel {
     bottom: 15px;
     right: 15px;
   }
-  
-  .xy-indicator {
-    width: 260px;
-    height: 180px;
-  }
-  
-  .xy-dot {
-    width: 20px;
-    height: 20px;
+}
+
+/* Frequency Spectrum Bar - centered at bottom */
+.freq-spectrum-bar {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(500px, calc(100vw - 40px));
+  z-index: 100;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  overflow: visible;
+}
+
+.fsb-track {
+  position: absolute;
+  top: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+
+.fsb-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+}
+
+.fsb-tick-label {
+  position: absolute;
+  left: 3px;
+  bottom: 1px;
+  font-family: monospace;
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.35);
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
+.fsb-freq-marker {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  margin-left: -1px;
+  opacity: 0.8;
+  pointer-events: none;
+  transition: opacity 0.15s, width 0.15s;
+}
+
+.fsb-freq-marker.muted {
+  opacity: 0.25;
+}
+
+.fsb-freq-marker.active {
+  width: 3px;
+  margin-left: -1.5px;
+  opacity: 1;
+  box-shadow: 0 0 6px var(--marker-color, currentColor);
+}
+
+.fsb-lines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.fsb-ghost {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid var(--dot-color);
+  background: transparent;
+  opacity: 0.5;
+  mix-blend-mode: plus-lighter;
+  box-shadow: 0 0 10px var(--dot-color);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.fsb-dot {
+  position: absolute;
+  border-radius: 50%;
+  border: 3px solid var(--dot-color);
+  background: var(--dot-color);
+  opacity: 0.7;
+  mix-blend-mode: plus-lighter;
+  box-shadow: 0 0 12px var(--dot-color);
+  cursor: pointer;
+  touch-action: none;
+  box-sizing: border-box;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.fsb-dot:hover {
+  transform: scale(1.15);
+  opacity: 0.85;
+  z-index: 20;
+}
+
+.fsb-dot.grabbed {
+  opacity: 0.95;
+  box-shadow: 0 0 20px var(--dot-color), 0 0 8px var(--dot-color);
+  z-index: 20;
+}
+
+.fsb-dot.dragging {
+  opacity: 1;
+  transform: scale(1.2);
+  box-shadow: 0 0 30px var(--dot-color), 0 0 15px var(--dot-color);
+  cursor: grabbing;
+  z-index: 30;
+}
+
+.fsb-dot.muted {
+  opacity: 0.25;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.fsb-dot-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  width: 20px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0.85;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
+}
+
+.fsb-dot-label.muted {
+  opacity: 0.35;
+}
+
+/* On mobile the osc-panel fills the bottom — place spectrum bar above it */
+@media (max-width: 480px) {
+  .freq-spectrum-bar {
+    bottom: 260px;
   }
 }

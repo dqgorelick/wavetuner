@@ -25,6 +25,16 @@ class AudioEngine {
     this.oscillatorCount = 4;
     this.maxOscillators = 10;
     this.minOscillators = 2;
+
+    // User-controllable master volume multiplier (0..1). Multiplies on top of
+    // the count-based clipping scaler in _getScaledMasterGain so fade-in/out
+    // and oscillator add/remove transitions naturally honor it.
+    this.masterVolumeUser = 1.0;
+
+    // Stack of per-osc state captured when an oscillator is removed via
+    // setOscillatorCount. Re-adding pops the most-recently-removed state so
+    // the user's freq/volume/mute settings come back instead of being random.
+    this.removedSlots = [];
     
     // Generate random default frequencies
     // First two oscillators: 50-130 Hz, 1-4 Hz apart
@@ -153,10 +163,27 @@ class AudioEngine {
   }
   
   /**
-   * Get scaled master gain based on oscillator count to prevent clipping
+   * Get scaled master gain based on oscillator count to prevent clipping,
+   * multiplied by the user master volume.
    */
   _getScaledMasterGain() {
-    return 1.0 / Math.sqrt(this.oscillatorCount / 2);
+    return (1.0 / Math.sqrt(this.oscillatorCount / 2)) * this.masterVolumeUser;
+  }
+
+  setMasterVolume(value) {
+    const clamped = Math.max(0, Math.min(1, value));
+    this.masterVolumeUser = clamped;
+    if (this.isInitialized && !this.isPaused && this.masterGainNode) {
+      this.masterGainNode.gain.setTargetAtTime(
+        this._getScaledMasterGain(),
+        this.audioContext.currentTime,
+        0.05
+      );
+    }
+  }
+
+  getMasterVolume() {
+    return this.masterVolumeUser;
   }
   
   /**
@@ -248,23 +275,38 @@ class AudioEngine {
       if (newCount > oldCount) {
         // Add oscillators - update count first so arrays are in sync
         this.oscillatorCount = newCount;
-        
+
         for (let i = oldCount; i < newCount; i++) {
-          // Generate random pitch based on existing oscillators ±3 Hz
-          const randomIndex = Math.floor(Math.random() * oldCount);
-          const basePitch = this.frequencyValues[randomIndex] || 60;
-          const newPitch = basePitch + (Math.random() * 6 - 3);
-          
-          this.frequencyValues[i] = Math.max(0.1, newPitch);
-          this.volumeValues[i] = 0.5;
-          this.mutedStates[i] = false;
-          this.preMuteVolumes[i] = 0.5;
-          
+          // Restore the most-recently-removed slot if available; otherwise
+          // generate a random pitch near an existing oscillator.
+          const restored = this.removedSlots.pop();
+          if (restored) {
+            this.frequencyValues[i] = restored.freq;
+            this.volumeValues[i] = restored.vol;
+            this.mutedStates[i] = restored.muted;
+            this.preMuteVolumes[i] = restored.preMuteVol;
+          } else {
+            const randomIndex = Math.floor(Math.random() * oldCount);
+            const basePitch = this.frequencyValues[randomIndex] || 60;
+            const newPitch = basePitch + (Math.random() * 6 - 3);
+            this.frequencyValues[i] = Math.max(0.1, newPitch);
+            this.volumeValues[i] = 0.5;
+            this.mutedStates[i] = false;
+            this.preMuteVolumes[i] = 0.5;
+          }
+
           this._createSingleOscillator(i);
         }
       } else {
-        // Remove oscillators
+        // Remove oscillators - capture state first so re-adding restores it
         for (let i = oldCount - 1; i >= newCount; i--) {
+          this.removedSlots.push({
+            freq: this.frequencyValues[i],
+            vol: this.volumeValues[i],
+            muted: this.mutedStates[i],
+            preMuteVol: this.preMuteVolumes[i],
+          });
+
           try {
             if (this.oscillators[i]) {
               this.oscillators[i].stop();
@@ -276,7 +318,7 @@ class AudioEngine {
           } catch (e) {
             console.warn('Error stopping oscillator', i, e);
           }
-          
+
           this.oscillators.splice(i, 1);
           this.gainNodes.splice(i, 1);
           this.frequencyValues.splice(i, 1);
@@ -285,7 +327,7 @@ class AudioEngine {
           this.preMuteVolumes.splice(i, 1);
           delete this.routingMap[i];
         }
-        
+
         this.oscillatorCount = newCount;
       }
       

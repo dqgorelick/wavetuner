@@ -8,10 +8,10 @@ const OSCILLATOR_COLORS = [
 
 const FREQ_MIN = 0.1;
 const FREQ_MAX = 20000;
-const DOT_SIZE = 20;
-const BAR_LINE_HEIGHT = 16;
+const DOT_SIZE = 35;
+const BAR_LINE_HEIGHT = 30;
 const BAR_H_PADDING = 16;
-const DOT_GAP = 10;
+const DOT_GAP = 14;
 
 const PADDING_RATIO = 0.15;
 const MIN_LOG_SPAN = 0.5;
@@ -23,6 +23,14 @@ const SENSITIVITY_FINE = 0.1;
 // Grab mode: vertical cursor motion adjusts volume. Scalar is in range-units / screen-height.
 // Times getSensitivity() → normal ≈ 1 range/screen, fine ≈ 0.2 range/screen.
 const GRAB_VOL_SCALAR = 2;
+
+// Edge auto-pan: while dragging or grabbing, holding the pointer in the outer
+// EDGE_ZONE_FRAC of the bar continuously drifts frequency toward that edge.
+// Rate ramps linearly from 0 at the zone boundary to MAX_EDGE_PAN_RATE at the
+// true edge, in octaves/sec. dt is clamped so a backgrounded tab can't jump.
+const EDGE_ZONE_FRAC = 0.10;
+const MAX_EDGE_PAN_RATE = 2.0;
+const MAX_EDGE_PAN_DT = 0.1;
 
 const ABSOLUTE_LOG_MIN = Math.log2(FREQ_MIN);
 const ABSOLUTE_LOG_MAX = Math.log2(FREQ_MAX);
@@ -101,6 +109,20 @@ function formatActiveFreq(freq) {
 const DOT_CENTER_Y = DOT_SIZE / 2;
 const BAR_TOP_Y = DOT_SIZE + DOT_GAP;
 const TOTAL_HEIGHT = BAR_TOP_Y + BAR_LINE_HEIGHT + 4;
+
+function computeEdgeRate(clientX, containerLeft, barWidth) {
+  if (barWidth <= 0) return 0;
+  const frac = (clientX - containerLeft - BAR_H_PADDING) / barWidth;
+  if (frac < EDGE_ZONE_FRAC) {
+    const depth = Math.min(1, (EDGE_ZONE_FRAC - frac) / EDGE_ZONE_FRAC);
+    return -depth * MAX_EDGE_PAN_RATE;
+  }
+  if (frac > 1 - EDGE_ZONE_FRAC) {
+    const depth = Math.min(1, (frac - (1 - EDGE_ZONE_FRAC)) / EDGE_ZONE_FRAC);
+    return depth * MAX_EDGE_PAN_RATE;
+  }
+  return 0;
+}
 
 function freqToFraction(freq, logMin, logMax) {
   const clamped = Math.max(FREQ_MIN, Math.min(FREQ_MAX, freq));
@@ -209,6 +231,8 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
   const lastGrabXRef = useRef(null); // tracks cursor X between grab-driven frames
   const lastGrabYRef = useRef(null); // tracks cursor Y between grab-driven frames (volume)
   const mousePosRef = useRef({ x: 0, y: 0 }); // latest client-space cursor, always tracked
+  const grabEdgeRateRef = useRef(0); // octaves/sec drift for grabbed oscs, set from cursor X
+  const lastEdgePanTimeRef = useRef(null); // performance.now() of previous edge-pan tick
 
   useEffect(() => { barWidthRef.current = barWidth; }, [barWidth]);
   useEffect(() => { grabbedRef.current = grabbedOscs; }, [grabbedOscs]);
@@ -240,6 +264,42 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
     const tick = () => {
       if (audioEngine.initialized) {
         try {
+          // Edge auto-pan: drift toward the edge for any drag/grab pointer in the zone.
+          // Done before reading frequencies so this frame's render sees the new values.
+          let anyEdgePan = false;
+          for (const pid in dragRef.current) {
+            if (dragRef.current[pid].edgeRate) { anyEdgePan = true; break; }
+          }
+          if (grabbedRef.current.size > 0 && grabEdgeRateRef.current) anyEdgePan = true;
+
+          if (anyEdgePan) {
+            const now = performance.now();
+            const dt = lastEdgePanTimeRef.current === null
+              ? 0
+              : Math.min(MAX_EDGE_PAN_DT, (now - lastEdgePanTimeRef.current) / 1000);
+            lastEdgePanTimeRef.current = now;
+            if (dt > 0) {
+              const sens = (fineTuneRef.current || shiftRef.current) ? SENSITIVITY_FINE : SENSITIVITY_NORMAL;
+              for (const pid in dragRef.current) {
+                const d = dragRef.current[pid];
+                if (!d.edgeRate) continue;
+                const cur = audioEngine.getFrequency(d.index);
+                const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * 2 ** (d.edgeRate * dt * sens)));
+                if (next !== cur) audioEngine.setFrequency(d.index, next);
+              }
+              if (grabbedRef.current.size > 0 && grabEdgeRateRef.current) {
+                const factor = 2 ** (grabEdgeRateRef.current * dt * sens);
+                for (const idx of grabbedRef.current) {
+                  const cur = audioEngine.getFrequency(idx);
+                  const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * factor));
+                  if (next !== cur) audioEngine.setFrequency(idx, next);
+                }
+              }
+            }
+          } else {
+            lastEdgePanTimeRef.current = null;
+          }
+
           const f = audioEngine.getAllFrequencies();
           const m = audioEngine.getAllMutedStates();
           if (f.length >= oscillatorCount && m.length >= oscillatorCount) {
@@ -361,6 +421,9 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
           );
         }
       }
+      drag.edgeRate = computeEdgeRate(e.clientX, drag.containerLeft, barWidthRef.current);
+    } else {
+      drag.edgeRate = 0;
     }
     const x = e.clientX - drag.containerLeft;
     const y = e.clientY - drag.containerTop;
@@ -414,6 +477,7 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       setGrabCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      grabEdgeRateRef.current = computeEdgeRate(e.clientX, rect.left, barWidthRef.current);
 
       if (lastGrabXRef.current === null) {
         lastGrabXRef.current = e.clientX;
@@ -459,6 +523,7 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
       setGrabCursor(null);
       lastGrabXRef.current = null;
       lastGrabYRef.current = null;
+      grabEdgeRateRef.current = 0;
       return;
     }
     if (lastGrabXRef.current === null) {
@@ -648,13 +713,15 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
   );
 
   return (
-    <div
-      className="freq-spectrum-bar"
-      ref={containerRef}
-      style={{ height: TOTAL_HEIGHT }}
-    >
+    <>
+      <div className="orb-backdrop" />
       <div
-        className="fsb-track"
+        className="freq-spectrum-bar"
+        ref={containerRef}
+        style={{ height: TOTAL_HEIGHT }}
+      >
+        <div
+          className="fsb-track"
         style={{
           left: BAR_H_PADDING,
           top: BAR_TOP_Y,
@@ -862,7 +929,8 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
           );
         });
       })()}
-    </div>
+      </div>
+    </>
   );
 }
 

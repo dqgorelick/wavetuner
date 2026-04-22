@@ -37,7 +37,11 @@ function formatFreq(freq) {
   return freq.toFixed(2);                                    // "144.32", "44.00", "0.12"
 }
 
-const VolumeFader = memo(function VolumeFader({ oscIndex, volume, color, isMuted }) {
+// Horizontal drag on a per-osc fader fine-tunes that osc's frequency.
+// 1/500 ≈ one octave per 500px of drag, comparable in feel to shift-drag on the spectrum bar.
+const FADER_FREQ_OCTAVES_PER_PX = 1 / 500;
+
+const MasterVolumeFader = memo(function MasterVolumeFader({ volume }) {
   const ref = useRef(null);
   const draggingRef = useRef(false);
 
@@ -47,7 +51,7 @@ const VolumeFader = memo(function VolumeFader({ oscIndex, volume, color, isMuted
     const rect = el.getBoundingClientRect();
     const relY = clientY - rect.top;
     const v = 1 - Math.max(0, Math.min(1, relY / rect.height));
-    audioEngine.setVolume(oscIndex, v);
+    audioEngine.setMasterVolume(v);
   };
 
   const handlePointerDown = (e) => {
@@ -60,6 +64,110 @@ const VolumeFader = memo(function VolumeFader({ oscIndex, volume, color, isMuted
     if (!draggingRef.current) return;
     e.preventDefault();
     setFromY(e.clientY);
+  };
+  const handlePointerUp = (e) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+  };
+
+  const fillPct = volume * 100;
+
+  return (
+    <div
+      ref={ref}
+      className="volume-fader master-fader"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div className="volume-fader-fill" style={{ height: `${fillPct}%` }} />
+      <div className="volume-fader-thumb" style={{ bottom: `${fillPct}%` }} />
+    </div>
+  );
+});
+
+const MasterAllCol = memo(function MasterAllCol({ masterVolume, onAllOctave, isPaused, onPlayPause }) {
+  return (
+    <div className="osc-col osc-all-col">
+      <div className="osc-col-readout osc-all-col-label">
+        <span className="freq-hz">ALL</span>
+      </div>
+
+      <div className="osc-octave-buttons">
+        <button
+          className="osc-octave-btn"
+          onClick={() => onAllOctave(2)}
+          title="Double all frequencies (up an octave)"
+          aria-label="Double all frequencies"
+        >×2</button>
+        <button
+          className="osc-octave-btn"
+          onClick={() => onAllOctave(0.5)}
+          title="Halve all frequencies (down an octave)"
+          aria-label="Halve all frequencies"
+        >/2</button>
+      </div>
+
+      <MasterVolumeFader volume={masterVolume} />
+
+      <button
+        className="osc-all-playpause"
+        onClick={onPlayPause}
+        title={isPaused ? 'Play (Space)' : 'Pause (Space)'}
+        aria-label={isPaused ? 'Play' : 'Pause'}
+      >
+        {isPaused ? (
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+});
+
+const VolumeFader = memo(function VolumeFader({ oscIndex, volume, color, isMuted }) {
+  const ref = useRef(null);
+  const draggingRef = useRef(false);
+  const lastXRef = useRef(0);
+
+  const setFromY = (clientY) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const relY = clientY - rect.top;
+    const v = 1 - Math.max(0, Math.min(1, relY / rect.height));
+    audioEngine.setVolume(oscIndex, v);
+  };
+
+  const applyHorizontalFreqDelta = (deltaX) => {
+    if (deltaX === 0) return;
+    const cur = audioEngine.getFrequency(oscIndex);
+    const next = Math.max(0.1, Math.min(20000, cur * 2 ** (deltaX * FADER_FREQ_OCTAVES_PER_PX)));
+    audioEngine.setFrequency(oscIndex, next);
+  };
+
+  const handlePointerDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+    draggingRef.current = true;
+    lastXRef.current = e.clientX;
+    setFromY(e.clientY);
+  };
+  const handlePointerMove = (e) => {
+    if (!draggingRef.current) return;
+    e.preventDefault();
+    setFromY(e.clientY);
+    const deltaX = e.clientX - lastXRef.current;
+    lastXRef.current = e.clientX;
+    applyHorizontalFreqDelta(deltaX);
   };
   const handlePointerUp = (e) => {
     if (!draggingRef.current) return;
@@ -103,7 +211,7 @@ const OscillatorCol = memo(function OscillatorCol({ index, label, color, isMuted
       <div className="osc-col-readout">
         <span className="freq-hz">{formatFreq(freq)}</span>
         <span className="freq-note-cents">
-          <span className="freq-note" style={{ color }}>{noteInfo.note}{noteInfo.octave}</span>
+          <span className="freq-note">{noteInfo.note}{noteInfo.octave}</span>
           <span className="freq-cents">{centsStr}</span>
         </span>
       </div>
@@ -156,6 +264,7 @@ function OscillatorControls({
   const [mutedOscillators, setMutedOscillators] = useState(() => createInitialArray(false, oscillatorCount));
   const [frequencies, setFrequencies] = useState(() => createInitialArray(60, oscillatorCount));
   const [volumes, setVolumes] = useState(() => createInitialArray(50, oscillatorCount));
+  const [masterVolume, setMasterVolume] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
   const [isPaused, setIsPaused] = useState(false);
 
   useEffect(() => {
@@ -184,24 +293,9 @@ function OscillatorControls({
     }));
   }, [oscillatorCount]);
 
-  // Desktop wraps >6 oscs into two balanced rows; mobile stays single-row
-  // and lets CSS overflow-x handle the horizontal scroll.
-  const [isMobile, setIsMobile] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
-  );
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(max-width: 768px)');
-    const onChange = (e) => setIsMobile(e.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-
-  const rows = useMemo(() => {
-    if (isMobile || oscillators.length <= 6) return [oscillators];
-    const half = Math.ceil(oscillators.length / 2);
-    return [oscillators.slice(0, half), oscillators.slice(half)];
-  }, [oscillators, isMobile]);
+  // Single horizontally-scrolling row at all widths — mirrors the mobile layout
+  // on desktop too so the master ALL column lines up the same way everywhere.
+  const rows = useMemo(() => [oscillators], [oscillators]);
 
   useEffect(() => {
     let animationId;
@@ -224,6 +318,8 @@ function OscillatorControls({
             setVolumes((prev) => (arraysEqual(prev, nv) ? prev : nv));
             setMutedOscillators((prev) => (arraysEqual(prev, nm) ? prev : nm));
           }
+          const mv = audioEngine.getMasterVolume?.() ?? 1;
+          setMasterVolume((prev) => (prev === mv ? prev : mv));
         } catch {
           // ignore
         }
@@ -268,123 +364,91 @@ function OscillatorControls({
 
   return (
     <>
+      <div className="top-right-cluster">
+        <button
+          className={`control-toggle icon-button ${isSettingsOpen ? 'active' : ''}`}
+          onClick={onSettingsToggle}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+          </svg>
+        </button>
+        <button
+          className="control-toggle icon-button"
+          onClick={onShowHelp}
+          title="Help / Controls"
+          aria-label="Help"
+        >
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
+          </svg>
+        </button>
+        <button
+          className="control-toggle icon-button"
+          onClick={onShare}
+          title="Save/Share Formula"
+          aria-label="Save"
+        >
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
+          </svg>
+        </button>
+      </div>
+
       <div className="osc-controls-panel">
         <div className="osc-controls-wrapper">
           {rows.map((row, rowIdx) => (
-            <div key={rowIdx} className="osc-fader-row">
-              {row.map((osc) => (
-                <OscillatorCol
-                  key={osc.index}
-                  index={osc.index}
-                  label={osc.label}
-                  color={osc.color}
-                  isMuted={mutedOscillators[osc.index] || false}
-                  isActive={activeOscs?.has(osc.index) || false}
-                  onMuteToggle={handleMuteToggle}
-                  freq={frequencies[osc.index] ?? 60}
-                  volume={volumes[osc.index] ?? 50}
+            <div key={rowIdx} className="osc-fader-row-wrap">
+              {rowIdx === 0 && (
+                <MasterAllCol
+                  masterVolume={masterVolume}
+                  onAllOctave={shiftAllOctaves}
+                  isPaused={isPaused}
+                  onPlayPause={handlePlayPause}
                 />
-              ))}
+              )}
+              <div className="osc-fader-row">
+                {row.map((osc) => (
+                  <OscillatorCol
+                    key={osc.index}
+                    index={osc.index}
+                    label={osc.label}
+                    color={osc.color}
+                    isMuted={mutedOscillators[osc.index] || false}
+                    isActive={activeOscs?.has(osc.index) || false}
+                    onMuteToggle={handleMuteToggle}
+                    freq={frequencies[osc.index] ?? 60}
+                    volume={volumes[osc.index] ?? 50}
+                  />
+                ))}
+              </div>
             </div>
           ))}
-          <div className="osc-count-controls">
-            <div className="osc-count-group">
-              <button
-                className="osc-count-btn"
-                onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
-                disabled={oscillatorCount <= 2}
-                title="Remove oscillator"
-                aria-label="Remove oscillator"
-              >
-                −
-              </button>
-              <button
-                className="osc-count-btn"
-                onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
-                disabled={oscillatorCount >= 10}
-                title="Add oscillator"
-                aria-label="Add oscillator"
-              >
-                +
-              </button>
-            </div>
-            <div className="osc-count-group">
-              <button
-                className="osc-all-octave-btn"
-                onClick={() => shiftAllOctaves(0.5)}
-                title="Halve all frequencies (down an octave)"
-              >
-                ALL /2
-              </button>
-              <button
-                className="osc-all-octave-btn"
-                onClick={() => shiftAllOctaves(2)}
-                title="Double all frequencies (up an octave)"
-              >
-                ALL ×2
-              </button>
-            </div>
-          </div>
         </div>
       </div>
 
-      <div className="osc-panel">
-        <div className="control-toggles">
-          <button
-            className={`control-toggle icon-button ${isPaused ? '' : 'active'}`}
-            onClick={handlePlayPause}
-            title={isPaused ? 'Play (Space)' : 'Pause (Space)'}
-          >
-            {isPaused ? (
-              <svg viewBox="0 0 24 24" className="button-icon">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" className="button-icon">
-                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-              </svg>
-            )}
-          </button>
-
-          <button
-            className={`control-toggle ${fineTuneEnabled ? 'active' : ''}`}
-            onClick={onFineTuneToggle}
-            aria-pressed={fineTuneEnabled}
-            title="Fine tune mode for precise adjustments (hold Shift)"
-          >
-            Fine Tune
-          </button>
-
-          <button
-            className="control-toggle icon-button"
-            onClick={onShare}
-            title="Save/Share Formula"
-          >
-            <svg viewBox="0 0 24 24" className="button-icon">
-              <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
-            </svg>
-          </button>
-
-          <button
-            className={`control-toggle icon-button ${isSettingsOpen ? 'active' : ''}`}
-            onClick={onSettingsToggle}
-            title="Settings"
-          >
-            <svg viewBox="0 0 24 24" className="button-icon">
-              <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
-            </svg>
-          </button>
-
-          <button
-            className="control-toggle icon-button"
-            onClick={onShowHelp}
-            title="Help / Controls"
-          >
-            <svg viewBox="0 0 24 24" className="button-icon">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
-            </svg>
-          </button>
-        </div>
+      <div className="osc-count-bar">
+        <button
+          className="osc-count-btn"
+          onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+          disabled={oscillatorCount <= 2}
+          title="Remove oscillator"
+          aria-label="Remove oscillator"
+        >
+          −
+        </button>
+        <span className="osc-count-label">{oscillatorCount}</span>
+        <button
+          className="osc-count-btn"
+          onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+          disabled={oscillatorCount >= 10}
+          title="Add oscillator"
+          aria-label="Add oscillator"
+        >
+          +
+        </button>
       </div>
     </>
   );

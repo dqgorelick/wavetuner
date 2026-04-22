@@ -38,7 +38,7 @@ p {
 
 #scope {
   position: absolute;
-  top: 50%;
+  top: 30%;
   left: 50%;
   transform: translate(-50%, -50%);
 }
@@ -547,32 +547,77 @@ kbd {
 /* Oscillator Controls Panel - Bottom Left */
 .osc-controls-panel {
   position: fixed;
-  bottom: 20px;
-  left: 20px;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 40px);
   z-index: 100;
 }
 
-/* XY Panel - Contains XY indicator and controls - Bottom Right */
-.osc-panel {
+/* Top-right cluster: settings / help / save */
+.top-right-cluster {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  top: 16px;
+  right: 16px;
   z-index: 100;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-direction: row;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Oscillator Controls — vertical stack of fader rows + count controls */
+/* Top-left +/- count bar — mirrors the top-right cluster */
+.osc-count-bar {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 100;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.osc-count-label {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.8);
+  min-width: 18px;
+  text-align: center;
+}
+
+/* Oscillator Controls — vertical stack of fader rows + count controls.
+   No box: the dim gradient backdrop behind everything provides the contrast. */
 .osc-controls-wrapper {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px;
-  background: rgba(0, 0, 0, 0.8);
-  border-radius: 10px;
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+/* Wraps the master ALL column + the (potentially scrolling) per-osc row.
+   Pulled out of .osc-fader-row so per-osc cols can scroll horizontally
+   without sliding underneath the master column. */
+.osc-fader-row-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .osc-fader-row {
@@ -580,6 +625,73 @@ kbd {
   flex-direction: row;
   align-items: flex-end;
   gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  justify-content: flex-start;
+  scrollbar-width: thin;
+}
+
+.osc-fader-row::-webkit-scrollbar {
+  height: 4px;
+}
+.osc-fader-row::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+/* Left "ALL" column — mirrors .osc-col layout so the per-row slots
+   (readout / octave buttons / fader / mute) line up with the per-osc cols.
+   The mute slot is an invisible spacer of matching height. */
+.osc-all-col {
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  margin-right: 4px;
+  padding-right: 6px;
+  flex-shrink: 0;
+}
+
+.osc-all-col-label .freq-hz {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+/* Play/pause inside the ALL column — slot matches .osc-mute-indicator footprint */
+.osc-all-playpause {
+  width: 40px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.osc-all-playpause:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+.osc-all-playpause .button-icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Master volume fader — neutral white, no per-osc color. */
+.volume-fader.master-fader .volume-fader-fill {
+  background: rgba(255, 255, 255, 0.28);
+}
+.volume-fader.master-fader .volume-fader-thumb {
+  background: rgba(255, 255, 255, 0.75);
 }
 
 
@@ -623,9 +735,9 @@ kbd {
 
 /* Icon buttons (gear, save) */
 .control-toggle.icon-button {
-  padding: 6px;
-  width: 32px;
-  height: 32px;
+  padding: 4px;
+  width: 34px;
+  height: 34px;
 }
 
 .button-icon {
@@ -685,14 +797,14 @@ kbd {
 }
 
 .osc-count-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.75);
   font-family: monospace;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
@@ -718,8 +830,8 @@ kbd {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  width: 48px;
+  gap: 6px;
+  width: 72px;
   padding: 4px 2px;
   border-radius: 4px;
   border: 1px solid transparent;
@@ -729,52 +841,70 @@ kbd {
   display: flex;
   flex-direction: column;
   align-items: center;
-  line-height: 1;
-  gap: 2px;
+  line-height: 1.15;
+  gap: 6px;
+  padding: 4px 0;
   font-family: monospace;
 }
 
 .osc-octave-buttons {
   display: flex;
   flex-direction: column;
-  width: 26px;
-  gap: 1px;
+  width: 40px;
+  gap: 2px;
   align-items: stretch;
 }
 
 .osc-octave-btn {
+  box-sizing: border-box;
   width: 100%;
-  padding: 1px 0;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
-  color: rgba(255, 255, 255, 0.6);
+  padding: 4px 0;
+  /* iOS-style: tinted with the osc color at low opacity, no visible outline.
+     A transparent 1px border preserves height parity with the ALL column,
+     which keeps a visible border for visual separation. */
+  background: color-mix(in srgb, var(--row-color), transparent 88%);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--row-color), transparent 30%);
   font-family: monospace;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   line-height: 1.2;
   letter-spacing: -0.3px;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .osc-octave-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--row-color), transparent 75%);
+  color: var(--row-color);
+}
+
+/* ALL column: neutral white, no visible border (matches per-osc style).
+   Keeps a 1px transparent border so heights stay identical across columns. */
+.osc-all-col .osc-octave-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.osc-all-col .osc-octave-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
   color: #fff;
-  border-color: rgba(255, 255, 255, 0.3);
 }
 
 /* Mute indicator square - lit when unmuted, compact */
 .osc-mute-indicator {
-  width: 26px;
-  height: 18px;
+  box-sizing: border-box;
+  width: 40px;
+  height: 28px;
   border: 2px solid var(--dot-color);
-  border-radius: 4px;
+  border-radius: 6px;
   display: flex;
   justify-content: center;
   align-items: center;
   font-weight: bold;
-  font-size: 0.7rem;
+  font-size: 1rem;
   transition: all 0.2s ease;
   user-select: none;
   flex-shrink: 0;
@@ -800,7 +930,7 @@ kbd {
 }
 
 .freq-hz {
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
   color: #ccc;
   letter-spacing: -0.5px;
@@ -814,30 +944,37 @@ kbd {
 .freq-note-cents {
   display: inline-flex;
   gap: 1px;
-  font-size: 11px;
+  font-size: 14px;
   letter-spacing: -0.4px;
 }
 
 .freq-note {
   font-weight: 600;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .freq-cents {
   color: rgba(255, 255, 255, 0.55);
 }
 
-/* Volume gauge - 5 vertical bars (display only) */
+/* Volume gauge - vertical drag = volume, horizontal drag = fine-tune freq */
 .volume-fader {
   position: relative;
-  width: 22px;
+  box-sizing: border-box;
+  width: 40px;
   height: 80px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
-  cursor: ns-resize;
+  cursor: crosshair;
   touch-action: none;
   flex-shrink: 0;
+}
+
+/* Master fader has no per-osc freq, so only vertical drag matters. */
+.volume-fader.master-fader {
+  cursor: ns-resize;
 }
 
 .volume-fader.muted {
@@ -867,11 +1004,31 @@ kbd {
   transition: box-shadow 0.2s;
 }
 
-/* Active — fader takes on the osc color. Glow is inside overflow:hidden
-   on .volume-fader, so it doesn't bleed out onto the column. */
+/* Hover preview: half-strength osc color when the user hovers but isn't dragging.
+   Excluded on .active (so the active state wins) and on .muted (so muted faders
+   stay neutral). The :not(.master-fader) keeps this from dimming the master
+   (which has no --row-color and would otherwise render the fill invisible). */
+.osc-col:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-fill {
+  background: var(--row-color);
+  opacity: 0.5;
+}
+.osc-col:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-thumb {
+  background: var(--row-color);
+}
+
+/* Master fader hover: brighten the white fill instead of dimming. */
+.osc-all-col .volume-fader.master-fader:hover .volume-fader-fill {
+  background: rgba(255, 255, 255, 0.45);
+}
+.osc-all-col .volume-fader.master-fader:hover .volume-fader-thumb {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+/* Active (dragging or grabbed) — fader takes on full osc color. Glow stays
+   inside overflow:hidden on .volume-fader so it doesn't bleed onto the column. */
 .osc-col.active .volume-fader-fill {
   background: var(--row-color);
-  opacity: 0.35;
+  opacity: 1;
 }
 .osc-col.active .volume-fader-thumb {
   background: var(--row-color);
@@ -889,20 +1046,22 @@ kbd {
      Use dvh-safe positioning (fixed bottom values), so the mobile browser
      URL bar appearing/disappearing keeps everything anchored at the true bottom. */
   .osc-controls-panel {
-    display: block;
-    bottom: 72px;
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
+    bottom: max(8px, env(safe-area-inset-bottom));
     max-width: calc(100vw - 20px);
   }
 
-  .osc-panel {
-    bottom: max(16px, env(safe-area-inset-bottom));
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
+  .osc-count-bar {
+    top: max(16px, env(safe-area-inset-top));
+    left: 12px;
+    padding: 6px 10px;
     gap: 8px;
+  }
+
+  .top-right-cluster {
+    top: max(16px, env(safe-area-inset-top));
+    right: 12px;
+    padding: 6px;
+    gap: 6px;
   }
 
   /* Active freq readouts under the bar are redundant on mobile —
@@ -918,29 +1077,9 @@ kbd {
 
 
   .osc-controls-wrapper {
-    padding: 8px 6px;
+    padding: 0;
     gap: 2px;
     max-width: 100%;
-  }
-
-  /* Single fader row on mobile — horizontal scroll instead of wrapping.
-     justify-content: center centers content when it fits; ignored once overflow kicks in. */
-  .osc-fader-row {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: visible;
-    -webkit-overflow-scrolling: touch;
-    max-width: 100%;
-    justify-content: center;
-    scrollbar-width: thin;
-  }
-
-  .osc-fader-row::-webkit-scrollbar {
-    height: 4px;
-  }
-  .osc-fader-row::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 2px;
   }
 
   /* Keep bottom control row in one line, no wrap. */
@@ -1001,8 +1140,8 @@ kbd {
   }
   
   .volume-fader {
-    width: 22px;
-    height: 70px;
+    width: 40px;
+    height: 80px;
   }
 
 
@@ -1020,11 +1159,34 @@ kbd {
   }
 }
 
-/* Tablet styles */
-/* Frequency Spectrum Bar - centered at bottom */
+/* Backdrop tint behind orbs and the controls panel so everything stays legible
+   over the oscilloscope. Anchored to the viewport bottom; extends from 0 up to
+   50px above the spectrum bar's track top. The first 50px is a transparent →
+   50% black gradient (covers the orb area), then solid 50% black continues
+   downward behind the panel and any other bottom UI.
+   z-index 90 sits between the canvas (0) and the buttons/faders (100). */
+.orb-backdrop {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* spectrum bottom (248) + (TOTAL_HEIGHT 83 − BAR_TOP_Y 49) + 50 gradient = 332 */
+  height: calc(332px + env(safe-area-inset-bottom));
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(0, 0, 0, 0.5) 50px,
+    rgba(0, 0, 0, 0.5) 100%
+  );
+  pointer-events: none;
+  z-index: 90;
+}
+
+/* Frequency Spectrum Bar — centered above the controls panel at every width.
+   Sits just above the panel; safe-area inset shifts it up on iOS for notch/home-bar. */
 .freq-spectrum-bar {
   position: fixed;
-  bottom: 70px;
+  bottom: calc(248px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   width: min(500px, calc(100vw - 40px));
@@ -1053,11 +1215,13 @@ kbd {
 
 .fsb-tick-label {
   position: absolute;
-  left: 3px;
-  bottom: 1px;
+  left: 1px;
+  bottom: 2px;
+  transform: rotate(-90deg);
+  transform-origin: left bottom;
   font-family: monospace;
-  font-size: 8px;
-  color: rgba(255, 255, 255, 0.35);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
   white-space: nowrap;
   letter-spacing: 0;
 }
@@ -1129,14 +1293,12 @@ kbd {
   z-index: 20;
 }
 
-/* While dragging OR grabbed, the real dot on the bar becomes an outline — the
-   filled, color-saturated orb follows the cursor via the ghost. */
+/* While dragging OR grabbed, the real dot on the bar dims (similar to muted)
+   while the filled, color-saturated orb follows the cursor via the ghost. */
 .fsb-dot.dragging,
 .fsb-dot.grabbed {
-  background: transparent;
-  border-width: 2px;
-  opacity: 0.5;
-  box-shadow: 0 0 6px var(--dot-color);
+  opacity: 0.25;
+  box-shadow: none;
   transform: none;
   z-index: 10;
 }
@@ -1154,16 +1316,16 @@ kbd {
 .fsb-dot-label {
   position: absolute;
   transform: translate(-50%, -100%);
-  width: 20px;
+  width: 28px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.5px;
   text-align: center;
   white-space: nowrap;
   pointer-events: none;
-  opacity: 0.85;
+  opacity: 0.9;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
 }
 
@@ -1171,7 +1333,7 @@ kbd {
   position: absolute;
   transform: translateX(-50%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.4px;
@@ -1185,9 +1347,3 @@ kbd {
   opacity: 0.35;
 }
 
-/* On mobile the osc-panel fills the bottom — place spectrum bar above it */
-@media (max-width: 768px) {
-  .freq-spectrum-bar {
-    bottom: 300px;
-  }
-}

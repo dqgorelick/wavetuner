@@ -5,7 +5,8 @@ body {
   margin: 0;
   background-color: #000;
   transition: background-color 0.5s ease;
-  font-family: Arial, sans-serif;
+  /* Match the iOS app: system monospaced as the global default. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: #fff;
   overflow: hidden;
 }
@@ -30,17 +31,162 @@ p {
 }
 
 #wrapper {
+  /* Disable text selection across the app — dragging orbs / faders should
+     never accidentally highlight UI text (especially on mobile, where a
+     drag-from-anywhere can select everything). The start screen overrides
+     this below so the copyright/link text stays selectable. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   position: relative;
   width: 100vw;
   height: 100dvh;
   overflow: hidden;
 }
 
+/* Default (simple-mode): scope sits at ~40% from top so it visually centers
+   in the available area above the compact bottom strip + spectrum bar.
+   Animated `top` + `transform` so mode changes glide rather than snap. */
 #scope {
   position: absolute;
-  top: 30%;
+  top: 40%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(1);
+  transition: top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Expanded mode — taller controls panel pushes the spectrum up too; scale
+   the scope down a touch and lift it up so it doesn't get crowded. */
+.expanded-mode #scope {
+  top: 25%;
+  transform: translate(-50%, -50%) scale(0.65);
+}
+
+/* Simple UI mode uses the spectrum/backdrop default values (80 / 164). */
+
+/* Expanded UI mode — panel grows upward with the readout/octave/fader rows;
+   spectrum moves up to stay just above it. */
+.expanded-mode .freq-spectrum-bar {
+  bottom: calc(254px + env(safe-area-inset-bottom));
+}
+.expanded-mode .orb-backdrop {
+  /* expanded spectrum 254 + bar offset 34 + 50 gradient = 338 */
+  height: calc(338px + env(safe-area-inset-bottom));
+}
+
+/* Fullscreen UI mode — scope re-centers and goes back to full size. */
+.fullscreen-mode #scope {
+  top: 50%;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.fullscreen-mode .osc-controls-panel {
+  display: none;
+}
+
+.fullscreen-mode .freq-spectrum-bar {
+  bottom: calc(20px + env(safe-area-inset-bottom));
+}
+
+/* Orbs, labels, ghost orbs, and dot↔bar connecting lines are hidden in
+   fullscreen — only the bar track + markers + tick labels remain. */
+.fullscreen-mode .fsb-dot,
+.fullscreen-mode .fsb-dot-label,
+.fullscreen-mode .fsb-ghost,
+.fullscreen-mode .fsb-lines {
+  display: none;
+}
+
+/* Make freq markers stand out more without orbs above them. */
+.fullscreen-mode .fsb-freq-marker {
+  width: 3px;
+  margin-left: -1.5px;
+  opacity: 0.9;
+}
+.fullscreen-mode .fsb-freq-marker.active {
+  width: 5px;
+  margin-left: -2.5px;
+  opacity: 1;
+  box-shadow: 0 0 12px var(--marker-color, currentColor),
+              0 0 4px var(--marker-color, currentColor);
+}
+
+.fullscreen-mode .orb-backdrop {
+  /* spectrum bottom 20 + bar offset 34 + 50 gradient = 104 */
+  height: calc(104px + env(safe-area-inset-bottom));
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(0, 0, 0, 0.4) 50px,
+    rgba(0, 0, 0, 0.4) 100%
+  );
+}
+
+/* Fullscreen freq list — anchored at the bottom-left corner of the viewport.
+   Position: fixed + bottom-anchored means the list grows UPWARD as more
+   oscillators are added, keeping the bottom edge glued to the corner. */
+.fullscreen-freq-list {
+  position: fixed;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: 16px;
+  z-index: 350;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+.ff-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  color: var(--osc-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  text-align: left;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.ff-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ff-row.selected {
+  background: color-mix(in srgb, var(--osc-color), transparent 80%);
+}
+
+.ff-row.muted {
+  opacity: 0.4;
+}
+
+.ff-row .ff-freq {
+  font-weight: 700;
+  min-width: 56px;
+  text-align: right;
+}
+
+.ff-row .ff-sep {
+  opacity: 0.45;
+}
+
+.ff-row .ff-note {
+  font-weight: 600;
+}
+
+.ff-row .ff-cents {
+  margin-left: 4px;
+  opacity: 0.6;
+  font-weight: 500;
 }
 
 #start-button {
@@ -75,6 +221,9 @@ p {
   font-size: 0.75rem;
   color: rgba(255, 255, 255, 0.4);
   margin-top: 0.5rem;
+  max-width: 450px;
+  text-align: center;
+  line-height: 1.4;
 }
 
 .created-by a {
@@ -85,6 +234,27 @@ p {
 }
 
 .created-by a:hover {
+  color: #fff;
+  border-bottom-color: #fff;
+}
+
+.dev-note {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.35);
+  margin-top: 0.4rem;
+  max-width: 360px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.dev-note a {
+  color: rgba(255, 255, 255, 0.55);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  transition: all 0.2s ease;
+}
+
+.dev-note a:hover {
   color: #fff;
   border-bottom-color: #fff;
 }
@@ -105,6 +275,11 @@ p {
 }
 
 #start-wrapper {
+  /* Re-enable text selection inside the start screen — the wrapper above
+     blocks it for the whole app. */
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
   display: flex;
   flex-direction: column;
   height: 100dvh;
@@ -187,6 +362,14 @@ p {
 .controls-section p {
   margin: 0.25rem 0;
   font-size: 0.8rem;
+}
+
+/* Centered tagline shown above the keyboard shortcuts. */
+.start-tagline {
+  text-align: center;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.7);
+  margin: 0.5rem 0 1rem;
 }
 
 kbd {
@@ -554,102 +737,262 @@ kbd {
   z-index: 100;
 }
 
-/* Top-right cluster: settings / help / save */
-.top-right-cluster {
+/* Fullscreen toggle — always-visible top-right corner button.
+   Toggles the fullscreen UI mode (also bound to F key). */
+.fullscreen-toggle,
+.help-toggle {
   position: fixed;
   top: 16px;
-  right: 16px;
-  z-index: 100;
+  z-index: 200;
   display: flex;
-  flex-direction: row;
-  gap: 6px;
-  background: rgba(0, 0, 0, 0.6);
-  padding: 6px;
-  border-radius: 8px;
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-/* Top-left +/- count bar — mirrors the top-right cluster */
-.osc-count-bar {
-  position: fixed;
-  top: 16px;
-  left: 16px;
-  z-index: 100;
-  display: flex;
-  flex-direction: row;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  background: rgba(0, 0, 0, 0.6);
-  border-radius: 8px;
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.osc-count-label {
-  font-family: monospace;
-  font-size: 14px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.8);
-  min-width: 18px;
-  text-align: center;
-}
-
-/* Oscillator Controls — vertical stack of fader rows + count controls.
-   No box: the dim gradient backdrop behind everything provides the contrast. */
-.osc-controls-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 0;
-  background: transparent;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 4px;
+  border-radius: 6px;
   border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
 
-/* Wraps the master ALL column + the (potentially scrolling) per-osc row.
-   Pulled out of .osc-fader-row so per-osc cols can scroll horizontally
-   without sliding underneath the master column. */
-.osc-fader-row-wrap {
+.fullscreen-toggle { right: 16px; }
+.help-toggle { left: 16px; }
+
+.fullscreen-toggle:hover,
+.help-toggle:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+/* Compact strip — shown in 'simple' uiMode. Single-row, full-screen-width
+   controls: play/pause + per-osc mute toggles + expand chevron. Scrolls
+   horizontally if too many oscillators to fit on a narrow viewport. */
+.compact-strip {
   display: flex;
   flex-direction: row;
-  align-items: flex-end;
-  gap: 0;
-  width: 100%;
+  align-items: stretch;
+  gap: 4px;
+  height: 50px;
   max-width: 100%;
-  min-width: 0;
-}
-
-.osc-fader-row {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 0;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: visible;
+  flex-wrap: nowrap;
   -webkit-overflow-scrolling: touch;
-  justify-content: flex-start;
   scrollbar-width: thin;
 }
 
-.osc-fader-row::-webkit-scrollbar {
+.compact-strip::-webkit-scrollbar {
   height: 4px;
 }
-.osc-fader-row::-webkit-scrollbar-thumb {
+.compact-strip::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.2);
   border-radius: 2px;
 }
 
+.compact-cell {
+  box-sizing: border-box;
+  width: 50px;
+  height: 50px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: monospace;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.compact-cell:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.compact-play .button-icon {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
+}
+
+/* Per-osc mute cells — colored fill when unmuted, dim outline when muted. */
+.compact-mute {
+  border-color: var(--cell-color);
+  background: var(--cell-color);
+  color: #000;
+}
+
+.compact-mute.muted {
+  background: transparent;
+  color: var(--cell-color);
+  opacity: 0.55;
+}
+
+.compact-expand {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.compact-expand .button-icon {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
+}
+
+/* Row-based grid layout shared between simple and expanded modes.
+   --cols is the per-osc column count (set inline). Each row uses the same
+   column template so ALL / per-osc / MORE cells line up across rows.
+   Bottom row is always rendered; upper rows live inside an animated
+   collapsible (grid-template-rows: 0fr ↔ 1fr CSS trick). */
+.osc-grid-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.osc-grid-row {
+  display: grid;
+  /* ALL fixed | per-osc cells (one per --cols) | MORE fixed */
+  grid-template-columns: 50px repeat(var(--cols), 50px) 50px;
+  gap: 6px;
+  align-items: end;
+  justify-content: center;
+  transition: gap 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Expanded mode spreads cells out a touch — adds breathing room since
+   there's more vertical content competing. */
+.expanded-mode .osc-grid-row {
+  gap: 12px;
+}
+
+.grid-cell {
+  box-sizing: border-box;
+  width: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.grid-empty {
+  height: 100%;
+}
+
+/* Readout cell (freq + note) — smaller footprint than before now that the
+   bottom mute row is separate. */
+.readout-cell {
+  padding: 4px 0;
+  gap: 4px;
+  line-height: 1.15;
+  font-family: monospace;
+  justify-content: flex-end;
+}
+.readout-cell.muted { opacity: 0.4; }
+
+/* Octave cell stacks the two buttons vertically. */
+.octave-cell {
+  flex-direction: column;
+  gap: 2px;
+}
+.octave-cell .osc-octave-btn {
+  width: 100%;
+}
+
+/* Fader cell: the VolumeFader inside is a centered child. */
+.fader-cell {
+  justify-content: flex-end;
+  padding: 0;
+}
+
+/* Collapsible wrapper — transitions grid-template-rows from 0fr (collapsed)
+   to 1fr (expanded). The inner div must have min-height:0 + overflow hidden
+   for the trick to clip smoothly. */
+.expanded-collapsible {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.expanded-collapsible.open {
+  grid-template-rows: 1fr;
+}
+.expanded-inner {
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Bottom row: play + mutes + chevron — always visible and anchored. */
+.bottom-row {
+  align-items: stretch;
+}
+
+.bottom-cell {
+  box-sizing: border-box;
+  width: 50px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, transform 0.25s;
+}
+
+.bottom-cell:hover { background: rgba(255, 255, 255, 0.2); }
+.bottom-cell .button-icon { width: 22px; height: 22px; fill: currentColor; }
+
+/* Per-osc mute cell: filled with osc color when unmuted, dim transparent
+   tint of the same color when muted (matches the ×2 / /2 button style). */
+.bottom-mute {
+  background: var(--cell-color);
+  color: #000;
+}
+.bottom-mute.muted {
+  background: color-mix(in srgb, var(--cell-color), transparent 88%);
+  color: color-mix(in srgb, var(--cell-color), transparent 30%);
+  opacity: 1;
+}
+
+/* Mute cell hovers — preserve the osc color identity instead of falling back
+   to the neutral white-ish .bottom-cell:hover (which made unmuted cells look
+   gray). Unmuted: brighten by mixing in white; muted: lift the dim tint. */
+.bottom-mute:not(.muted):hover {
+  background: color-mix(in srgb, var(--cell-color), white 15%);
+}
+.bottom-mute.muted:hover {
+  background: color-mix(in srgb, var(--cell-color), transparent 75%);
+}
+
+
+/* Chevron icon rotates 180° when the panel is expanded (collapse affordance). */
+.double-chevron {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.double-chevron.flipped {
+  transform: rotate(180deg);
+}
+
 /* Left "ALL" column — mirrors .osc-col layout so the per-row slots
-   (readout / octave buttons / fader / mute) line up with the per-osc cols.
-   The mute slot is an invisible spacer of matching height. */
+   (readout / octave buttons / fader / mute) line up with the per-osc cols. */
 .osc-all-col {
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  margin-right: 4px;
-  padding-right: 6px;
   flex-shrink: 0;
 }
 
@@ -657,6 +1000,104 @@ kbd {
   color: rgba(255, 255, 255, 0.55);
   font-size: 10px;
   letter-spacing: 0.5px;
+}
+
+/* MORE column — symmetric mirror of ALL on the right edge of the panel.
+   Holds osc count ±, settings, save. */
+.osc-more-col {
+  flex-shrink: 0;
+}
+
+.osc-more-col-label .freq-hz {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+/* MORE column buttons share styling with ALL's neutral white treatment. */
+.osc-more-btn {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 4px 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 0.15s, color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.osc-more-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.osc-more-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.osc-more-btn.active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.osc-more-btn.icon-btn .button-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+/* Settings / save — vertical stack matching the per-osc fader's slot height
+   (80px) and the bottom-row cell width (50px). */
+.osc-more-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 50px;
+  height: 80px;
+}
+
+.osc-more-stack .osc-more-btn {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+}
+
+/* Collapse chevron — matches the mute-indicator slot height (28px). */
+.osc-more-chevron {
+  box-sizing: border-box;
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.osc-more-chevron:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.osc-more-chevron .button-icon {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 /* Play/pause inside the ALL column — slot matches .osc-mute-indicator footprint */
@@ -936,6 +1377,18 @@ kbd {
   letter-spacing: -0.5px;
 }
 
+/* Per-osc readout colors the freq + note + cents with the track color so
+   each column reads as part of its oscillator. */
+.readout-cell .freq-hz {
+  color: var(--row-color, #ccc);
+}
+.readout-cell .freq-note {
+  color: var(--row-color, rgba(255, 255, 255, 0.55));
+}
+.readout-cell .freq-cents {
+  color: color-mix(in srgb, var(--row-color, white), transparent 35%);
+}
+
 /* Active freq text: white on desktop, osc color on mobile. */
 .osc-col.active .freq-hz {
   color: #fff;
@@ -957,11 +1410,13 @@ kbd {
   color: rgba(255, 255, 255, 0.55);
 }
 
-/* Volume gauge - vertical drag = volume, horizontal drag = fine-tune freq */
+/* Volume gauge - vertical drag = volume, horizontal drag = fine-tune freq.
+   Width matches the bottom-row mute cells (50px) so faders line up with the
+   colored buttons directly below them. */
 .volume-fader {
   position: relative;
   box-sizing: border-box;
-  width: 40px;
+  width: 50px;
   height: 80px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1008,11 +1463,11 @@ kbd {
    Excluded on .active (so the active state wins) and on .muted (so muted faders
    stay neutral). The :not(.master-fader) keeps this from dimming the master
    (which has no --row-color and would otherwise render the fill invisible). */
-.osc-col:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-fill {
+.fader-cell:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-fill {
   background: var(--row-color);
   opacity: 0.5;
 }
-.osc-col:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-thumb {
+.fader-cell:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-thumb {
   background: var(--row-color);
 }
 
@@ -1026,11 +1481,11 @@ kbd {
 
 /* Active (dragging or grabbed) — fader takes on full osc color. Glow stays
    inside overflow:hidden on .volume-fader so it doesn't bleed onto the column. */
-.osc-col.active .volume-fader-fill {
+.fader-cell.active .volume-fader-fill {
   background: var(--row-color);
   opacity: 1;
 }
-.osc-col.active .volume-fader-thumb {
+.fader-cell.active .volume-fader-thumb {
   background: var(--row-color);
   box-shadow: 0 0 6px var(--row-color);
 }
@@ -1047,7 +1502,12 @@ kbd {
      URL bar appearing/disappearing keeps everything anchored at the true bottom. */
   .osc-controls-panel {
     bottom: max(8px, env(safe-area-inset-bottom));
-    max-width: calc(100vw - 20px);
+    left: 0;
+    right: 0;
+    transform: none;
+    max-width: 100%;
+    padding: 0 8px;
+    box-sizing: border-box;
   }
 
   .osc-count-bar {
@@ -1113,6 +1573,17 @@ kbd {
     font-size: 0.7rem;
     margin: 0.5rem 0 0.3rem;
   }
+
+  /* Mobile has no physical keyboard and no fullscreen toggle, so the
+     keyboard-shortcuts block is irrelevant — hide it. */
+  .start-shortcuts {
+    display: none;
+  }
+
+  /* Fullscreen mode is desktop-only — hide the toggle button on mobile. */
+  .fullscreen-toggle {
+    display: none;
+  }
   
   .controls-section p {
     font-size: 0.75rem;
@@ -1120,7 +1591,7 @@ kbd {
   }
   
   #start-image {
-    max-width: 100%;
+    max-width: 400px;
     margin: 0.25rem 0;
   }
   
@@ -1140,7 +1611,7 @@ kbd {
   }
   
   .volume-fader {
-    width: 40px;
+    width: 50px;
     height: 80px;
   }
 
@@ -1170,8 +1641,8 @@ kbd {
   left: 0;
   right: 0;
   bottom: 0;
-  /* spectrum bottom (248) + (TOTAL_HEIGHT 83 − BAR_TOP_Y 49) + 50 gradient = 332 */
-  height: calc(332px + env(safe-area-inset-bottom));
+  /* simple-mode default: spectrum bottom 60 + bar offset 34 + 50 gradient = 144 */
+  height: calc(144px + env(safe-area-inset-bottom));
   background: linear-gradient(
     to bottom,
     transparent 0,
@@ -1180,13 +1651,15 @@ kbd {
   );
   pointer-events: none;
   z-index: 90;
+  transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Frequency Spectrum Bar — centered above the controls panel at every width.
-   Sits just above the panel; safe-area inset shifts it up on iOS for notch/home-bar. */
+   Sits just above the panel; safe-area inset shifts it up on iOS for notch/home-bar.
+   The `bottom` transitions smoothly when the panel expands/collapses below. */
 .freq-spectrum-bar {
   position: fixed;
-  bottom: calc(248px + env(safe-area-inset-bottom));
+  bottom: calc(60px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   width: min(500px, calc(100vw - 40px));
@@ -1195,6 +1668,7 @@ kbd {
   -webkit-user-select: none;
   touch-action: none;
   overflow: visible;
+  transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .fsb-track {
@@ -1202,6 +1676,22 @@ kbd {
   top: 0;
   background: rgba(255, 255, 255, 0.08);
   border-radius: 2px;
+  /* Soft fade at left/right ends so ticks dissolve into the backdrop
+     instead of clipping abruptly at the bar's edges. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 30px,
+    black calc(100% - 30px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 30px,
+    black calc(100% - 30px),
+    transparent 100%
+  );
 }
 
 .fsb-tick {
@@ -1307,10 +1797,13 @@ kbd {
   cursor: grabbing;
 }
 
+/* Muted oscillators: hide both the orb and its number label entirely.
+   The colored vertical marker on the bar still shows the freq position. */
 .fsb-dot.muted {
-  opacity: 0.25;
-  border-style: dashed;
-  box-shadow: none;
+  display: none;
+}
+.fsb-dot-label.muted {
+  display: none;
 }
 
 .fsb-dot-label {
@@ -1345,5 +1838,16 @@ kbd {
 
 .fsb-dot-label.muted {
   opacity: 0.35;
+}
+
+/* Active drag: show frequency value instead of oscillator number.
+   Wider + bolder so the readout reads cleanly above the orb. */
+.fsb-dot-label.active-freq {
+  width: auto;
+  font-size: 13px;
+  font-weight: 800;
+  opacity: 1;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
+  letter-spacing: -0.3px;
 }
 

@@ -3,6 +3,7 @@ import audioEngine from './audio/AudioEngine';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
+import FullscreenFreqList from './components/FullscreenFreqList';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import './App.css';
@@ -55,6 +56,24 @@ function App() {
   const [routingMap, setRoutingMap] = useState({});
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   const [activeOscs, setActiveOscs] = useState(() => new Set());
+  // Set of oscillator indices "selected" via the fullscreen freq list — these
+  // make the spectrum marker glow stronger but don't otherwise change audio.
+  const [selectedOscs, setSelectedOscs] = useState(() => new Set());
+  // 'simple' (default compact strip) | 'expanded' (full panel) | 'fullscreen' (only scope+spectrum)
+  const [uiMode, setUiMode] = useState('simple');
+
+  // Mobile caps the oscillator count at 4 (vs 10 on desktop). The matchMedia
+  // listener triggers if the viewport crosses the breakpoint at runtime.
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 768px)');
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const maxOscillators = isMobile ? 4 : 10;
   
   const initializedRef = useRef(false);
   
@@ -213,12 +232,22 @@ function App() {
   }, []);
 
   const handleOscillatorCountChange = useCallback((newCount) => {
-    const clampedCount = Math.max(2, Math.min(10, newCount));
+    const clampedCount = Math.max(2, Math.min(maxOscillators, newCount));
     setOscillatorCount(clampedCount);
     audioEngine.setOscillatorCount(clampedCount);
     // Sync routing map after count change (new oscillators have default routing)
     setRoutingMap(audioEngine.getRoutingMap());
-  }, []);
+  }, [maxOscillators]);
+
+  // When the viewport drops to mobile width and we're over the mobile cap,
+  // trim the highest-index oscillators down to 4. AudioEngine.setOscillatorCount
+  // already preserves removed-osc state on its stack, so resizing back to
+  // desktop and re-adding restores their freq/volume.
+  useEffect(() => {
+    if (isMobile && oscillatorCount > maxOscillators) {
+      handleOscillatorCountChange(maxOscillators);
+    }
+  }, [isMobile, oscillatorCount, maxOscillators, handleOscillatorCountChange]);
 
   const handleRoutingChange = useCallback(async (action, oscIndex, outputChannel) => {
     // Fade out before routing change to prevent pops
@@ -268,25 +297,65 @@ function App() {
     setIsHelpOpen(false);
   }, []);
 
+  // Remember the last non-fullscreen mode so toggling fullscreen returns
+  // the user to whichever panel state they came from (simple or expanded).
+  const previousModeRef = useRef('simple');
+  const toggleFullscreen = useCallback(() => {
+    setUiMode((prev) => {
+      if (prev === 'fullscreen') return previousModeRef.current;
+      previousModeRef.current = prev;
+      return 'fullscreen';
+    });
+  }, []);
+
+  // F toggles fullscreen at any time. Disabled on mobile widths since the
+  // mode is meant for desktop and the toggle button is hidden there too.
+  // Also avoid intercepting if focus is in an editable element.
+  useEffect(() => {
+    if (!isStarted) return;
+    const onKey = (e) => {
+      if (e.key !== 'f' && e.key !== 'F') return;
+      if (window.matchMedia('(max-width: 768px)').matches) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      toggleFullscreen();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isStarted, toggleFullscreen]);
+
   return (
-    <div id="wrapper" className={isPaused ? 'paused' : ''}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode`.trim()}>
       {(!isStarted || isHelpOpen) && (
-        <StartScreen 
-          onStart={isStarted ? handleCloseHelp : handleStart} 
+        <StartScreen
+          onStart={isStarted ? handleCloseHelp : handleStart}
         />
       )}
-      
+
       <Oscilloscope />
-      
+
       {isStarted && (
         <>
           <FrequencySpectrumBar
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
             onActiveChange={setActiveOscs}
+            extraActive={selectedOscs}
           />
+          {uiMode === 'fullscreen' && (
+            <FullscreenFreqList
+              oscillatorCount={oscillatorCount}
+              selectedOscs={selectedOscs}
+              onToggleSelect={(idx) => setSelectedOscs((prev) => {
+                const next = new Set(prev);
+                if (next.has(idx)) next.delete(idx); else next.add(idx);
+                return next;
+              })}
+            />
+          )}
           <OscillatorControls
             oscillatorCount={oscillatorCount}
+            maxOscillators={maxOscillators}
             onShare={handleShare}
             onSettingsToggle={handleSettingsToggle}
             isSettingsOpen={isSettingsOpen}
@@ -295,7 +364,35 @@ function App() {
             onFineTuneToggle={handleFineTuneToggle}
             onOscillatorCountChange={handleOscillatorCountChange}
             activeOscs={activeOscs}
+            uiMode={uiMode}
+            onModeChange={setUiMode}
           />
+          <button
+            className="help-toggle"
+            onClick={handleShowHelp}
+            title="Help / Controls"
+            aria-label="Help"
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
+            </svg>
+          </button>
+          <button
+            className="fullscreen-toggle"
+            onClick={toggleFullscreen}
+            title={uiMode === 'fullscreen' ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+            aria-label={uiMode === 'fullscreen' ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              {uiMode === 'fullscreen' ? (
+                /* collapse: arrows pointing inward */
+                <path d="M9 9H5v2h6V5H9v4zm-4 6h4v4h2v-6H5v2zm10 4h2v-4h4v-2h-6v6zm2-10V5h-2v6h6V9h-4z" />
+              ) : (
+                /* expand: arrows pointing outward */
+                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+              )}
+            </svg>
+          </button>
           <SettingsPanel
             isOpen={isSettingsOpen}
             onClose={handleSettingsToggle}

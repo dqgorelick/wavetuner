@@ -38,8 +38,9 @@ function formatFreq(freq) {
 }
 
 // Horizontal drag on a per-osc fader fine-tunes that osc's frequency.
-// 1/500 ≈ one octave per 500px of drag, comparable in feel to shift-drag on the spectrum bar.
-const FADER_FREQ_OCTAVES_PER_PX = 1 / 500;
+// 1/2500 ≈ one octave per 2500px of drag — matches the shift-drag (fine-tune)
+// sensitivity on the spectrum bar so the fader can be used for precise nudges.
+const FADER_FREQ_OCTAVES_PER_PX = 1 / 2500;
 
 const MasterVolumeFader = memo(function MasterVolumeFader({ volume }) {
   const ref = useRef(null);
@@ -83,7 +84,89 @@ const MasterVolumeFader = memo(function MasterVolumeFader({ volume }) {
       onPointerCancel={handlePointerUp}
     >
       <div className="volume-fader-fill" style={{ height: `${fillPct}%` }} />
-      <div className="volume-fader-thumb" style={{ bottom: `${fillPct}%` }} />
+      <div className="volume-fader-thumb" style={{ bottom: `calc(${fillPct}% - 2px)` }} />
+    </div>
+  );
+});
+
+// Right-side "MORE" column — only visible in expanded mode. Holds osc count
+// ±, settings, help, save, and the chevron-down to collapse back to simple.
+const MoreCol = memo(function MoreCol({
+  oscillatorCount,
+  onOscillatorCountChange,
+  onSettingsToggle,
+  isSettingsOpen,
+  onShowHelp,
+  onShare,
+  onCollapse,
+}) {
+  return (
+    <div className="osc-col osc-more-col">
+      <div className="osc-col-readout osc-more-col-label">
+        <span className="freq-hz">MORE</span>
+      </div>
+
+      <div className="osc-octave-buttons">
+        <button
+          className="osc-more-btn"
+          onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+          disabled={oscillatorCount >= maxOscillators}
+          title="Add oscillator"
+          aria-label="Add oscillator"
+        >+</button>
+        <button
+          className="osc-more-btn"
+          onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+          disabled={oscillatorCount <= 2}
+          title="Remove oscillator"
+          aria-label="Remove oscillator"
+        >−</button>
+      </div>
+
+      <div className="osc-more-stack">
+        <button
+          className={`osc-more-btn icon-btn ${isSettingsOpen ? 'active' : ''}`}
+          onClick={onSettingsToggle}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+          </svg>
+        </button>
+        <button
+          className="osc-more-btn icon-btn"
+          onClick={onShowHelp}
+          title="Help / Controls"
+          aria-label="Help"
+        >
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
+          </svg>
+        </button>
+        <button
+          className="osc-more-btn icon-btn"
+          onClick={onShare}
+          title="Save / Share"
+          aria-label="Save"
+        >
+          <svg viewBox="0 0 24 24" className="button-icon">
+            <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
+          </svg>
+        </button>
+      </div>
+
+      <button
+        className="osc-more-chevron"
+        onClick={onCollapse}
+        title="Collapse (hide controls)"
+        aria-label="Collapse"
+      >
+        <svg viewBox="0 0 24 24" className="button-icon">
+          <path d="M7.41 18.59L12 14l4.59 4.59L18 17.17l-6-6-6 6zm0-7L12 7l4.59 4.59L18 10.17l-6-6-6 6z"
+                transform="rotate(180 12 12)" />
+        </svg>
+      </button>
     </div>
   );
 });
@@ -188,7 +271,7 @@ const VolumeFader = memo(function VolumeFader({ oscIndex, volume, color, isMuted
       onPointerCancel={handlePointerUp}
     >
       <div className="volume-fader-fill" style={{ height: `${fillPct}%` }} />
-      <div className="volume-fader-thumb" style={{ bottom: `${fillPct}%` }} />
+      <div className="volume-fader-thumb" style={{ bottom: `calc(${fillPct}% - 2px)` }} />
     </div>
   );
 });
@@ -250,6 +333,7 @@ const OscillatorCol = memo(function OscillatorCol({ index, label, color, isMuted
 
 function OscillatorControls({
   oscillatorCount = 2,
+  maxOscillators = 10,
   onShare,
   onSettingsToggle,
   isSettingsOpen,
@@ -258,6 +342,8 @@ function OscillatorControls({
   onFineTuneToggle,
   onOscillatorCountChange,
   activeOscs,
+  uiMode = 'simple',
+  onModeChange,
 }) {
   const createInitialArray = (defaultValue, length) => Array(length).fill(defaultValue);
 
@@ -362,95 +448,176 @@ function OscillatorControls({
     audioEngine.toggleMute(index);
   };
 
-  return (
-    <>
-      <div className="top-right-cluster">
-        <button
-          className={`control-toggle icon-button ${isSettingsOpen ? 'active' : ''}`}
-          onClick={onSettingsToggle}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <svg viewBox="0 0 24 24" className="button-icon">
-            <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
-          </svg>
-        </button>
-        <button
-          className="control-toggle icon-button"
-          onClick={onShowHelp}
-          title="Help / Controls"
-          aria-label="Help"
-        >
-          <svg viewBox="0 0 24 24" className="button-icon">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
-          </svg>
-        </button>
-        <button
-          className="control-toggle icon-button"
-          onClick={onShare}
-          title="Save/Share Formula"
-          aria-label="Save"
-        >
-          <svg viewBox="0 0 24 24" className="button-icon">
-            <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
-          </svg>
-        </button>
-      </div>
+  if (uiMode === 'fullscreen') return null;
 
-      <div className="osc-controls-panel">
-        <div className="osc-controls-wrapper">
-          {rows.map((row, rowIdx) => (
-            <div key={rowIdx} className="osc-fader-row-wrap">
-              {rowIdx === 0 && (
-                <MasterAllCol
-                  masterVolume={masterVolume}
-                  onAllOctave={shiftAllOctaves}
-                  isPaused={isPaused}
-                  onPlayPause={handlePlayPause}
-                />
-              )}
-              <div className="osc-fader-row">
-                {row.map((osc) => (
-                  <OscillatorCol
-                    key={osc.index}
-                    index={osc.index}
-                    label={osc.label}
-                    color={osc.color}
-                    isMuted={mutedOscillators[osc.index] || false}
-                    isActive={activeOscs?.has(osc.index) || false}
-                    onMuteToggle={handleMuteToggle}
-                    freq={frequencies[osc.index] ?? 60}
-                    volume={volumes[osc.index] ?? 50}
-                  />
-                ))}
+  const isExpanded = uiMode === 'expanded';
+
+  const shiftOscOctave = (index, factor) => {
+    const cur = audioEngine.getFrequency(index);
+    const next = Math.max(0.1, Math.min(20000, cur * factor));
+    audioEngine.setFrequency(index, next);
+  };
+
+
+  return (
+    <div className="osc-controls-panel">
+      <div className="osc-grid-wrap" style={{ '--cols': oscillatorCount }}>
+        {/* Collapsible upper rows — smoothly transition between 0fr and 1fr */}
+        <div className={`expanded-collapsible ${isExpanded ? 'open' : ''}`}>
+          <div className="expanded-inner">
+            {/* Readout row: freq + note (per-osc only; ALL and MORE cells empty) */}
+            <div className="osc-grid-row readout-row">
+              <div className="grid-cell grid-empty" />
+              {oscillators.map((osc) => {
+                const f = frequencies[osc.index] ?? 60;
+                const noteInfo = freqToNote(f);
+                const cents = noteInfo.cents >= 0 ? `+${noteInfo.cents}` : `${noteInfo.cents}`;
+                const muted = mutedOscillators[osc.index] || false;
+                return (
+                  <div
+                    key={`r-${osc.index}`}
+                    className={`grid-cell readout-cell ${muted ? 'muted' : ''}`}
+                    style={{ '--row-color': osc.color }}
+                  >
+                    <span className="freq-hz">{formatFreq(f)}</span>
+                    <span className="freq-note-cents">
+                      <span className="freq-note">{noteInfo.note}{noteInfo.octave}</span>
+                      <span className="freq-cents">{cents}</span>
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="grid-cell grid-empty" />
+            </div>
+
+            {/* Octave row: ALL ×2 / /2 | per-osc ×2 / /2 | MORE + / − */}
+            <div className="osc-grid-row octave-row">
+              <div className="grid-cell octave-cell osc-all-col">
+                <button className="osc-octave-btn" onClick={() => shiftAllOctaves(2)} title="All ×2" aria-label="All ×2">×2</button>
+                <button className="osc-octave-btn" onClick={() => shiftAllOctaves(0.5)} title="All /2" aria-label="All /2">/2</button>
+              </div>
+              {oscillators.map((osc) => (
+                <div
+                  key={`o-${osc.index}`}
+                  className="grid-cell octave-cell"
+                  style={{ '--row-color': osc.color }}
+                >
+                  <button className="osc-octave-btn" onClick={() => shiftOscOctave(osc.index, 2)}>×2</button>
+                  <button className="osc-octave-btn" onClick={() => shiftOscOctave(osc.index, 0.5)}>/2</button>
+                </div>
+              ))}
+              <div className="grid-cell octave-cell osc-more-col">
+                <button
+                  className="osc-octave-btn"
+                  onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+                  disabled={oscillatorCount >= maxOscillators}
+                  title="Add oscillator"
+                  aria-label="Add oscillator"
+                >+</button>
+                <button
+                  className="osc-octave-btn"
+                  onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+                  disabled={oscillatorCount <= 2}
+                  title="Remove oscillator"
+                  aria-label="Remove oscillator"
+                >−</button>
               </div>
             </div>
-          ))}
+
+            {/* Fader row: master | per-osc | MORE icon stack (settings/save) */}
+            <div className="osc-grid-row fader-row">
+              <div className="grid-cell fader-cell osc-all-col">
+                <MasterVolumeFader volume={masterVolume} />
+              </div>
+              {oscillators.map((osc) => {
+                const muted = mutedOscillators[osc.index] || false;
+                const isActive = activeOscs?.has(osc.index) || false;
+                return (
+                  <div
+                    key={`f-${osc.index}`}
+                    className={`grid-cell fader-cell ${muted ? 'muted' : ''} ${isActive ? 'active' : ''}`}
+                    style={{ '--row-color': osc.color }}
+                  >
+                    <VolumeFader
+                      oscIndex={osc.index}
+                      volume={volumes[osc.index] ?? 50}
+                      color={osc.color}
+                      isMuted={muted}
+                    />
+                  </div>
+                );
+              })}
+              <div className="grid-cell fader-cell osc-more-col">
+                <div className="osc-more-stack">
+                  <button
+                    className={`osc-more-btn icon-btn ${isSettingsOpen ? 'active' : ''}`}
+                    onClick={onSettingsToggle}
+                    title="Settings"
+                    aria-label="Settings"
+                  >
+                    <svg viewBox="0 0 24 24" className="button-icon">
+                      <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                  </button>
+                  <button className="osc-more-btn icon-btn" onClick={onShare} title="Save / Share" aria-label="Save">
+                    <svg viewBox="0 0 24 24" className="button-icon">
+                      <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom row — always rendered. Play/pause, per-osc mute cells, expand/collapse chevron. */}
+        <div className="osc-grid-row bottom-row">
+          <button
+            className={`grid-cell bottom-cell bottom-play ${isPaused ? 'paused' : ''}`}
+            onClick={handlePlayPause}
+            title={isPaused ? 'Play (Space)' : 'Pause (Space)'}
+            aria-label={isPaused ? 'Play' : 'Pause'}
+          >
+            {isPaused ? (
+              <svg viewBox="0 0 24 24" className="button-icon">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" className="button-icon">
+                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+              </svg>
+            )}
+          </button>
+          {oscillators.map((osc) => {
+            const muted = mutedOscillators[osc.index] || false;
+            return (
+              <button
+                key={`m-${osc.index}`}
+                className={`grid-cell bottom-cell bottom-mute ${muted ? 'muted' : ''}`}
+                style={{ '--cell-color': osc.color }}
+                onClick={() => handleMuteToggle(osc.index)}
+                title={muted ? 'Unmute' : 'Mute'}
+                aria-pressed={!muted}
+              >
+                {osc.label}
+              </button>
+            );
+          })}
+          <button
+            className="grid-cell bottom-cell bottom-chevron"
+            onClick={() => onModeChange?.(isExpanded ? 'simple' : 'expanded')}
+            title={isExpanded ? 'Collapse controls' : 'Expand controls'}
+            aria-label={isExpanded ? 'Collapse controls' : 'Expand controls'}
+            aria-expanded={isExpanded}
+          >
+            <svg viewBox="0 0 24 24" className={`button-icon double-chevron ${isExpanded ? 'flipped' : ''}`}>
+              <path d="M7.41 18.59L12 14l4.59 4.59L18 17.17l-6-6-6 6z" transform="translate(0 -3)" />
+              <path d="M7.41 11.59L12 7l4.59 4.59L18 10.17l-6-6-6 6z" transform="translate(0 5)" />
+            </svg>
+          </button>
         </div>
       </div>
-
-      <div className="osc-count-bar">
-        <button
-          className="osc-count-btn"
-          onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
-          disabled={oscillatorCount <= 2}
-          title="Remove oscillator"
-          aria-label="Remove oscillator"
-        >
-          −
-        </button>
-        <span className="osc-count-label">{oscillatorCount}</span>
-        <button
-          className="osc-count-btn"
-          onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
-          disabled={oscillatorCount >= 10}
-          title="Add oscillator"
-          aria-label="Add oscillator"
-        >
-          +
-        </button>
-      </div>
-    </>
+    </div>
   );
 }
 

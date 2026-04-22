@@ -183,15 +183,19 @@ function offsetLine(x1, y1, x2, y2, r1, r2) {
   };
 }
 
-// All dots collision-resolve equally. Activation (dragging/grabbed) is purely
-// a CSS/state concern — positions don't snap when an orb becomes active.
-function resolveCollisions(targetsPx, dotSize) {
+// Active dots collision-resolve so they don't visually overlap. Muted dots
+// (passed via mutedMask) are SKIPPED — they're hidden anyway, so they
+// shouldn't push the visible orbs aside.
+function resolveCollisions(targetsPx, dotSize, mutedMask) {
   const minGap = dotSize * 0.85;
   const resolved = [...targetsPx];
   if (resolved.length < 2) return resolved;
 
   for (let iter = 0; iter < 20; iter++) {
-    const sorted = resolved.map((_, i) => i).sort((a, b) => resolved[a] - resolved[b]);
+    const sorted = resolved
+      .map((_, i) => i)
+      .filter((i) => !mutedMask?.[i])
+      .sort((a, b) => resolved[a] - resolved[b]);
     let moved = false;
     for (let i = 1; i < sorted.length; i++) {
       const a = sorted[i - 1];
@@ -209,7 +213,7 @@ function resolveCollisions(targetsPx, dotSize) {
   return resolved;
 }
 
-function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, onActiveChange }) {
+function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, onActiveChange, extraActive }) {
   const [barWidth, setBarWidth] = useState(500 - 2 * BAR_H_PADDING);
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
@@ -335,8 +339,8 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
     [frequencies, barWidth, range.logMin, range.logMax]
   );
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, DOT_SIZE),
-    [freqXs]
+    () => resolveCollisions(freqXs, DOT_SIZE, muted),
+    [freqXs, muted]
   );
 
   const getSensitivity = () =>
@@ -739,7 +743,7 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
         })}
         {frequencies.map((f, i) => {
           const x = freqToFraction(f, range.logMin, range.logMax) * barWidth;
-          const isActive = draggingDots.has(i) || grabbedOscs.has(i);
+          const isActive = draggingDots.has(i) || grabbedOscs.has(i) || extraActive?.has(i);
           const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
           return (
             <div
@@ -753,9 +757,10 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
 
       <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
         {frequencies.map((_, i) => {
+          if (muted[i]) return null;
           const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
           const isActive = draggingDots.has(i) || grabbedOscs.has(i);
-          const opacity = muted[i] ? 0.15 : (isActive ? 0.6 : 0.35);
+          const opacity = isActive ? 0.6 : 0.35;
           const seg = offsetLine(dotXs[i], DOT_CENTER_Y, freqXs[i], BAR_TOP_Y, DOT_SIZE / 2, 0);
           if (!seg) return null;
           return (
@@ -842,15 +847,16 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
         );
       })}
 
-      {frequencies.map((_, i) => {
+      {frequencies.map((f, i) => {
         const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
+        const isActive = draggingDots.has(i) || grabbedOscs.has(i);
         return (
           <div
             key={`label-${i}`}
-            className={`fsb-dot-label ${muted[i] ? 'muted' : ''}`}
+            className={`fsb-dot-label ${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''}`}
             style={{ left: dotXs[i], top: -2, color }}
           >
-            {i + 1}
+            {isActive ? formatActiveFreq(f) : i + 1}
           </div>
         );
       })}
@@ -891,44 +897,6 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
           );
         })}
 
-      {(() => {
-        // Greedy stacking: first-selected keeps row 0; each subsequent label takes the
-        // lowest row where its X is at least MIN_SEP away from every label already there.
-        const MIN_SEP = 55;
-        const rowsPlaced = []; // rowsPlaced[r] = array of label X already placed at row r
-        const placements = [];
-        for (const idx of activeOrder) {
-          if (frequencies[idx] === undefined || dotXs[idx] === undefined) continue;
-          const x = dotXs[idx];
-          let row = 0;
-          while (true) {
-            if (!rowsPlaced[row]) rowsPlaced[row] = [];
-            const collides = rowsPlaced[row].some((ex) => Math.abs(ex - x) < MIN_SEP);
-            if (!collides) {
-              rowsPlaced[row].push(x);
-              placements.push({ idx, row, x });
-              break;
-            }
-            row++;
-          }
-        }
-        return placements.map(({ idx, row, x }) => {
-          const color = OSCILLATOR_COLORS[idx % OSCILLATOR_COLORS.length];
-          return (
-            <div
-              key={`active-freq-${idx}`}
-              className="fsb-active-freq"
-              style={{
-                left: x,
-                top: BAR_TOP_Y + BAR_LINE_HEIGHT + 6 + row * 16,
-                color,
-              }}
-            >
-              {formatActiveFreq(frequencies[idx])}
-            </div>
-          );
-        });
-      })()}
       </div>
     </>
   );

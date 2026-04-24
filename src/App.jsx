@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import audioEngine from './audio/AudioEngine';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
@@ -47,10 +47,16 @@ function getInitialStateFromURL() {
 // Compute once at module load
 const INITIAL_URL_STATE = getInitialStateFromURL();
 
+
 function App() {
   const [isStarted, setIsStarted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // Static waveform style. 'beating' shows only the aggregate line over
+  // ~15 periods so the beat pattern is visible; 'wave' is the current
+  // 3-period view with per-oscillator colored lines + aggregate; 'off'
+  // hides the static entirely and gives the XY scope all the space.
+  const [staticMode, setStaticMode] = useState('beating');
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
@@ -59,8 +65,34 @@ function App() {
   // Set of oscillator indices "selected" via the fullscreen freq list — these
   // make the spectrum marker glow stronger but don't otherwise change audio.
   const [selectedOscs, setSelectedOscs] = useState(() => new Set());
+  // Set of oscillator indices currently being fine-tuned via horizontal drag
+  // on a volume fader. Used to light up the matching spectrum-bar orb so the
+  // user sees which osc they're affecting.
+  const [fineTuningOscs, setFineTuningOscs] = useState(() => new Set());
+  const handleFineTuningChange = useCallback((index, isFineTuning) => {
+    setFineTuningOscs((prev) => {
+      const has = prev.has(index);
+      if (isFineTuning === has) return prev;
+      const next = new Set(prev);
+      if (isFineTuning) next.add(index); else next.delete(index);
+      return next;
+    });
+  }, []);
+  // Union of explicit selections and in-progress fader fine-tunes, passed to
+  // the spectrum bar so it lights up both categories with the same treatment.
+  const spectrumExtraActive = useMemo(() => {
+    if (fineTuningOscs.size === 0) return selectedOscs;
+    const merged = new Set(selectedOscs);
+    for (const i of fineTuningOscs) merged.add(i);
+    return merged;
+  }, [selectedOscs, fineTuningOscs]);
   // 'simple' (default compact strip) | 'expanded' (full panel) | 'fullscreen' (only scope+spectrum)
   const [uiMode, setUiMode] = useState('simple');
+  // Tune feature config. Lifted to App because the trigger button lives on the
+  // main control panel (OscillatorControls) while the sliders that configure
+  // variance/glide live inside the Settings popup — both need the same values.
+  const [tuneVarianceHz, setTuneVarianceHz] = useState(0);
+  const [tuneGlideSec, setTuneGlideSec] = useState(1.0);
 
   // Mobile caps the oscillator count at 4 (vs 10 on desktop). The matchMedia
   // listener triggers if the viewport crosses the breakpoint at runtime.
@@ -332,7 +364,7 @@ function App() {
         />
       )}
 
-      <Oscilloscope />
+      <Oscilloscope uiMode={uiMode} staticMode={staticMode} />
 
       {isStarted && (
         <>
@@ -340,7 +372,7 @@ function App() {
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
             onActiveChange={setActiveOscs}
-            extraActive={selectedOscs}
+            extraActive={spectrumExtraActive}
           />
           {uiMode === 'fullscreen' && (
             <FullscreenFreqList
@@ -366,6 +398,9 @@ function App() {
             activeOscs={activeOscs}
             uiMode={uiMode}
             onModeChange={setUiMode}
+            tuneVarianceHz={tuneVarianceHz}
+            tuneGlideSec={tuneGlideSec}
+            onFineTuningChange={handleFineTuningChange}
           />
           <button
             className="help-toggle"
@@ -401,6 +436,12 @@ function App() {
             routingMap={routingMap}
             onRoutingChange={handleRoutingChange}
             onDeviceChange={handleDeviceChange}
+            staticMode={staticMode}
+            onStaticModeChange={setStaticMode}
+            tuneVarianceHz={tuneVarianceHz}
+            onTuneVarianceChange={setTuneVarianceHz}
+            tuneGlideSec={tuneGlideSec}
+            onTuneGlideChange={setTuneGlideSec}
           />
         </>
       )}

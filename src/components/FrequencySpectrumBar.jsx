@@ -790,7 +790,6 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
               stroke={color}
               strokeOpacity={0.5}
               strokeWidth={1}
-              strokeDasharray="3 3"
             />
           );
         })}
@@ -814,7 +813,6 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
                 stroke={color}
                 strokeOpacity={0.5}
                 strokeWidth={1}
-                strokeDasharray="3 3"
               />
             );
           })}
@@ -824,10 +822,17 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
         const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
         const isDragging = draggingDots.has(i);
         const isGrabbed = grabbedOscs.has(i);
+        // "Boosted" = externally marked active (fader fine-tune, fullscreen
+        // selection) while the dot is not currently being dragged/grabbed
+        // from the bar. Gives the home orb the same bright, glowy treatment
+        // the drag ghost has — so the user can see which osc they're
+        // affecting from another control.
+        const isBoosted = !isDragging && !isGrabbed && extraActive?.has(i);
         const classes = ['fsb-dot'];
         if (muted[i]) classes.push('muted');
         if (isDragging) classes.push('dragging');
         else if (isGrabbed) classes.push('grabbed');
+        if (isBoosted) classes.push('boosted');
         return (
           <div
             key={i}

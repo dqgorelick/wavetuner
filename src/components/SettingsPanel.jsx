@@ -13,7 +13,13 @@ export default function SettingsPanel({
   onOscillatorCountChange,
   routingMap,
   onRoutingChange,
-  onDeviceChange
+  onDeviceChange,
+  staticMode,
+  onStaticModeChange,
+  tuneVarianceHz,
+  onTuneVarianceChange,
+  tuneGlideSec,
+  onTuneGlideChange,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -148,10 +154,41 @@ export default function SettingsPanel({
         <span className="settings-info">{maxChannels} channels available</span>
       </div>
 
+      <div className="settings-section tune-section">
+        <label className="settings-label">Tune</label>
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Detune</span>
+          <input
+            type="range"
+            min="0"
+            max="5"
+            step="0.1"
+            value={tuneVarianceHz}
+            onChange={(e) => onTuneVarianceChange(parseFloat(e.target.value))}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">±{tuneVarianceHz.toFixed(1)} Hz</span>
+        </div>
+
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Glide</span>
+          <input
+            type="range"
+            min="0"
+            max="2"
+            step="0.05"
+            value={tuneGlideSec}
+            onChange={(e) => onTuneGlideChange(parseFloat(e.target.value))}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{tuneGlideSec.toFixed(2)} s</span>
+        </div>
+      </div>
+
       <div className="settings-section">
         <label className="settings-label">Oscillators</label>
         <div className="oscillator-count-controls">
-          <button 
+          <button
             className="count-button"
             onClick={handleDecrement}
             disabled={oscillatorCount <= 2}
@@ -159,7 +196,7 @@ export default function SettingsPanel({
             −
           </button>
           <span className="count-display">{oscillatorCount}</span>
-          <button 
+          <button
             className="count-button"
             onClick={handleIncrement}
             disabled={oscillatorCount >= 10}
@@ -169,6 +206,18 @@ export default function SettingsPanel({
         </div>
       </div>
 
+      <div className="settings-section">
+        <label className="settings-label">Static waveform</label>
+        <select
+          className="settings-select"
+          value={staticMode}
+          onChange={(e) => onStaticModeChange(e.target.value)}
+        >
+          <option value="beating">Beating (aggregate, ~15 periods)</option>
+          <option value="wave">Wave (individuals + aggregate, 3 periods)</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
 
       <div className="settings-section routing-section">
         <label className="settings-label">Channel Routing</label>

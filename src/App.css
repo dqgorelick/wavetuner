@@ -44,23 +44,16 @@ p {
   overflow: hidden;
 }
 
-/* Default (simple-mode): scope sits at ~40% from top so it visually centers
-   in the available area above the compact bottom strip + spectrum bar.
-   Animated `top` + `transform` so mode changes glide rather than snap. */
+/* Canvas sits flush with the container (which is 100vw × 100dvh). All
+   internal positioning — scope size, static trace location, reserved
+   bottom strip — is handled by the draw loop in Oscilloscope.jsx, which
+   reads uiMode and animates its own layout. CSS scaling/positioning the
+   canvas used to work when the old scope filled the whole element, but
+   would now fight the canvas-internal math. */
 #scope {
   position: absolute;
-  top: 40%;
-  left: 50%;
-  transform: translate(-50%, -50%) scale(1);
-  transition: top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Expanded mode — taller controls panel pushes the spectrum up too; scale
-   the scope down a touch and lift it up so it doesn't get crowded. */
-.expanded-mode #scope {
-  top: 25%;
-  transform: translate(-50%, -50%) scale(0.65);
+  top: 0;
+  left: 0;
 }
 
 /* Simple UI mode uses the spectrum/backdrop default values (80 / 164). */
@@ -75,12 +68,8 @@ p {
   height: calc(338px + env(safe-area-inset-bottom));
 }
 
-/* Fullscreen UI mode — scope re-centers and goes back to full size. */
-.fullscreen-mode #scope {
-  top: 50%;
-  transform: translate(-50%, -50%) scale(1);
-}
-
+/* Fullscreen UI mode — no canvas transform needed; Oscilloscope.jsx
+   handles the expanded scope size internally when uiMode === 'fullscreen'. */
 .fullscreen-mode .osc-controls-panel {
   display: none;
 }
@@ -443,7 +432,7 @@ kbd {
   border: 1px solid rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(10px);
   z-index: 100;
-  overflow: hidden;
+  overflow-y: auto;
   animation: settingsSlideIn 0.2s ease-out;
 }
 
@@ -541,6 +530,68 @@ kbd {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.4);
   margin-top: 6px;
+}
+
+/* Tune section — detune/glide sliders in settings menu. The trigger button
+   itself lives on the main control panel (see .osc-tune-btn). */
+
+/* Stretch the tune cell to match the row height (overriding the row's
+   align-items: end) and mirror readout-cell padding so the button's visible
+   top/bottom line up with the freq+note text next to it. */
+.osc-tune-cell {
+  align-self: stretch;
+  padding: 4px 0;
+  justify-content: stretch;
+}
+
+.osc-tune-btn {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: lowercase;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 0.15s, color 0.15s;
+}
+.osc-tune-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.osc-tune-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tune-slider-row {
+  display: grid;
+  grid-template-columns: 52px 1fr 72px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.tune-slider-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.tune-slider-value {
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: right;
+}
+.tune-slider {
+  width: 100%;
+  accent-color: rgba(240, 244, 255, 0.85);
 }
 
 .permission-button {
@@ -740,10 +791,8 @@ kbd {
 /* Fullscreen toggle — always-visible top-right corner button.
    Toggles the fullscreen UI mode (also bound to F key). */
 .fullscreen-toggle,
-.help-toggle {
-  position: fixed;
-  top: 16px;
-  z-index: 200;
+.help-toggle,
+.scope-mode-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -759,12 +808,34 @@ kbd {
   transition: background 0.15s, color 0.15s;
 }
 
+.fullscreen-toggle,
+.help-toggle {
+  position: fixed;
+  top: 16px;
+  z-index: 200;
+}
+
 .fullscreen-toggle { right: 16px; }
 .help-toggle { left: 16px; }
 
+.scope-mode-buttons {
+  position: fixed;
+  top: 16px;
+  left: 58px;
+  z-index: 200;
+  display: flex;
+  gap: 4px;
+}
+
 .fullscreen-toggle:hover,
-.help-toggle:hover {
+.help-toggle:hover,
+.scope-mode-btn:hover {
   background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.scope-mode-btn.active {
+  background: rgba(255, 255, 255, 0.22);
   color: #fff;
 }
 
@@ -1000,6 +1071,102 @@ kbd {
   color: rgba(255, 255, 255, 0.55);
   font-size: 10px;
   letter-spacing: 0.5px;
+}
+
+/* Global "all" orb — matches the per-osc orbs on the spectrum bar (same size,
+   border+fill+glow), but near-white instead of colored. Drags in 2D: X shifts
+   all frequencies additively (preserves beats), Y shifts all volumes. Home
+   orb dims while dragging; a ghost follows the cursor viewport-wide. */
+.global-detune-orb-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: 8px 0 2px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.global-detune-orb {
+  --all-color: rgba(240, 244, 255, 0.95);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--all-color);
+  border: 3px solid var(--all-color);
+  opacity: 0.7;
+  mix-blend-mode: plus-lighter;
+  box-shadow: 0 0 12px var(--all-color);
+  box-sizing: border-box;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.global-detune-orb-wrap:hover .global-detune-orb {
+  opacity: 0.9;
+  transform: scale(1.1);
+}
+
+.global-detune-orb-wrap.dragging {
+  cursor: grabbing;
+}
+/* While dragging, the home orb dims (like the per-osc .fsb-dot.dragging);
+   the ghost carries the active visual. */
+.global-detune-orb-wrap.dragging .global-detune-orb {
+  opacity: 0.25;
+  box-shadow: none;
+  transform: none;
+}
+
+.global-detune-orb-label {
+  font-family: monospace;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: lowercase;
+  line-height: 1;
+}
+
+/* Portal root — wraps the tether SVG and the ghost orb inside a single
+   element for the React portal. `display: contents` makes the wrapper
+   layout-invisible so its fixed-positioned children behave exactly as if
+   mounted directly in <body>. */
+.global-detune-portal-root {
+  display: contents;
+}
+
+/* Full-viewport SVG overlay hosting the dashed tether line from the home
+   orb to the ghost. Portaled to body alongside the ghost; pointer-events
+   disabled so it never blocks dragging. Sits just below the ghost's z-index
+   so the ghost renders on top of the line's endpoint. */
+.global-detune-tether {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 999;
+  overflow: visible;
+}
+
+/* Ghost orb that follows the cursor during drag. Portaled to document.body,
+   position:fixed → tracks the viewport. Brighter + bigger glow = "grabbed". */
+.global-detune-orb-ghost {
+  --all-color: rgba(240, 244, 255, 0.95);
+  position: fixed;
+  border-radius: 50%;
+  background: var(--all-color);
+  border: 3px solid var(--all-color);
+  opacity: 0.95;
+  mix-blend-mode: plus-lighter;
+  box-shadow: 0 0 24px var(--all-color), 0 0 10px var(--all-color);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 1000;
 }
 
 /* MORE column — symmetric mirror of ALL on the right edge of the panel.
@@ -1321,15 +1488,18 @@ kbd {
   color: var(--row-color);
 }
 
-/* ALL column: neutral white, no visible border (matches per-osc style).
-   Keeps a 1px transparent border so heights stay identical across columns. */
-.osc-all-col .osc-octave-btn {
+/* ALL and MORE columns: neutral white, no visible border (matches per-osc
+   style). Keeps a 1px transparent border so heights stay identical across
+   columns. */
+.osc-all-col .osc-octave-btn,
+.osc-more-col .osc-octave-btn {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid transparent;
   color: rgba(255, 255, 255, 0.7);
 }
 
-.osc-all-col .osc-octave-btn:hover {
+.osc-all-col .osc-octave-btn:hover,
+.osc-more-col .osc-octave-btn:hover {
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
 }
@@ -1771,7 +1941,7 @@ kbd {
   opacity: 0.7;
   mix-blend-mode: plus-lighter;
   box-shadow: 0 0 12px var(--dot-color);
-  cursor: pointer;
+  cursor: grab;
   touch-action: none;
   box-sizing: border-box;
   transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
@@ -1795,6 +1965,16 @@ kbd {
 
 .fsb-dot.dragging {
   cursor: grabbing;
+}
+
+/* Boosted = externally "active" (fader fine-tune, fullscreen selection)
+   without being dragged from the bar itself. Gives the dot the drag-ghost
+   look — same saturated color, bigger layered glow — so the user sees
+   which osc a remote control is affecting. */
+.fsb-dot.boosted {
+  opacity: 0.95;
+  box-shadow: 0 0 24px var(--dot-color), 0 0 10px var(--dot-color);
+  z-index: 20;
 }
 
 /* Muted oscillators: hide both the orb and its number label entirely.

@@ -52,11 +52,22 @@ function App() {
   const [isStarted, setIsStarted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  // Static waveform style. 'beating' shows only the aggregate line over
-  // ~15 periods so the beat pattern is visible; 'wave' is the current
-  // 3-period view with per-oscillator colored lines + aggregate; 'off'
-  // hides the static entirely and gives the XY scope all the space.
+  // Static waveform style. 'beating' shows only the aggregate line;
+  // 'wave' shows per-oscillator colored lines + aggregate; 'off' hides
+  // the static entirely. Number of periods visible is user-controlled
+  // via staticPeriods.
   const [staticMode, setStaticMode] = useState('beating');
+  // How many periods of the fundamental fit in the static waveform's
+  // display window. Applies to both 'beating' and 'wave' styles —
+  // more periods → denser display, better for seeing beat envelopes;
+  // fewer → easier to read individual wave shapes.
+  const [staticPeriods, setStaticPeriods] = useState(20);
+  // Line thickness multiplier (both per-osc colored lines and the
+  // aggregate composite) and colored-outline thickness for the
+  // aggregate (XY-scope-style neon halo; 0 = no outline, just the
+  // white core).
+  const [staticLineWidth, setStaticLineWidth] = useState(2.0);
+  const [staticOutlineThickness, setStaticOutlineThickness] = useState(2.5);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
@@ -364,7 +375,13 @@ function App() {
         />
       )}
 
-      <Oscilloscope uiMode={uiMode} staticMode={staticMode} />
+      <Oscilloscope
+        uiMode={uiMode}
+        staticMode={staticMode}
+        staticPeriods={staticPeriods}
+        staticLineWidth={staticLineWidth}
+        staticOutlineThickness={staticOutlineThickness}
+      />
 
       {isStarted && (
         <>
@@ -438,6 +455,12 @@ function App() {
             onDeviceChange={handleDeviceChange}
             staticMode={staticMode}
             onStaticModeChange={setStaticMode}
+            staticPeriods={staticPeriods}
+            onStaticPeriodsChange={setStaticPeriods}
+            staticLineWidth={staticLineWidth}
+            onStaticLineWidthChange={setStaticLineWidth}
+            staticOutlineThickness={staticOutlineThickness}
+            onStaticOutlineThicknessChange={setStaticOutlineThickness}
             tuneVarianceHz={tuneVarianceHz}
             onTuneVarianceChange={setTuneVarianceHz}
             tuneGlideSec={tuneGlideSec}

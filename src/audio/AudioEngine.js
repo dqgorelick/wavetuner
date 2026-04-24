@@ -1275,9 +1275,20 @@ class AudioEngine {
       const phaseAcc = this.phases[oscIdx] || 0;
       // Shortest signed arc from accumulator toward LSQ, in (−π, π].
       // Scale by confidence so partial trust moves phase only partway.
+      // Additionally cap the blend rate at MAX_BLEND so LSQ's
+      // frame-to-frame measurement noise (driven by analyzer-quantum vs
+      // rAF-frame timing jitter, which can be up to ±1 rad at 100 Hz)
+      // gets averaged across ~1/alpha frames instead of pushing a
+      // different value into the renderer each tick. The accumulator
+      // still advances at the true rate in updatePhases(), so capping
+      // only slows the LSQ *correction* — not the tracking of an actual
+      // phase change. Effective tracking lag when LSQ is steady is
+      // ~1/alpha frames ≈ 5 frames ≈ 83 ms, well under one beat cycle.
       let delta = phaseLsq - phaseAcc;
       delta = ((delta + 3 * Math.PI) % TWO_PI) - Math.PI;
-      let next = phaseAcc + confidence * delta;
+      const MAX_BLEND = 0.2;
+      const blend = Math.min(confidence, MAX_BLEND);
+      let next = phaseAcc + blend * delta;
       next = ((next % TWO_PI) + TWO_PI) % TWO_PI;
       this.phases[oscIdx] = next;
     }

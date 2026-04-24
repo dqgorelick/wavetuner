@@ -553,6 +553,12 @@ function OscillatorControls({
   const [masterVolume, setMasterVolume] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
   const [isPaused, setIsPaused] = useState(false);
   const [isTuning, setIsTuning] = useState(false);
+  // Tracked separately from frequencies/volumes because the bottom-row
+  // mute buttons append an L/R/LR suffix derived from routing (only
+  // shown when the output is plain stereo — for >2 output channels we
+  // omit the suffix since there's no single letter that fits).
+  const [routingMap, setRoutingMap] = useState(() => audioEngine.getRoutingMap?.() ?? {});
+  const [maxChannels, setMaxChannels] = useState(() => audioEngine.getMaxOutputChannels?.() ?? 2);
 
   const handleTune = () => {
     if (!audioEngine.initialized) return;
@@ -600,6 +606,19 @@ function OscillatorControls({
       for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
       return true;
     };
+    const routingMapsEqual = (a, b) => {
+      if (!a || !b) return a === b;
+      const aKeys = Object.keys(a);
+      const bKeys = Object.keys(b);
+      if (aKeys.length !== bKeys.length) return false;
+      for (const k of aKeys) {
+        if (!(k in b)) return false;
+        const av = a[k] || [];
+        const bv = b[k] || [];
+        if (!arraysEqual(av, bv)) return false;
+      }
+      return true;
+    };
     const sync = () => {
       if (audioEngine.initialized) {
         try {
@@ -616,6 +635,10 @@ function OscillatorControls({
           }
           const mv = audioEngine.getMasterVolume?.() ?? 1;
           setMasterVolume((prev) => (prev === mv ? prev : mv));
+          const nr = audioEngine.getRoutingMap?.() ?? {};
+          setRoutingMap((prev) => (routingMapsEqual(prev, nr) ? prev : nr));
+          const nc = audioEngine.getMaxOutputChannels?.() ?? 2;
+          setMaxChannels((prev) => (prev === nc ? prev : nc));
         } catch {
           // ignore
         }
@@ -814,6 +837,18 @@ function OscillatorControls({
           </button>
           {oscillators.map((osc) => {
             const muted = mutedOscillators[osc.index] || false;
+            // Only annotate routing when the output is plain stereo —
+            // for multichannel setups (>2) a single letter isn't
+            // expressive enough so we just drop the suffix.
+            let channelSuffix = '';
+            if (maxChannels === 2) {
+              const channels = routingMap[osc.index] || [];
+              const onL = channels.includes(0);
+              const onR = channels.includes(1);
+              if (onL && onR) channelSuffix = 'LR';
+              else if (onL) channelSuffix = 'L';
+              else if (onR) channelSuffix = 'R';
+            }
             return (
               <button
                 key={`m-${osc.index}`}
@@ -824,6 +859,9 @@ function OscillatorControls({
                 aria-pressed={!muted}
               >
                 {osc.label}
+                {channelSuffix && (
+                  <span className="bottom-mute-channel">{channelSuffix}</span>
+                )}
               </button>
             );
           })}

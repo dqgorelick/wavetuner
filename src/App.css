@@ -54,6 +54,14 @@ p {
   position: absolute;
   top: 0;
   left: 0;
+  /* The container has pointer-events: none so it doesn't block the
+     orbs/controls layered above. Re-enable here so clicks on the
+     canvas itself can fire the visualizer's mode-cycle handler.
+     UI elements have their own pointer-events: auto and higher
+     z-index, so clicks on them still land on the UI first — only
+     clicks on otherwise-empty canvas area reach the scope. */
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* Simple UI mode uses the spectrum/backdrop default values (80 / 164). */
@@ -1050,6 +1058,18 @@ kbd {
 }
 .bottom-mute.muted:hover {
   background: color-mix(in srgb, var(--cell-color), transparent 75%);
+}
+
+/* Small L / R / LR suffix next to the oscillator number, indicating
+   which stereo channel(s) the osc is routed to. Only rendered when
+   the output device is plain stereo; for >2 output channels the suffix
+   is omitted entirely. */
+.bottom-mute-channel {
+  font-size: 0.62em;
+  opacity: 0.7;
+  margin-left: 2px;
+  vertical-align: baseline;
+  letter-spacing: 0.02em;
 }
 
 

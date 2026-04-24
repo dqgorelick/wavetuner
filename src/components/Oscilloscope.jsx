@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 
 // Kept in sync with the palette used by FrequencySpectrumBar / OscillatorControls.
@@ -22,8 +22,17 @@ function edgeWindow(p, fadeFrac) {
 // unmute and freq tweaks animate smoothly.
 function drawStatic(
   ctx, width, height, lineScale, r, g, b,
-  renderVolumes, smoothedWindow, mode
+  renderVolumes, smoothedWindow, mode, targetPeriods, options = {}
 ) {
+  // lineWidthScale:    multiplier on the base stroke widths for both
+  //                    the per-osc colored lines and the aggregate
+  //                    composite. User-controlled via a settings slider.
+  // outlineThickness:  extra radius (in CSS pixels, pre-lineScale) of a
+  //                    colored outer pass drawn UNDER the white-core
+  //                    aggregate — matches the XY scope's neon-tube
+  //                    look. 0 means just the white core (current
+  //                    behavior); > 0 adds the colored glow halo.
+  const { lineWidthScale = 1, outlineThickness = 0 } = options;
   // Clearing is the caller's responsibility — drawScope wipes the whole
   // bottom strip (including the reserved orb/UI area) each frame.
 
@@ -61,11 +70,9 @@ function drawStatic(
   }
   if (!isFinite(targetFundamental)) targetFundamental = 100;
 
-  // 'beating' shows ~30 periods so slow beat patterns are visible in the
-  // aggregate's envelope. 'wave' shows 3 periods with the per-oscillator
-  // colored lines on top. Smoothing on `periods` makes mode-switches
-  // glide instead of snapping.
-  const targetPeriods = mode === 'beating' ? 30 : 3;
+  // Periods to display is now user-controlled via the settings slider
+  // (staticPeriods). The smoothing on `periods` below still tweens
+  // between old and new values so slider drags glide instead of snap.
   if (smoothedWindow.fundamental === 0) {
     smoothedWindow.fundamental = targetFundamental;
     smoothedWindow.periods = targetPeriods;
@@ -111,8 +118,9 @@ function drawStatic(
   // Individual per-oscillator lines are thin; the aggregate composite is
   // drawn thicker and white. In 'beating' mode (no individuals) we use a
   // thinner aggregate so the longer 30-period waveform stays legible.
-  const indivWidth = 2 * lineScale;
-  const aggWidth = mode === 'beating' ? indivWidth * 1.1 : indivWidth * 2;
+  const indivWidth = 2 * lineScale * lineWidthScale;
+  const aggWidth = (mode === 'beating' ? indivWidth * 1.1 : indivWidth * 2);
+  const aggOuterWidth = aggWidth + outlineThickness * 2 * lineScale;
   const TWO_PI = Math.PI * 2;
 
   let volSum = 0;
@@ -163,6 +171,10 @@ function drawStatic(
       ? (phases[k] || 0) - (freqs[k] / anchorFreq) * anchorPhase
       : 0;
   }
+  // Temporal smoothing on these phases happens upstream in
+  // calibratePhases (which caps the LSQ blend alpha so frame-to-frame
+  // LSQ noise gets averaged across a few frames). That smoothing
+  // benefits the synth XY too, so we don't do a second pass here.
 
   // Sample the composite (renderVol-weighted sum of sines) at sample i,
   // optionally with a time-phase offset `dt` in seconds. Used by every
@@ -198,32 +210,47 @@ function drawStatic(
   }
 
   // ── aggregate composite line ───────────────────────────────────────────
-  // Single white line at 2× the individual-line thickness, with a soft
-  // white glow so it reads as the "sum" sitting on top of the colored
-  // layer.
+  // Two-pass when outlineThickness > 0: a colored outer pass (widened by
+  // the outline radius, with a matching-color shadow blur for the neon
+  // halo) drawn first, then the white core on top. Mirrors the XY
+  // scope's colored-glow-over-white-core look so the static wave reads
+  // as part of the same visual language.
+  const drawAggPath = () => {
+    ctx.beginPath();
+    for (let i = 0; i < samples; i++) {
+      const p = i / (samples - 1);
+      const t = p * windowSec - windowHalf;
+      let sum = 0;
+      for (let k = 0; k < freqs.length; k++) {
+        if (!isActive(k)) continue;
+        sum += renderVolumes[k] * Math.sin(TWO_PI * freqs[k] * t + relPhases[k]);
+      }
+      const x = traceOffsetX + p * traceWidth;
+      const y = centerY - sum * synthNorm * ampScale * aggHeightScale * edgeWindow(p, edgeFade);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+
   ctx.globalAlpha = aggAlpha * masterMultiplier;
-  ctx.beginPath();
-  ctx.lineWidth = aggWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+
+  if (outlineThickness > 0) {
+    ctx.lineWidth = aggOuterWidth;
+    ctx.strokeStyle = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 1)`;
+    ctx.shadowBlur = Math.max(outlineThickness, 4) * lineScale;
+    ctx.shadowColor = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 0.8)`;
+    drawAggPath();
+  }
+
+  ctx.lineWidth = aggWidth;
   ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
   ctx.shadowBlur = 8 * lineScale;
   ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
-  for (let i = 0; i < samples; i++) {
-    const p = i / (samples - 1);
-    const t = p * windowSec - windowHalf;
-    let sum = 0;
-    for (let k = 0; k < freqs.length; k++) {
-      if (!isActive(k)) continue;
-      sum += renderVolumes[k] * Math.sin(TWO_PI * freqs[k] * t + relPhases[k]);
-    }
-    const x = traceOffsetX + p * traceWidth;
-    const y = centerY - sum * synthNorm * ampScale * aggHeightScale * edgeWindow(p, edgeFade);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  drawAggPath();
 
+  ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
 }
 
@@ -234,7 +261,7 @@ function drawStatic(
 // for the side-by-side synthesized XY scope so the comparison against
 // the real analyzer output is apples-to-apples (same N, same
 // sampleRate, same amplitude scaling).
-function synthStereoData(N, sampleRate) {
+function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   const freqs = audioEngine.getAllFrequencies();
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
@@ -261,13 +288,18 @@ function synthStereoData(N, sampleRate) {
     const goesRight = channels.includes(1);
     if (!goesLeft && !goesRight) continue;
 
-    // Sample s represents the signal at currentTime − (N−1−s)/sampleRate.
-    // phases[k] is the phase at currentTime, so the phase at sample s is
-    //   θ_s = phases[k] − (N−1−s) · dθ  where  dθ = 2π·f / sampleRate.
+    // Sample s represents the signal at
+    //   currentTime − (N−1−s + sampleOffsetBackward) / sampleRate.
+    // With sampleOffsetBackward = 0 the buffer ends at currentTime;
+    // with sampleOffsetBackward = τ the whole buffer is τ samples in
+    // the past (used by mode 3's Takens phase-space embedding for a
+    // τ-delayed copy of the signal). phases[k] is the phase at
+    // currentTime, so the phase at output-sample s is
+    //   θ_s = phases[k] − (N−1−s + sampleOffsetBackward) · dθ.
     // We advance sinθ/cosθ with a rotation recurrence instead of calling
     // Math.sin N times per oscillator.
     const dTheta = TWO_PI * f / sampleRate;
-    let theta = (phases[k] || 0) - (N - 1) * dTheta;
+    let theta = (phases[k] || 0) - (N - 1 + sampleOffsetBackward) * dTheta;
     // Wrap to [-π, π) before starting to keep the recurrence accurate.
     theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
     let sinT = Math.sin(theta);
@@ -366,7 +398,13 @@ function drawXY(
  * Oscilloscope component - Canvas-based visualization
  * Uses refs and imperative animation loop to avoid React re-render overhead
  */
-export default function Oscilloscope({ uiMode = 'simple', staticMode = 'beating' }) {
+export default function Oscilloscope({
+  uiMode = 'simple',
+  staticMode = 'beating',
+  staticPeriods = 10,
+  staticLineWidth = 1.0,
+  staticOutlineThickness = 0,
+}) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
   const dimensionsRef = useRef({ width: 0, height: 0, scaleX: 1, scaleY: 1 });
@@ -379,6 +417,35 @@ export default function Oscilloscope({ uiMode = 'simple', staticMode = 'beating'
   useEffect(() => {
     staticModeRef.current = staticMode;
   }, [staticMode]);
+  const staticPeriodsRef = useRef(staticPeriods);
+  useEffect(() => {
+    staticPeriodsRef.current = staticPeriods;
+  }, [staticPeriods]);
+  const staticLineWidthRef = useRef(staticLineWidth);
+  useEffect(() => {
+    staticLineWidthRef.current = staticLineWidth;
+  }, [staticLineWidth]);
+  const staticOutlineRef = useRef(staticOutlineThickness);
+  useEffect(() => {
+    staticOutlineRef.current = staticOutlineThickness;
+  }, [staticOutlineThickness]);
+
+  // Visualizer mode, cycled by clicking the scope:
+  //   0 — single centered synthesized XY scope
+  //   1 — tall standing-wave (1D static) with colored, narrower stroke
+  //   2 — face: two synth XY "eyes" (both show the full L/R mix) + 1D
+  //       "mouth" beneath, white line
+  //   3 — stereo face: same layout as 2 but each eye is a Takens phase-
+  //       space embedding (X=signal[t], Y=signal[t−τ]) of just the
+  //       oscillators routed to that channel, with τ chosen as the
+  //       quarter-period of the lowest active frequency (so a single
+  //       osc draws a circle rather than a collapsed diagonal line).
+  const [vizMode, setVizMode] = useState(0);
+  const vizModeRef = useRef(vizMode);
+  useEffect(() => {
+    vizModeRef.current = vizMode;
+  }, [vizMode]);
+  const handleCanvasClick = () => setVizMode((m) => (m + 1) % 4);
 
   // Per-oscillator rendered amplitude, tweened toward the real (muted-or-not)
   // volume each frame so mute/unmute fades the static trace instead of
@@ -444,42 +511,21 @@ export default function Oscilloscope({ uiMode = 'simple', staticMode = 'beating'
 
       const { width, height, scaleX, scaleY } = dimensionsRef.current;
 
-      const timeData1 = audioEngine.getTimeDataLeft();
-      const timeData2 = audioEngine.getTimeDataRight();
-
-      if (!timeData1 || !timeData2) return;
-
-      // Calculate color based on 20-minute cycle
+      // Calculate color based on 20-minute cycle.
       const position = (Date.now() % CYCLE_TIME) / CYCLE_TIME;
       const angle = position * TWO_PI;
-
       const r = Math.sin(angle) * 127 + 128;
       const g = Math.sin(angle + PHASE_OFFSET) * 127 + 128;
       const b = Math.sin(angle + PHASE_OFFSET * 2) * 127 + 128;
-
       const lineScale = Math.min(scaleX, scaleY);
 
-      // Layout
-      //
-      // ┌───────────────────────────── 0
-      // │                            xy fade-clear region (keeps scope
-      // │        XY SCOPE            persistence). Scope itself is
-      // │                            biased toward canvas visual center
-      // ├──────────────────────────── staticTop
-      // │    STATIC WAVEFORM         opaque clear, waveform centered
-      // ├──────────────────────────── staticRenderBottom
-      // │   (orb/UI reserve)         opaque clear — the spectrum bar +
-      // │                            orbs live on top of this strip
-      // └──────────────────────────── height
-      //
-      // Bottom reserved height follows uiMode — simple: ~top-of-orbs
-      // (135 px), expanded: the full orb-backdrop + panel (~340 px, so
-      // the static sits right above the expanded controls), fullscreen:
-      // just the thin bar (60 px). Tweened each frame to match the CSS
-      // 0.3 s panel animation.
-      const mode = uiModeRef.current;
-      const targetBottom = mode === 'expanded' ? 340
-        : mode === 'fullscreen' ? 60
+      // Bottom-reserved strip follows uiMode — simple: ~top-of-orbs
+      // (135 px), expanded: full orb-backdrop + panel (~340 px),
+      // fullscreen: thin bar (60 px). Tweened to match the CSS
+      // panel-expand animation.
+      const uiMode = uiModeRef.current;
+      const targetBottom = uiMode === 'expanded' ? 340
+        : uiMode === 'fullscreen' ? 60
         : 135;
       if (smoothedBottomRef.current === null) {
         smoothedBottomRef.current = targetBottom;
@@ -488,69 +534,151 @@ export default function Oscilloscope({ uiMode = 'simple', staticMode = 'beating'
           (targetBottom - smoothedBottomRef.current) * 0.12;
       }
       const BOTTOM_RESERVED = Math.round(smoothedBottomRef.current);
+      const usableHeight = Math.max(0, height - BOTTOM_RESERVED);
       const staticStyle = staticModeRef.current;
-      const staticHeight = staticStyle === 'off'
-        ? 0
-        : Math.min(180, Math.max(80, Math.round(height * 0.13)));
-      const staticTop = Math.max(0, height - BOTTOM_RESERVED - staticHeight);
-      const xyHeight = staticTop;
-
-      // Clear the whole bottom strip (static region + orb reserve) opaque
-      // so nothing lingers behind the orbs.
-      ctx.fillStyle = 'rgba(0, 0, 0, 1)';
-      ctx.fillRect(0, staticTop, width, height - staticTop);
-
-      // Fade the entire XY region once (0.6 alpha persistence). Both
-      // side-by-side scopes share this fade so their trails decay
-      // together.
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-      ctx.fillRect(0, 0, width, xyHeight);
-
-      // Side-by-side XY scopes: real (live analyzer) on the left,
-      // synth (phase-accumulator predicted) on the right. Same square
-      // size so the A/B comparison is apples-to-apples. Square is
-      // bounded by the narrower of (halfWidth, xyHeight) with a 0.9
-      // breathing margin (tighter than the single-scope 0.95 since
-      // two sit alongside each other).
-      const halfWidth = width / 2;
-      const scopeSize = Math.max(0, Math.min(halfWidth, xyHeight) * 0.9);
-      const desiredCenterY = (height - BOTTOM_RESERVED) / 2;
-      const minCenterY = scopeSize / 2;
-      const maxCenterY = xyHeight - scopeSize / 2;
-      const scopeCenterY = Math.max(minCenterY, Math.min(maxCenterY, desiredCenterY));
-      const scopeOffsetY = scopeCenterY - scopeSize / 2;
-      const realOffsetX = halfWidth / 2 - scopeSize / 2;
-      const synthOffsetX = halfWidth + halfWidth / 2 - scopeSize / 2;
-
-      drawXY(
-        ctx,
-        scopeSize, realOffsetX, scopeOffsetY,
-        lineScale, r, g, b, timeData1, timeData2
-      );
-
       const sampleRate = audioEngine.audioContext
         ? audioEngine.audioContext.sampleRate
         : 44100;
-      // Match drawXY's render window — the analyzer buffer is 8192 so
-      // calibratePhases has a wider LSQ basis, but for rendering we
-      // only want the most recent ~46 ms so the Lissajous density
-      // matches the real side.
-      const { L: synthL, R: synthR } = synthStereoData(2048, sampleRate);
-      drawXY(
-        ctx,
-        scopeSize, synthOffsetX, scopeOffsetY,
-        lineScale, r, g, b, synthL, synthR
-      );
 
-      if (staticStyle !== 'off' && staticHeight > 0) {
-        ctx.save();
-        ctx.translate(0, staticTop);
-        drawStatic(
-          ctx, width, staticHeight, lineScale, r, g, b,
-          renderVolumesRef.current, smoothedWindowRef.current,
-          staticStyle
+      // Opaque clear of the reserved bottom strip every frame so the
+      // orbs / controls always have a clean backdrop regardless of
+      // what mode the visualizer is in.
+      ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+      ctx.fillRect(0, usableHeight, width, height - usableHeight);
+
+      const vizMode = vizModeRef.current;
+
+      if (vizMode === 0) {
+        // ── MODE 0: single centered synth XY scope ────────────────────
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(0, 0, width, usableHeight);
+        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95);
+        const scopeX = (width - scopeSize) / 2;
+        const scopeY = (usableHeight - scopeSize) / 2;
+        const { L, R } = synthStereoData(2048, sampleRate);
+        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, L, R);
+
+      } else if (vizMode === 1) {
+        // ── MODE 1: tall standing wave filling the scope region ──────
+        // Colored aggregate + narrower stroke so it reads as part of
+        // the scope's visual language rather than a separate readout.
+        ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+        ctx.fillRect(0, 0, width, usableHeight);
+        if (staticStyle !== 'off') {
+          drawStatic(
+            ctx, width, usableHeight, lineScale, r, g, b,
+            renderVolumesRef.current, smoothedWindowRef.current,
+            staticStyle, staticPeriodsRef.current,
+            {
+              lineWidthScale: staticLineWidthRef.current,
+              outlineThickness: staticOutlineRef.current,
+            }
+          );
+        }
+
+      } else {
+        // ── MODES 2 & 3: face (two eyes + mouth) ─────────────────────
+        // Layout goals:
+        // 1. Eye span never narrower than the mouth — on a narrow
+        //    viewport we don't want a wide mouth hanging off the face.
+        //    Enforced by passing the eye-span width to drawStatic (so
+        //    its internal traceWidth math is bounded by that) and
+        //    translating the mouth horizontally to sit under the eyes.
+        // 2. The whole face (eyes + gap + mouth) is vertically centered
+        //    in the usable area, so empty space ends up equally above
+        //    and below instead of stacking all at the bottom.
+        // 3. Gaps and mouth height scale off eyeSize so proportions
+        //    stay consistent across screen sizes.
+        const eyeSize = Math.max(
+          0,
+          Math.min(width * 0.35, usableHeight * 0.42)
         );
-        ctx.restore();
+        const eyeGap = eyeSize * 0.1;
+        const totalEyesWidth = eyeSize * 2 + eyeGap;
+        const eyesOffsetX = (width - totalEyesWidth) / 2;
+        const leftEyeX = eyesOffsetX;
+        const rightEyeX = eyesOffsetX + eyeSize + eyeGap;
+
+        // Mouth horizontal bounds track the eye span exactly.
+        const mouthWidth = totalEyesWidth;
+        const mouthOffsetX = eyesOffsetX;
+
+        const mouthGap = Math.max(12, Math.round(eyeSize * 0.15));
+        const mouthHeight = Math.max(
+          0,
+          Math.min(
+            Math.round(eyeSize * 0.5),
+            usableHeight - eyeSize - mouthGap - 20
+          )
+        );
+
+        // Center vertically. Clamp to a 10-px top margin so the eyes
+        // never touch the viewport edge.
+        const totalFaceHeight = eyeSize + mouthGap + mouthHeight;
+        const eyesTop = Math.max(
+          10,
+          Math.round((usableHeight - totalFaceHeight) / 2)
+        );
+        const mouthTop = eyesTop + eyeSize + mouthGap;
+
+        // Fade-clear everything above the mouth (includes the eye
+        // region + gap so trails bleeding into the gap fade out too).
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(0, 0, width, mouthTop);
+        // Opaque clear of the mouth region + below — static wave has
+        // no persistence.
+        ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+        ctx.fillRect(0, mouthTop, width, usableHeight - mouthTop);
+
+        if (vizMode === 2) {
+          // Both eyes show the full L/R synth mix — identical traces
+          // left and right.
+          const { L, R } = synthStereoData(2048, sampleRate);
+          drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R);
+          drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R);
+        } else {
+          // MODE 3: stereo eyes via Takens phase-space embedding.
+          // Each eye's axes are (signal[t], signal[t − τ]) for its
+          // own channel. τ = quarter-period of the lowest active
+          // freq, which makes a single sine draw a clean circle
+          // instead of the collapsed diagonal line you'd get from a
+          // naive XY(channel, channel) plot. Multi-osc channels
+          // produce more complex Lissajous-like figures.
+          const freqs = audioEngine.getAllFrequencies();
+          const volumes = audioEngine.volumeValues || [];
+          let fundamental = Infinity;
+          for (let i = 0; i < freqs.length; i++) {
+            const muted = audioEngine.isMuted(i);
+            if (freqs[i] > 0 && (volumes[i] || 0) > 0 && !muted
+                && freqs[i] < fundamental) {
+              fundamental = freqs[i];
+            }
+          }
+          if (!isFinite(fundamental)) fundamental = 100;
+          const tau = Math.max(1, Math.round(sampleRate / (4 * fundamental)));
+
+          const { L, R } = synthStereoData(2048, sampleRate);
+          const { L: Ld, R: Rd } = synthStereoData(2048, sampleRate, tau);
+          drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, Ld);
+          drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, R, Rd);
+        }
+
+        // Mouth: white-line static wave, constrained to the eye span
+        // so it can never be wider than the eyes above it.
+        if (staticStyle !== 'off' && mouthHeight > 0) {
+          ctx.save();
+          ctx.translate(mouthOffsetX, mouthTop);
+          drawStatic(
+            ctx, mouthWidth, mouthHeight, lineScale, r, g, b,
+            renderVolumesRef.current, smoothedWindowRef.current,
+            staticStyle, staticPeriodsRef.current,
+            {
+              lineWidthScale: staticLineWidthRef.current,
+              outlineThickness: staticOutlineRef.current,
+            }
+          );
+          ctx.restore();
+        }
       }
     };
     
@@ -568,7 +696,7 @@ export default function Oscilloscope({ uiMode = 'simple', staticMode = 'beating'
   
   return (
     <div className="oscilloscope-container">
-      <canvas ref={canvasRef} id="scope" />
+      <canvas ref={canvasRef} id="scope" onClick={handleCanvasClick} />
     </div>
   );
 }

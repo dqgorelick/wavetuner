@@ -16,6 +16,12 @@ export default function SettingsPanel({
   onDeviceChange,
   staticMode,
   onStaticModeChange,
+  staticPeriods,
+  onStaticPeriodsChange,
+  staticLineWidth,
+  onStaticLineWidthChange,
+  staticOutlineThickness,
+  onStaticOutlineThicknessChange,
   tuneVarianceHz,
   onTuneVarianceChange,
   tuneGlideSec,
@@ -213,10 +219,49 @@ export default function SettingsPanel({
           value={staticMode}
           onChange={(e) => onStaticModeChange(e.target.value)}
         >
-          <option value="beating">Beating (aggregate, ~15 periods)</option>
-          <option value="wave">Wave (individuals + aggregate, 3 periods)</option>
+          <option value="beating">Beating (aggregate only)</option>
+          <option value="wave">Wave (individuals + aggregate)</option>
           <option value="off">Off</option>
         </select>
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Periods</span>
+          <input
+            type="range"
+            min="1"
+            max="60"
+            step="1"
+            value={staticPeriods}
+            onChange={(e) => onStaticPeriodsChange(parseInt(e.target.value, 10))}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{staticPeriods}</span>
+        </div>
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Line</span>
+          <input
+            type="range"
+            min="0.2"
+            max="3"
+            step="0.1"
+            value={staticLineWidth}
+            onChange={(e) => onStaticLineWidthChange(parseFloat(e.target.value))}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{staticLineWidth.toFixed(1)}×</span>
+        </div>
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Outline</span>
+          <input
+            type="range"
+            min="0"
+            max="15"
+            step="0.5"
+            value={staticOutlineThickness}
+            onChange={(e) => onStaticOutlineThicknessChange(parseFloat(e.target.value))}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{staticOutlineThickness.toFixed(1)} px</span>
+        </div>
       </div>
 
       <div className="settings-section routing-section">

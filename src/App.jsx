@@ -68,6 +68,8 @@ function App() {
   // white core).
   const [staticLineWidth, setStaticLineWidth] = useState(2.0);
   const [staticOutlineThickness, setStaticOutlineThickness] = useState(2.5);
+  // Visualizer mode: 0 circle (XY), 1 line (standing wave), 2 face, 3 hilbert.
+  const [vizMode, setVizMode] = useState(0);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
@@ -381,6 +383,7 @@ function App() {
         staticPeriods={staticPeriods}
         staticLineWidth={staticLineWidth}
         staticOutlineThickness={staticOutlineThickness}
+        vizMode={vizMode}
       />
 
       {isStarted && (
@@ -429,6 +432,54 @@ function App() {
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
             </svg>
           </button>
+          <div className="scope-mode-buttons" role="radiogroup" aria-label="Visualizer mode">
+            {[
+              {
+                id: 0,
+                label: 'Circle',
+                icon: <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" strokeWidth="2" />,
+              },
+              {
+                id: 1,
+                label: 'Wave',
+                icon: <path d="M2 12 Q 6 5, 9 12 T 16 12 T 22 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />,
+              },
+              {
+                id: 2,
+                label: 'Face',
+                icon: (
+                  <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <circle cx="8" cy="9" r="1.6" fill="currentColor" stroke="none" />
+                    <circle cx="16" cy="9" r="1.6" fill="currentColor" stroke="none" />
+                    <path d="M7.5 15 Q 12 18, 16.5 15" />
+                  </g>
+                ),
+              },
+              {
+                id: 3,
+                label: 'Hilbert',
+                icon: (
+                  <g fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="9.5" cy="12" r="5" />
+                    <circle cx="14.5" cy="12" r="5" />
+                  </g>
+                ),
+              },
+            ].map(({ id, label, icon }) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={vizMode === id}
+                className={`scope-mode-btn ${vizMode === id ? 'active' : ''}`}
+                onClick={() => setVizMode(id)}
+                title={label}
+                aria-label={label}
+              >
+                <svg viewBox="0 0 24 24" className="button-icon">{icon}</svg>
+              </button>
+            ))}
+          </div>
           <button
             className="fullscreen-toggle"
             onClick={toggleFullscreen}

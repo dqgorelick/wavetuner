@@ -829,7 +829,7 @@ kbd {
 .scope-mode-buttons {
   position: fixed;
   top: 16px;
-  left: 58px;
+  right: 58px;
   z-index: 200;
   display: flex;
   gap: 4px;

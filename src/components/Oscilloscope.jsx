@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
 
 // Kept in sync with the palette used by FrequencySpectrumBar / OscillatorControls.
@@ -321,6 +321,55 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   return { L, R };
 }
 
+// Hilbertscope — plots the analytic signal (x, ĥ) in the complex plane,
+// where ĥ is the Hilbert transform (90° phase shift) of x. For a pure
+// sine x = amp·sin(θ), the Hilbert partner is −amp·cos(θ), so each
+// oscillator traces a perfect circle of radius = its amplitude,
+// rotating at its own frequency. A mix of N oscillators composes
+// rotating vectors into epicycle / Fourier-drawing figures. Vector
+// magnitude = instantaneous envelope; vector angle = instantaneous
+// phase. Output fits the same [-1, 1] envelope as synthStereoData
+// (same masterScale-based count clipping), so drawXY's mapping works
+// as-is.
+function synthHilbertData(bufferSize, sampleRate) {
+  const freqs = audioEngine.getAllFrequencies();
+  const phases = audioEngine.getAllPhases();
+  const volumes = audioEngine.volumeValues || [];
+  const masterScale = audioEngine.getCurrentMasterGain();
+
+  const X = new Float32Array(bufferSize);
+  const Y = new Float32Array(bufferSize);
+  const TWO_PI = Math.PI * 2;
+
+  for (let k = 0; k < freqs.length; k++) {
+    const muted = audioEngine.isMuted(k);
+    const amp = (muted ? 0 : (volumes[k] || 0)) * masterScale;
+    if (amp <= 0) continue;
+    const f = freqs[k];
+    if (!(f > 0)) continue;
+
+    const dTheta = TWO_PI * f / sampleRate;
+    let theta = (phases[k] || 0) - (bufferSize - 1) * dTheta;
+    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
+    let sinT = Math.sin(theta);
+    let cosT = Math.cos(theta);
+    const sinD = Math.sin(dTheta);
+    const cosD = Math.cos(dTheta);
+
+    for (let s = 0; s < bufferSize; s++) {
+      // x = signal = amp·sin(θ); y = Hilbert(x) = −amp·cos(θ).
+      X[s] += amp * sinT;
+      Y[s] -= amp * cosT;
+      const newSin = sinT * cosD + cosT * sinD;
+      const newCos = cosT * cosD - sinT * sinD;
+      sinT = newSin;
+      cosT = newCos;
+    }
+  }
+
+  return { X, Y };
+}
+
 // X-Y (Lissajous) scope — draws stereo time-domain data with left channel
 // on X and right channel on Y, adaptive sampling + smoothing, colored line
 // over glow over white core. Fade-persistent clearing is the caller's
@@ -404,6 +453,7 @@ export default function Oscilloscope({
   staticPeriods = 10,
   staticLineWidth = 1.0,
   staticOutlineThickness = 0,
+  vizMode = 0,
 }) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -430,22 +480,16 @@ export default function Oscilloscope({
     staticOutlineRef.current = staticOutlineThickness;
   }, [staticOutlineThickness]);
 
-  // Visualizer mode, cycled by clicking the scope:
-  //   0 — single centered synthesized XY scope
-  //   1 — tall standing-wave (1D static) with colored, narrower stroke
-  //   2 — face: two synth XY "eyes" (both show the full L/R mix) + 1D
-  //       "mouth" beneath, white line
-  //   3 — stereo face: same layout as 2 but each eye is a Takens phase-
-  //       space embedding (X=signal[t], Y=signal[t−τ]) of just the
-  //       oscillators routed to that channel, with τ chosen as the
-  //       quarter-period of the lowest active frequency (so a single
-  //       osc draws a circle rather than a collapsed diagonal line).
-  const [vizMode, setVizMode] = useState(0);
+  // Visualizer mode (controlled by parent via prop):
+  //   0 — single centered synthesized XY scope (circle)
+  //   1 — tall standing-wave (1D static line)
+  //   2 — face: two synth XY "eyes" + 1D "mouth" beneath
+  //   3 — Hilbertscope: plots (signal, Hilbert-transform) per sample —
+  //       each osc traces a circle, composite is a Fourier epicycle.
   const vizModeRef = useRef(vizMode);
   useEffect(() => {
     vizModeRef.current = vizMode;
   }, [vizMode]);
-  const handleCanvasClick = () => setVizMode((m) => (m + 1) % 4);
 
   // Per-oscillator rendered amplitude, tweened toward the real (muted-or-not)
   // volume each frame so mute/unmute fades the static trace instead of
@@ -576,8 +620,8 @@ export default function Oscilloscope({
           );
         }
 
-      } else {
-        // ── MODES 2 & 3: face (two eyes + mouth) ─────────────────────
+      } else if (vizMode === 2) {
+        // ── MODE 2: face (two eyes + mouth) ───────────────────────────
         // Layout goals:
         // 1. Eye span never narrower than the mouth — on a narrow
         //    viewport we don't want a wide mouth hanging off the face.
@@ -630,38 +674,11 @@ export default function Oscilloscope({
         ctx.fillStyle = 'rgba(0, 0, 0, 1)';
         ctx.fillRect(0, mouthTop, width, usableHeight - mouthTop);
 
-        if (vizMode === 2) {
-          // Both eyes show the full L/R synth mix — identical traces
-          // left and right.
-          const { L, R } = synthStereoData(2048, sampleRate);
-          drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R);
-          drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R);
-        } else {
-          // MODE 3: stereo eyes via Takens phase-space embedding.
-          // Each eye's axes are (signal[t], signal[t − τ]) for its
-          // own channel. τ = quarter-period of the lowest active
-          // freq, which makes a single sine draw a clean circle
-          // instead of the collapsed diagonal line you'd get from a
-          // naive XY(channel, channel) plot. Multi-osc channels
-          // produce more complex Lissajous-like figures.
-          const freqs = audioEngine.getAllFrequencies();
-          const volumes = audioEngine.volumeValues || [];
-          let fundamental = Infinity;
-          for (let i = 0; i < freqs.length; i++) {
-            const muted = audioEngine.isMuted(i);
-            if (freqs[i] > 0 && (volumes[i] || 0) > 0 && !muted
-                && freqs[i] < fundamental) {
-              fundamental = freqs[i];
-            }
-          }
-          if (!isFinite(fundamental)) fundamental = 100;
-          const tau = Math.max(1, Math.round(sampleRate / (4 * fundamental)));
-
-          const { L, R } = synthStereoData(2048, sampleRate);
-          const { L: Ld, R: Rd } = synthStereoData(2048, sampleRate, tau);
-          drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, Ld);
-          drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, R, Rd);
-        }
+        // Both eyes show the full L/R synth mix — identical traces
+        // left and right.
+        const { L, R } = synthStereoData(2048, sampleRate);
+        drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R);
+        drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R);
 
         // Mouth: white-line static wave, constrained to the eye span
         // so it can never be wider than the eyes above it.
@@ -679,9 +696,24 @@ export default function Oscilloscope({
           );
           ctx.restore();
         }
+
+      } else if (vizMode === 3) {
+        // ── MODE 3: Hilbertscope ─────────────────────────────────────
+        // Analytic-signal plot: each osc traces a circle, composite is
+        // a Fourier epicycle. Reuses drawXY for visual consistency.
+        // Sized smaller than the other XY scopes because the analytic
+        // envelope sums osc amplitudes, so multi-osc figures naturally
+        // fill more of the [-1, 1] box than the L/R-stereo modes do.
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(0, 0, width, usableHeight);
+        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * 0.6);
+        const scopeX = (width - scopeSize) / 2;
+        const scopeY = (usableHeight - scopeSize) / 2;
+        const { X, Y } = synthHilbertData(2048, sampleRate);
+        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y);
       }
     };
-    
+
     // Start animation loop
     drawScope();
     
@@ -696,7 +728,7 @@ export default function Oscilloscope({
   
   return (
     <div className="oscilloscope-container">
-      <canvas ref={canvasRef} id="scope" onClick={handleCanvasClick} />
+      <canvas ref={canvasRef} id="scope" />
     </div>
   );
 }

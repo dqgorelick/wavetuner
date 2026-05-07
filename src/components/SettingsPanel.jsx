@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import midiInput from '../audio/MidiInput';
+import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
+import EnvelopeControls from './EnvelopeControls';
 import RoutingPatchBay from './RoutingPatchBay';
 
 /**
@@ -31,6 +34,20 @@ export default function SettingsPanel({
   const [selectedDevice, setSelectedDevice] = useState('');
   const [maxChannels, setMaxChannels] = useState(2);
   const [needsPermission, setNeedsPermission] = useState(false);
+
+  // MIDI status/device list, mirrored from the MidiInput singleton.
+  // The singleton fires onChange after connect, hot-plug, and active-input
+  // changes — we just resync from its getters each time.
+  const [midiStatus, setMidiStatus] = useState(midiInput.status);
+  const [midiDevices, setMidiDevices] = useState(midiInput.devices);
+  const [activeMidiInput, setActiveMidiInput] = useState(midiInput.activeInputId);
+  useEffect(() => {
+    return midiInput.onChange(() => {
+      setMidiStatus(midiInput.status);
+      setMidiDevices(midiInput.devices);
+      setActiveMidiInput(midiInput.activeInputId);
+    });
+  }, []);
 
   // Enumerate audio output devices
   const enumerateDevices = useCallback(async (requestPermission = false) => {
@@ -189,6 +206,67 @@ export default function SettingsPanel({
           />
           <span className="tune-slider-value">{tuneGlideSec.toFixed(2)} s</span>
         </div>
+      </div>
+
+      <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
+      <EnvelopeControls title="Keyboard envelope" envelope={keyboardEnvelope} />
+
+      <div className="settings-section">
+        <label className="settings-label">MIDI input</label>
+        {midiStatus === 'unsupported' && (
+          <span className="settings-info">
+            This browser doesn't support Web MIDI (try Chrome or Edge).
+          </span>
+        )}
+        {(midiStatus === 'idle' || midiStatus === 'denied' || midiStatus === 'error') && (
+          <>
+            {midiStatus === 'denied' && (
+              <span className="settings-info">MIDI access denied.</span>
+            )}
+            {midiStatus === 'error' && (
+              <span className="settings-info">MIDI couldn't connect.</span>
+            )}
+            <button
+              type="button"
+              className="permission-button"
+              onClick={() => midiInput.connect()}
+            >
+              {midiStatus === 'idle' ? 'Connect MIDI' : 'Try again'}
+            </button>
+          </>
+        )}
+        {midiStatus === 'connecting' && (
+          <span className="settings-info">Connecting…</span>
+        )}
+        {midiStatus === 'connected' && (
+          <>
+            {midiDevices.length === 0 ? (
+              <span className="settings-info">
+                Connected — plug in a MIDI controller.
+              </span>
+            ) : (
+              <>
+                <select
+                  className="settings-select"
+                  value={activeMidiInput}
+                  onChange={(e) => midiInput.setActiveInput(e.target.value)}
+                >
+                  <option value="all">All inputs</option>
+                  {midiDevices.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                      {d.manufacturer ? ` (${d.manufacturer})` : ''}
+                      {d.state === 'disconnected' ? ' — offline' : ''}
+                    </option>
+                  ))}
+                </select>
+                <span className="settings-info">
+                  {midiDevices.length} device{midiDevices.length === 1 ? '' : 's'} connected
+                </span>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       <div className="settings-section">

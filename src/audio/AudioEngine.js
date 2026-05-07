@@ -4,6 +4,15 @@
  * Isolated from React to prevent re-renders from interfering with audio timing.
  */
 
+import { droneEnvelope } from './Envelope';
+
+// Topology-change ramp for adding/removing drone slots via the count
+// control. Decoupled from droneEnvelope on purpose — see
+// research/adsr-envelope.md §7c. A long user attack would silently
+// delay added slots; near-zero attack would click. 300 ms threads the
+// needle for both.
+const FIXED_SLOT_FADE = 0.3;
+
 class AudioEngine {
   constructor() {
     if (AudioEngine.instance) {
@@ -30,6 +39,13 @@ class AudioEngine {
     // the count-based clipping scaler in _getScaledMasterGain so fade-in/out
     // and oscillator add/remove transitions naturally honor it.
     this.masterVolumeUser = 1.0;
+
+    // Keyboard pool's own bus controls. `_kbdVolume` is the user slider;
+    // `_kbdEnabled` is the on/off switch. Effective bus gain is the
+    // product (0 when disabled). _kbdEffectiveGain() returns the live
+    // value for the audio node.
+    this._kbdVolume = 1.0;
+    this._kbdEnabled = true;
 
     // Stack of per-osc state captured when an oscillator is removed via
     // setOscillatorCount. Re-adding pops the most-recently-removed state so
@@ -87,8 +103,39 @@ class AudioEngine {
     
     // Callbacks for state change notifications
     this.onRoutingChange = null;
-    
+
+    // Listeners notified whenever any oscillator's frequency target changes
+    // OR the oscillator count changes (which adds/removes scale degrees).
+    // The keyboard's Tuning module subscribes here so it can re-sort the
+    // scale and propagate retunes to held voices.
+    this.frequencyListeners = new Set();
+
     AudioEngine.instance = this;
+  }
+
+  addFrequencyListener(fn) {
+    this.frequencyListeners.add(fn);
+    return () => this.frequencyListeners.delete(fn);
+  }
+
+  _notifyFrequencyChange() {
+    for (const fn of this.frequencyListeners) {
+      try { fn(); } catch (e) { console.error('frequency listener error', e); }
+    }
+  }
+
+  /**
+   * Returns the audio bus the keyboard pool should hang itself off:
+   * the live AudioContext + the keyboardBusGain (which then feeds
+   * masterGainNode). The keyboard pool connects HERE so its volume +
+   * on/off can be controlled independently from the drone pool.
+   * Both fields are null before initialize() has been called.
+   */
+  getAudioBus() {
+    return {
+      audioContext: this.audioContext,
+      masterGainNode: this.keyboardBusGain,
+    };
   }
   
   /**
@@ -147,22 +194,38 @@ class AudioEngine {
     // Create master gain node
     this.masterGainNode = this.audioContext.createGain();
     this.masterGainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
-    
+
+    // Drone bus — sits between the per-channel mix and the master.
+    // togglePlayPause / spacebar fade THIS to silence drones only,
+    // leaving the keyboard pool unaffected.
+    this.droneBusGain = this.audioContext.createGain();
+    this.droneBusGain.gain.setValueAtTime(1, this.audioContext.currentTime);
+
+    // Keyboard bus — parallel branch. Voice pool routes here instead of
+    // straight to masterGain so the keyboard can have its own volume +
+    // on/off without touching drones.
+    this.keyboardBusGain = this.audioContext.createGain();
+    this.keyboardBusGain.gain.setValueAtTime(this._kbdEffectiveGain(), this.audioContext.currentTime);
+
     // Create channel gain nodes (one per output channel for mixing)
     this.channelGains = [
       this.audioContext.createGain(), // Left channel
       this.audioContext.createGain()  // Right channel
     ];
-    
+
     // Create stereo merger
     this.stereoMerger = this.audioContext.createChannelMerger(2);
-    
+
     // Connect channel gains to stereo merger
     this.channelGains[0].connect(this.stereoMerger, 0, 0); // Left
     this.channelGains[1].connect(this.stereoMerger, 0, 1); // Right
-    
-    // Connect stereo merger to master gain
-    this.stereoMerger.connect(this.masterGainNode);
+
+    // stereoMerger → droneBusGain → masterGainNode
+    this.stereoMerger.connect(this.droneBusGain);
+    this.droneBusGain.connect(this.masterGainNode);
+
+    // keyboardBusGain → masterGainNode (parallel to drone branch)
+    this.keyboardBusGain.connect(this.masterGainNode);
     
     // Create splitter for visualization (after master gain)
     const splitter = this.audioContext.createChannelSplitter(2);
@@ -187,9 +250,26 @@ class AudioEngine {
     
     // Fade in
     this.masterGainNode.gain.setTargetAtTime(this._getScaledMasterGain(), this.audioContext.currentTime, 0.1);
-    
+
     this.isInitialized = true;
     this.isPaused = false;
+
+    // Live-retarget held drones whenever the user changes the drone
+    // envelope's sustain (or any param via _notify) — every un-muted
+    // slot's gain glides to volumeValues[i] × droneEnvelope.sustain.
+    if (!this._envelopeUnsubscribe) {
+      this._envelopeUnsubscribe = droneEnvelope.onChange(() => this._retargetDronesForSustain());
+    }
+  }
+
+  _retargetDronesForSustain() {
+    if (!this.isInitialized || !this.audioContext) return;
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      if (this.mutedStates[i]) continue;
+      const gainNode = this.gainNodes[i];
+      if (!gainNode) continue;
+      droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, this.volumeValues[i]);
+    }
   }
   
   /**
@@ -214,6 +294,47 @@ class AudioEngine {
 
   getMasterVolume() {
     return this.masterVolumeUser;
+  }
+
+  /**
+   * Keyboard bus controls. Setting either volume or enabled-flag fades
+   * the keyboardBusGain to the new effective level via setTargetAtTime
+   * so toggling on/off doesn't click. Effective gain = enabled ? vol : 0.
+   */
+  setKeyboardVolume(value) {
+    this._kbdVolume = Math.max(0, Math.min(1, value));
+    this._applyKeyboardBusGain();
+  }
+  getKeyboardVolume() { return this._kbdVolume; }
+  setKeyboardEnabled(on) {
+    this._kbdEnabled = !!on;
+    this._applyKeyboardBusGain();
+  }
+  getKeyboardEnabled() { return this._kbdEnabled; }
+
+  _kbdEffectiveGain() {
+    return this._kbdEnabled ? this._kbdVolume : 0;
+  }
+  _applyKeyboardBusGain() {
+    if (!this.isInitialized || !this.keyboardBusGain) return;
+    const t = this.audioContext.currentTime;
+    this.keyboardBusGain.gain.setTargetAtTime(this._kbdEffectiveGain(), t, 0.05);
+  }
+
+  /**
+   * Effective gain on the path from a drone osc to the destination
+   * (master × drone-bus). Visualizer's synth path multiplies drone amps
+   * by this so they fade with master volume AND with drone-pause
+   * independently from keyboard voices.
+   */
+  getDroneEffectiveGain() {
+    if (!this.isInitialized || !this.masterGainNode || !this.droneBusGain) return 0;
+    return this.masterGainNode.gain.value * this.droneBusGain.gain.value;
+  }
+  /** Same idea for keyboard voices. */
+  getKeyboardEffectiveGain() {
+    if (!this.isInitialized || !this.masterGainNode || !this.keyboardBusGain) return 0;
+    return this.masterGainNode.gain.value * this.keyboardBusGain.gain.value;
   }
 
   /**
@@ -252,36 +373,50 @@ class AudioEngine {
       this._createSingleOscillator(i);
     }
   }
-  
+
   /**
-   * Create a single oscillator at the specified index
+   * Create a single oscillator at the specified index. When `withFade`
+   * is true (i.e. called from setOscillatorCount during a runtime add),
+   * the gain ramps from 0 to volume × sustain over FIXED_SLOT_FADE so
+   * the new slot eases in instead of clicking. The initial-creation
+   * path (called from initialize via _createOscillators) skips the
+   * ramp because the master gain's fade-in already covers that.
    */
-  _createSingleOscillator(index) {
+  _createSingleOscillator(index, withFade = false) {
     try {
       if (!this.audioContext) {
         console.error('AudioEngine: Cannot create oscillator - audio context not ready');
         return;
       }
-      
+
       const oscillator = this.audioContext.createOscillator();
       const gainNode = this.audioContext.createGain();
-      
+
       oscillator.connect(gainNode);
-      
+
       // Default routing: odd indices → left (0), even indices → right (1)
       const defaultChannel = index % 2;
       this.routingMap[index] = [defaultChannel];
-      
+
       // Connect to the appropriate channel gain
       gainNode.connect(this.channelGains[defaultChannel]);
-      
-      // Set initial frequency and volume
+
+      // Set initial frequency. Volume target is volume × droneEnv.sustain
+      // for un-muted slots so steady-state matches setVolume's path.
       const freq = this.frequencyValues[index] || 60;
-      const vol = this.mutedStates[index] ? 0 : (this.volumeValues[index] || 0.5);
-      
-      oscillator.frequency.setValueAtTime(freq, this.audioContext.currentTime);
-      gainNode.gain.setValueAtTime(vol, this.audioContext.currentTime);
-      
+      const target = this.mutedStates[index]
+        ? 0
+        : (this.volumeValues[index] || 0.5) * droneEnvelope.sustain;
+      const t = this.audioContext.currentTime;
+
+      oscillator.frequency.setValueAtTime(freq, t);
+      if (withFade && target > 0) {
+        gainNode.gain.setValueAtTime(0, t);
+        gainNode.gain.linearRampToValueAtTime(target, t + FIXED_SLOT_FADE);
+      } else {
+        gainNode.gain.setValueAtTime(target, t);
+      }
+
       oscillator.start();
 
       this.oscillators[index] = oscillator;
@@ -347,10 +482,17 @@ class AudioEngine {
             this.preMuteVolumes[i] = 0.5;
           }
 
-          this._createSingleOscillator(i);
+          this._createSingleOscillator(i, true /* withFade */);
         }
       } else {
-        // Remove oscillators - capture state first so re-adding restores it
+        // Remove oscillators - capture state first so re-adding restores it.
+        // Fade out over FIXED_SLOT_FADE before stopping so the removal
+        // doesn't click. The osc + gain nodes stay connected during the
+        // fade; we splice them out of the engine's arrays synchronously
+        // so the new count is visible to the rest of the engine
+        // immediately, then let the deferred osc.stop()/onended cleanup
+        // disconnect the audio graph.
+        const t = this.audioContext.currentTime;
         for (let i = oldCount - 1; i >= newCount; i--) {
           this.removedSlots.push({
             freq: this.frequencyValues[i],
@@ -359,13 +501,22 @@ class AudioEngine {
             preMuteVol: this.preMuteVolumes[i],
           });
 
+          const osc = this.oscillators[i];
+          const gainNode = this.gainNodes[i];
+
           try {
-            if (this.oscillators[i]) {
-              this.oscillators[i].stop();
-              this.oscillators[i].disconnect();
+            if (gainNode) {
+              const cur = gainNode.gain.value;
+              gainNode.gain.cancelScheduledValues(t);
+              gainNode.gain.setValueAtTime(cur, t);
+              gainNode.gain.linearRampToValueAtTime(0, t + FIXED_SLOT_FADE);
             }
-            if (this.gainNodes[i]) {
-              this.gainNodes[i].disconnect();
+            if (osc) {
+              osc.onended = () => {
+                try { osc.disconnect(); } catch { /* ignore */ }
+                try { gainNode && gainNode.disconnect(); } catch { /* ignore */ }
+              };
+              osc.stop(t + FIXED_SLOT_FADE + 0.05);
             }
           } catch (e) {
             console.warn('Error stopping oscillator', i, e);
@@ -388,6 +539,10 @@ class AudioEngine {
       
       // Update master gain scaling to prevent clipping
       this._updateMasterGainScaling();
+
+      // Scale length changed — let the keyboard tuning re-sort + retune
+      // any held voices to whatever degree they're now pointing at.
+      this._notifyFrequencyChange();
     } catch (err) {
       console.error('AudioEngine: Failed to set oscillator count', err);
     }
@@ -652,32 +807,37 @@ class AudioEngine {
       this.audioContext.currentTime,
       0.016
     );
+
+    this._notifyFrequencyChange();
   }
-  
+
   /**
-   * Set volume for a specific oscillator (0-1 range)
+   * Set volume for a specific oscillator (0-1 range). For un-muted
+   * slots, the audio target is volume × droneEnvelope.sustain — so the
+   * slider acts as the slot's "peak amplitude" while the envelope's
+   * sustain knob decides what fraction of that holds at steady state.
    */
   setVolume(index, volume) {
     if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return;
     if (!this.gainNodes[index]) return;
-    
+
     const clampedVol = Math.max(0, Math.min(1, volume));
-    
+
     if (Math.abs(clampedVol - this.volumeValues[index]) < 0.005) return;
-    
+
     this.volumeValues[index] = clampedVol;
-    
+
     if (this.mutedStates[index]) {
       this.preMuteVolumes[index] = clampedVol;
       return;
     }
-    
+
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume();
     }
-    
+
     this.gainNodes[index].gain.setTargetAtTime(
-      clampedVol,
+      clampedVol * droneEnvelope.sustain,
       this.audioContext.currentTime,
       0.016
     );
@@ -695,13 +855,16 @@ class AudioEngine {
     }
     const t = this.audioContext.currentTime;
     const count = Math.min(frequencies.length, this.oscillatorCount);
+    let changed = false;
     for (let i = 0; i < count; i++) {
       if (!this.oscillators[i]) continue;
       const clampedFreq = Math.max(0.001, Math.min(20000, frequencies[i]));
       if (Math.abs(clampedFreq - this.frequencyValues[i]) < 0.01) continue;
       this.frequencyValues[i] = clampedFreq;
       this.oscillators[i].frequency.setTargetAtTime(clampedFreq, t, 0.016);
+      changed = true;
     }
+    if (changed) this._notifyFrequencyChange();
   }
 
   /**
@@ -715,6 +878,7 @@ class AudioEngine {
       this.audioContext.resume();
     }
     const t = this.audioContext.currentTime;
+    const sustain = droneEnvelope.sustain;
     const count = Math.min(volumes.length, this.oscillatorCount);
     for (let i = 0; i < count; i++) {
       if (!this.gainNodes[i]) continue;
@@ -725,7 +889,7 @@ class AudioEngine {
         this.preMuteVolumes[i] = clampedVol;
         continue;
       }
-      this.gainNodes[i].gain.setTargetAtTime(clampedVol, t, 0.016);
+      this.gainNodes[i].gain.setTargetAtTime(clampedVol * sustain, t, 0.016);
     }
   }
 
@@ -933,43 +1097,35 @@ class AudioEngine {
   }
   
   /**
-   * Mute a specific oscillator with fade
+   * Mute a specific oscillator — runs the drone envelope's release tail
+   * on the per-slot gain. The oscillator itself keeps running so that
+   * un-muting later resumes phase-correlated with other un-muted slots
+   * (important for beating).
    */
   muteOscillator(index) {
     if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return;
     if (this.mutedStates[index]) return;
     if (!this.gainNodes[index]) return;
-    
+
     this.mutedStates[index] = true;
     this.preMuteVolumes[index] = this.volumeValues[index];
-    
-    const currentTime = this.audioContext.currentTime;
-    const gainNode = this.gainNodes[index];
-    
-    gainNode.gain.cancelScheduledValues(currentTime);
-    const currentGain = gainNode.gain.value;
-    gainNode.gain.setValueAtTime(Math.max(currentGain, 0.001), currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.3);
-    gainNode.gain.setValueAtTime(0, currentTime + 0.3);
+
+    droneEnvelope.applyNoteOff(this.gainNodes[index].gain, this.audioContext);
   }
-  
+
   /**
-   * Unmute a specific oscillator with fade
+   * Unmute a specific oscillator — runs the drone envelope's
+   * attack→decay→sustain on the per-slot gain. Steady-state lands at
+   * volumeValues[i] × droneEnvelope.sustain.
    */
   unmuteOscillator(index) {
     if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return;
     if (!this.mutedStates[index]) return;
     if (!this.gainNodes[index]) return;
-    
+
     this.mutedStates[index] = false;
-    const targetVolume = this.volumeValues[index];
-    
-    const currentTime = this.audioContext.currentTime;
-    const gainNode = this.gainNodes[index];
-    
-    gainNode.gain.cancelScheduledValues(currentTime);
-    gainNode.gain.setValueAtTime(0.001, currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(Math.max(targetVolume, 0.001), currentTime + 0.3);
+    const peak = this.volumeValues[index];
+    droneEnvelope.applyNoteOn(this.gainNodes[index].gain, this.audioContext, peak);
   }
   
   /**
@@ -1025,18 +1181,45 @@ class AudioEngine {
   }
   
   /**
-   * Toggle play/pause
+   * Toggle play/pause — DRONES ONLY. Keyboard voices keep playing.
+   * Spacebar / pause-button are wired here. The full-master fadeIn /
+   * fadeOut methods are still used by routing + device changes (those
+   * mute everything for the duration of the change).
    */
   togglePlayPause() {
     if (!this.isInitialized) return;
-    
-    if (this.isPaused) {
-      this.fadeIn();
-    } else {
-      this.fadeOut();
-    }
-    
+    if (this.isPaused) this.unpauseDrones();
+    else this.pauseDrones();
     return this.isPaused;
+  }
+
+  pauseDrones() {
+    if (!this.isInitialized || this.isPaused) return;
+    const t = this.audioContext.currentTime;
+    this.droneBusGain.gain.cancelScheduledValues(t);
+    const cur = this.droneBusGain.gain.value;
+    this.droneBusGain.gain.setValueAtTime(Math.max(cur, 0.001), t);
+    this.droneBusGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    this.droneBusGain.gain.setValueAtTime(0, t + 0.3);
+    this.isPaused = true;
+  }
+
+  unpauseDrones() {
+    if (!this.isInitialized || !this.isPaused) return;
+    const t = this.audioContext.currentTime;
+    // Ramp drone bus back up.
+    this.droneBusGain.gain.cancelScheduledValues(t);
+    this.droneBusGain.gain.setValueAtTime(0.001, t);
+    this.droneBusGain.gain.exponentialRampToValueAtTime(1, t + 0.5);
+    // Defensive: if something muted masterGain to 0 (e.g. a device
+    // change called fadeOut and the user is now manually unpausing),
+    // restore master to user volume so sound actually returns.
+    if (this.masterGainNode.gain.value < 0.01) {
+      this.masterGainNode.gain.cancelScheduledValues(t);
+      this.masterGainNode.gain.setValueAtTime(0.001, t);
+      this.masterGainNode.gain.exponentialRampToValueAtTime(this._getScaledMasterGain(), t + 0.5);
+    }
+    this.isPaused = false;
   }
   
   /**
@@ -1257,6 +1440,7 @@ class AudioEngine {
     // coherent during non-stationary periods. Blend continuously
     // through the middle so the handoff is smooth — no thresholds.
     const masterScale = this._getScaledMasterGain();
+    const droneSustain = droneEnvelope.sustain;
     const twoOverN = 2 / N;
     for (let i = 0; i < M; i++) {
       const oscIdx = cache.oscs[i].k;
@@ -1264,7 +1448,9 @@ class AudioEngine {
       const d = p[2 * i + 1];
       const aLsq = Math.sqrt(c * c + d * d) * twoOverN;
       const muted = this.mutedStates[oscIdx];
-      const aExpected = (muted ? 0 : (this.volumeValues[oscIdx] || 0)) * masterScale;
+      // Steady-state gain at the slot is volume × droneEnvelope.sustain;
+      // multiply by masterScale to land on the analyzer-side amplitude.
+      const aExpected = (muted ? 0 : (this.volumeValues[oscIdx] || 0)) * droneSustain * masterScale;
       const confidence = aExpected > 1e-6 ? Math.min(1, aLsq / aExpected) : 0;
       if (confidence < 1e-3) continue; // accumulator owns it this frame
 

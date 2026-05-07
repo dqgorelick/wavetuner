@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 
 // Kept in sync with the palette used by FrequencySpectrumBar / OscillatorControls.
 const OSCILLATOR_COLORS = [
@@ -101,7 +102,9 @@ function drawStatic(
   // fade ramp). Scales both the wave's amplitude AND the stroke
   // alphas so the static trace shrinks + fades with master volume and
   // disappears cleanly during pause/fade-out.
-  const masterMultiplier = audioEngine.getCurrentMasterGain();
+  // drawStatic renders the drone-only static wave; use the drone bus's
+  // effective gain so the strip fades when drones are paused (spacebar).
+  const masterMultiplier = audioEngine.getDroneEffectiveGain();
   // 'wave' keeps individuals at ±0.22·h (aggregate up to 1.75× that).
   // 'beating' renders only the aggregate and gets ~1.5× the amplitude so
   // it's the dominant feature of the strip.
@@ -266,11 +269,13 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
   const routingMap = audioEngine.getRoutingMap();
-  // Live master gain — reflects the user's master-volume slider, the
-  // count-based clip scale, AND any fadeIn/fadeOut/pause ramp on
-  // masterGainNode.gain. Reading it live (vs. computing a target) means
-  // the synth visually tracks the real audio through every transition.
-  const masterScale = audioEngine.getCurrentMasterGain();
+  // Per-pool effective gain: drones see master × droneBusGain (so they
+  // fade with spacebar/pause), keyboard sees master × keyboardBusGain
+  // (so they fade with the keyboard volume slider / on-off toggle).
+  // Reading the live values means the synth visually tracks every
+  // transition — pause ramp, master volume drag, etc.
+  const droneScale = audioEngine.getDroneEffectiveGain();
+  const keyboardScale = audioEngine.getKeyboardEffectiveGain();
 
   const L = new Float32Array(N);
   const R = new Float32Array(N);
@@ -278,7 +283,7 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
 
   for (let k = 0; k < freqs.length; k++) {
     const muted = audioEngine.isMuted(k);
-    const amp = (muted ? 0 : (volumes[k] || 0)) * masterScale;
+    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
     if (amp <= 0) continue;
     const f = freqs[k];
     if (!(f > 0)) continue;
@@ -318,6 +323,39 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
     }
   }
 
+  // Keyboard voices — same recurrence, with equal-power L/R split
+  // matching StereoPannerNode's behavior so a v.pan = 0 voice splits
+  // 0.707/0.707 across L and R (not 0.5/0.5), and full L/R lands at
+  // 1/0 and 0/1.
+  const voices = keyboardVoiceManager.getVoicesForSynth();
+  for (const v of voices) {
+    const f = v.freq;
+    if (!(f > 0)) continue;
+    const amp = v.amp * keyboardScale;
+    if (amp <= 0) continue;
+
+    const panAngle = (v.pan + 1) * Math.PI / 4; // [-1,1] → [0, π/2]
+    const lAmp = Math.cos(panAngle) * amp;
+    const rAmp = Math.sin(panAngle) * amp;
+
+    const dTheta = TWO_PI * f / sampleRate;
+    let theta = v.phase - (N - 1 + sampleOffsetBackward) * dTheta;
+    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
+    let sinT = Math.sin(theta);
+    let cosT = Math.cos(theta);
+    const sinD = Math.sin(dTheta);
+    const cosD = Math.cos(dTheta);
+
+    for (let s = 0; s < N; s++) {
+      L[s] += lAmp * sinT;
+      R[s] += rAmp * sinT;
+      const newSin = sinT * cosD + cosT * sinD;
+      const newCos = cosT * cosD - sinT * sinD;
+      sinT = newSin;
+      cosT = newCos;
+    }
+  }
+
   return { L, R };
 }
 
@@ -335,7 +373,8 @@ function synthHilbertData(bufferSize, sampleRate) {
   const freqs = audioEngine.getAllFrequencies();
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
-  const masterScale = audioEngine.getCurrentMasterGain();
+  const droneScale = audioEngine.getDroneEffectiveGain();
+  const keyboardScale = audioEngine.getKeyboardEffectiveGain();
 
   const X = new Float32Array(bufferSize);
   const Y = new Float32Array(bufferSize);
@@ -343,7 +382,7 @@ function synthHilbertData(bufferSize, sampleRate) {
 
   for (let k = 0; k < freqs.length; k++) {
     const muted = audioEngine.isMuted(k);
-    const amp = (muted ? 0 : (volumes[k] || 0)) * masterScale;
+    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
     if (amp <= 0) continue;
     const f = freqs[k];
     if (!(f > 0)) continue;
@@ -358,6 +397,34 @@ function synthHilbertData(bufferSize, sampleRate) {
 
     for (let s = 0; s < bufferSize; s++) {
       // x = signal = amp·sin(θ); y = Hilbert(x) = −amp·cos(θ).
+      X[s] += amp * sinT;
+      Y[s] -= amp * cosT;
+      const newSin = sinT * cosD + cosT * sinD;
+      const newCos = cosT * cosD - sinT * sinD;
+      sinT = newSin;
+      cosT = newCos;
+    }
+  }
+
+  // Keyboard voices — Hilbert is mono (analytic of the L+R mix), so
+  // panning is irrelevant: each voice contributes the full amp regardless
+  // of where it lands in the stereo field.
+  const voices = keyboardVoiceManager.getVoicesForSynth();
+  for (const v of voices) {
+    const f = v.freq;
+    if (!(f > 0)) continue;
+    const amp = v.amp * keyboardScale;
+    if (amp <= 0) continue;
+
+    const dTheta = TWO_PI * f / sampleRate;
+    let theta = v.phase - (bufferSize - 1) * dTheta;
+    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
+    let sinT = Math.sin(theta);
+    let cosT = Math.cos(theta);
+    const sinD = Math.sin(dTheta);
+    const cosD = Math.cos(dTheta);
+
+    for (let s = 0; s < bufferSize; s++) {
       X[s] += amp * sinT;
       Y[s] -= amp * cosT;
       const newSin = sinT * cosD + cosT * sinD;
@@ -546,6 +613,10 @@ export default function Oscilloscope({
       // static waveform draws the actual audio phase (and therefore the
       // real beat pattern), not an idealized all-phases-aligned snapshot.
       audioEngine.updatePhases();
+      // Same advance for keyboard voices so their contributions in the
+      // synth XY / Hilbert paths render in the right phase relationship
+      // with the drone.
+      keyboardVoiceManager.updatePhases();
       // Then rebase the accumulator from what the analyzer actually
       // sees, eliminating drift from Web Audio start-phase uncertainty
       // and freq-smoothing approximation. Oscillators routed only to

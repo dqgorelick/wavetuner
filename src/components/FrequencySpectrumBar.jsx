@@ -1,5 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import tuning from '../audio/Tuning';
+import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 
 const OSCILLATOR_COLORS = [
   '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
@@ -183,10 +185,10 @@ function offsetLine(x1, y1, x2, y2, r1, r2) {
   };
 }
 
-// Active dots collision-resolve so they don't visually overlap. Muted dots
-// (passed via mutedMask) are SKIPPED — they're hidden anyway, so they
-// shouldn't push the visible orbs aside.
-function resolveCollisions(targetsPx, dotSize, mutedMask) {
+// Dots collision-resolve so they don't visually overlap. Muted dots
+// participate too — they're rendered (dimmed) and need to push the
+// visible orbs aside instead of stacking under them.
+function resolveCollisions(targetsPx, dotSize) {
   const minGap = dotSize * 0.85;
   const resolved = [...targetsPx];
   if (resolved.length < 2) return resolved;
@@ -194,7 +196,6 @@ function resolveCollisions(targetsPx, dotSize, mutedMask) {
   for (let iter = 0; iter < 20; iter++) {
     const sorted = resolved
       .map((_, i) => i)
-      .filter((i) => !mutedMask?.[i])
       .sort((a, b) => resolved[a] - resolved[b]);
     let moved = false;
     for (let i = 1; i < sorted.length; i++) {
@@ -213,7 +214,17 @@ function resolveCollisions(targetsPx, dotSize, mutedMask) {
   return resolved;
 }
 
-function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, onActiveChange, extraActive }) {
+function FrequencySpectrumBar({
+  oscillatorCount = 4,
+  fineTuneEnabled = false,
+  onActiveChange,
+  extraActive,
+  // When true (e.g. the keyboard tray is open), grabbing or starting a
+  // drag on a muted orb does NOT auto-unmute it. The orbs in this mode
+  // serve primarily as a tuning interface for the keyboard, so we
+  // shouldn't surprise-restart drone playback when the user nudges one.
+  suppressAutoUnmute = false,
+}) {
   const [barWidth, setBarWidth] = useState(500 - 2 * BAR_H_PADDING);
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
@@ -227,6 +238,11 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
 
   const containerRef = useRef(null);
   const dragRef = useRef({});
+  // Refs to each orb / label DOM element so the keyboard-voice rAF loop
+  // can flip a `kbd-active` class and toggle bubble states without
+  // round-tripping through React state.
+  const dotElsRef = useRef([]);
+  const labelElsRef = useRef([]);
   const rangeRef = useRef(range);
   const barWidthRef = useRef(barWidth);
   const grabbedRef = useRef(grabbedOscs);
@@ -242,6 +258,102 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
   useEffect(() => { grabbedRef.current = grabbedOscs; }, [grabbedOscs]);
   useEffect(() => { fineTuneRef.current = fineTuneEnabled; }, [fineTuneEnabled]);
   useEffect(() => { shiftRef.current = shiftHeld; }, [shiftHeld]);
+
+  // Keyboard-voice glow loop. Each frame: ask the voice manager which
+  // voices are sounding, group them by drone slot (via tuning), and
+  // imperatively flip a `kbd-active` class on the matching orb + label
+  // for octave-0 voices. ±1 / ±2 voices light up small bubbles flanking
+  // the label (IG-photo style — far-octave lit while the in-between
+  // bubble stays dim if there's nothing playing closer in).
+  //
+  // Direct DOM mutation rather than React state because envelope amps
+  // change every audio block and a setState rerender on each tick would
+  // thrash the spectrum bar's draggable elements.
+  useEffect(() => {
+    const ACTIVE_THRESHOLD = 0.05; // env amp below this counts as silent
+    let raf = null;
+    const tick = () => {
+      const voices = keyboardVoiceManager.getActiveVoices();
+      // slot → Map(octave → maxAmpAtThatOctave)
+      const slotOctAmps = new Map();
+      for (const v of voices) {
+        const slot = tuning.droneSlotForDegree(v.degree);
+        if (slot < 0) continue;
+        let octs = slotOctAmps.get(slot);
+        if (!octs) { octs = new Map(); slotOctAmps.set(slot, octs); }
+        const cur = octs.get(v.octave) || 0;
+        if (v.amp > cur) octs.set(v.octave, v.amp);
+      }
+
+      const dots = dotElsRef.current;
+      const labels = labelElsRef.current;
+      const totalSlots = Math.max(dots.length, labels.length);
+      const MAX_OCT = 5;
+      for (let i = 0; i < totalSlots; i++) {
+        const octs = slotOctAmps.get(i);
+
+        // Orb / label "kbd-active" fires when ANY octave of this slot's
+        // scale degree is sounding — exact pitch or octaves above /
+        // below. The bubble columns already show *which* specific
+        // octaves are active; the orb itself just signals "this slot
+        // is being played."
+        let maxAmp = 0;
+        if (octs) {
+          for (const a of octs.values()) {
+            if (a > maxAmp) maxAmp = a;
+          }
+        }
+        const slotActive = maxAmp > ACTIVE_THRESHOLD;
+
+        // Skip while user is actively dragging/grabbing — those states
+        // have their own dim styling and shouldn't flicker on retrigger.
+        const dot = dots[i];
+        if (dot) {
+          const interacting = dot.classList.contains('dragging') ||
+                              dot.classList.contains('grabbed');
+          dot.classList.toggle('kbd-active', !interacting && slotActive);
+        }
+
+        const label = labels[i];
+        if (!label) continue;
+        label.classList.toggle('kbd-active', slotActive);
+
+        // For each side: a bubble at distance `n` is
+        //   'on'  if octave (sign·n) is currently sounding
+        //   'dim' if any further-out octave on this side is sounding
+        //         (so n is an "in-between" placeholder, IG-pagination
+        //         style)
+        //   ''    (hidden) otherwise
+        const updateSide = (sign) => {
+          // Pre-compute active flags up to MAX_OCT so we can answer
+          // "is anything further than n active" in one pass.
+          const active = new Array(MAX_OCT + 1).fill(false); // index 1..MAX_OCT
+          let maxActive = 0;
+          for (let n = 1; n <= MAX_OCT; n++) {
+            const a = (octs && octs.get(sign * n)) || 0;
+            if (a > ACTIVE_THRESHOLD) {
+              active[n] = true;
+              if (n > maxActive) maxActive = n;
+            }
+          }
+          for (let n = 1; n <= MAX_OCT; n++) {
+            const oct = sign * n;
+            const sel = oct > 0 ? `+${oct}` : `${oct}`;
+            const el = label.querySelector(`[data-octave="${sel}"]`);
+            if (!el) continue;
+            if (active[n])       el.dataset.state = 'on';
+            else if (n < maxActive) el.dataset.state = 'dim';
+            else                 el.dataset.state = '';
+          }
+        };
+        updateSide(-1);
+        updateSide(1);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -339,8 +451,8 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
     [frequencies, barWidth, range.logMin, range.logMax]
   );
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, DOT_SIZE, muted),
-    [freqXs, muted]
+    () => resolveCollisions(freqXs, DOT_SIZE),
+    [freqXs]
   );
 
   const getSensitivity = () =>
@@ -352,7 +464,9 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
       if (next.has(index)) next.delete(index);
       else {
         next.add(index);
-        if (audioEngine.isMuted(index)) audioEngine.unmuteOscillator(index);
+        if (!suppressAutoUnmute && audioEngine.isMuted(index)) {
+          audioEngine.unmuteOscillator(index);
+        }
       }
       return next;
     });
@@ -366,8 +480,12 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
     e.preventDefault();
     e.stopPropagation();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
-    // Selecting a muted osc with the mouse unmutes it.
-    if (audioEngine.isMuted(index)) audioEngine.unmuteOscillator(index);
+    // Selecting a muted osc with the mouse unmutes it — UNLESS the
+    // keyboard tray is up (then the orbs are a tuning UI for the
+    // keyboard and shouldn't kick the drone back on by surprise).
+    if (!suppressAutoUnmute && audioEngine.isMuted(index)) {
+      audioEngine.unmuteOscillator(index);
+    }
     const rect = containerRef.current.getBoundingClientRect();
     dragRef.current[e.pointerId] = {
       index,
@@ -543,12 +661,13 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
     }
   }, [grabbedOscs]);
 
-  // Click-outside to release grabs.
+  // Click-anywhere-but-a-dot to release grabs. Clicks on a dot have their own
+  // toggle behavior (via pointerup → toggleGrab); clicks on the bar background,
+  // ticks, or anywhere else in the document should release the grab.
   useEffect(() => {
     if (grabbedOscs.size === 0) return;
     const handleClick = (e) => {
-      const container = containerRef.current;
-      if (container && container.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('.fsb-dot')) return;
       releaseAllGrabs();
     };
     // Defer attachment so the click that toggled grab on doesn't immediately release.
@@ -757,7 +876,9 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
 
       <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
         {frequencies.map((_, i) => {
-          if (muted[i]) return null;
+          // Lines stay visible for muted orbs too — same opacity treatment as
+          // unmuted, since the line just maps the orb to its position on the
+          // spectrum bar (it's not a "playing" signifier).
           const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
           const isActive = draggingDots.has(i) || grabbedOscs.has(i);
           const opacity = isActive ? 0.6 : 0.35;
@@ -836,6 +957,7 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
         return (
           <div
             key={i}
+            ref={(el) => { dotElsRef.current[i] = el; }}
             className={classes.join(' ')}
             style={{
               left: dotXs[i] - DOT_SIZE / 2,
@@ -858,10 +980,33 @@ function FrequencySpectrumBar({ oscillatorCount = 4, fineTuneEnabled = false, on
         return (
           <div
             key={`label-${i}`}
+            ref={(el) => { labelElsRef.current[i] = el; }}
             className={`fsb-dot-label ${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''}`}
             style={{ left: dotXs[i], top: -2, color }}
           >
-            {isActive ? formatActiveFreq(f) : i + 1}
+            {/* Octave columns flanking the number. Vertical stacks of
+                up to 5 bubbles per side. Looked up by `data-octave`
+                from the rAF tick. Order chosen so flex-direction:
+                column places the closest-to-root bubble where the user
+                wants it: TOP of left col (-1) and BOTTOM of right col
+                (+1). */}
+            <span className="fsb-octave-col fsb-octave-col-left">
+              <span className="fsb-octave-bubble" data-octave="-1" />
+              <span className="fsb-octave-bubble" data-octave="-2" />
+              <span className="fsb-octave-bubble" data-octave="-3" />
+              <span className="fsb-octave-bubble" data-octave="-4" />
+              <span className="fsb-octave-bubble" data-octave="-5" />
+            </span>
+            <span className="fsb-label-text">
+              {isActive ? formatActiveFreq(f) : i + 1}
+            </span>
+            <span className="fsb-octave-col fsb-octave-col-right">
+              <span className="fsb-octave-bubble" data-octave="+5" />
+              <span className="fsb-octave-bubble" data-octave="+4" />
+              <span className="fsb-octave-bubble" data-octave="+3" />
+              <span className="fsb-octave-bubble" data-octave="+2" />
+              <span className="fsb-octave-bubble" data-octave="+1" />
+            </span>
           </div>
         );
       })}

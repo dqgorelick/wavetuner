@@ -602,6 +602,29 @@ kbd {
   accent-color: rgba(240, 244, 255, 0.85);
 }
 
+.envelope-section .envelope-graph {
+  display: block;
+  width: 100%;
+  height: 80px;
+  margin-top: 6px;
+  margin-bottom: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+.envelope-graph-fill {
+  fill: rgba(240, 244, 255, 0.18);
+  stroke: none;
+}
+.envelope-graph-line {
+  fill: none;
+  stroke: rgba(240, 244, 255, 0.85);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
 .permission-button {
   display: block;
   width: 100%;
@@ -939,8 +962,8 @@ kbd {
 
 .osc-grid-row {
   display: grid;
-  /* ALL fixed | per-osc cells (one per --cols) | MORE fixed */
-  grid-template-columns: 50px repeat(var(--cols), 50px) 50px;
+  /* KBD fixed | ALL fixed | per-osc cells (one per --cols) | MORE fixed */
+  grid-template-columns: 50px 50px repeat(var(--cols), 50px) 50px;
   gap: 6px;
   align-items: end;
   justify-content: center;
@@ -1091,6 +1114,157 @@ kbd {
   color: rgba(255, 255, 255, 0.55);
   font-size: 10px;
   letter-spacing: 0.5px;
+}
+
+/* Keyboard column — sits to the LEFT of the master ALL column, holds
+   the keyboard volume fader and the keyboard on/off button. Same width
+   and alignment as the ALL column for visual symmetry. */
+.osc-kbd-col {
+  flex-shrink: 0;
+}
+.osc-kbd-col-label {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.kbd-fader.disabled {
+  opacity: 0.45;
+}
+/* Bottom-row buttons keep their icon-only look — labels live OUTSIDE
+   the button now, in the .bottom-cell-wrap below. */
+.bottom-kbd-toggle.on {
+  color: rgba(46, 204, 64, 0.95);
+}
+.bottom-kbd-toggle.off {
+  opacity: 0.55;
+}
+
+/* Bottom-cell wrapper: stacks the existing <button> on top of a small
+   caption ("drone" / "keyboard" / "left" / "right" / "both" / "more" /
+   "less"). The wrapper is what sits in the grid; the button keeps its
+   original .bottom-cell styling so it doesn't change look. */
+.bottom-cell-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.bottom-cell-caption {
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.6);
+  text-align: center;
+  text-transform: lowercase;
+  font-family: monospace;
+  font-weight: 600;
+  /* min-height keeps an empty caption (e.g. unrouted osc, multichannel
+     setup, or where the label is just whitespace) from collapsing the
+     wrapper height — keeps every cell's button vertically aligned. */
+  min-height: 9px;
+}
+/* Caption follows the kbd-toggle's "on" tint so the keyboard pair
+   reads as a single unit. */
+.bottom-kbd-toggle.on + .bottom-cell-caption {
+  color: rgba(46, 204, 64, 0.8);
+}
+/* Don't double-dim a muted osc's caption — the muted button already
+   reads quiet. Pull the caption fully so the routing label stays
+   readable. */
+.bottom-mute.muted + .bottom-cell-caption {
+  opacity: 0.55;
+}
+
+/* Keyboard "hold" button — in the readout-row at osc-kbd-col, sits
+   directly above the keys "more / less" tray-toggle. Toggle: green
+   tint when on, neutral when off. The voice manager checks this state
+   on every noteOn (regardless of input source — MIDI, computer kbd,
+   on-screen) to apply the toggle-on-press behavior. */
+.osc-kbd-hold-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
+}
+.osc-kbd-hold-btn {
+  width: 100%;
+  padding: 4px 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.osc-kbd-hold-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.osc-kbd-hold-btn.on {
+  background: rgba(46, 204, 64, 0.22);
+  border-color: rgba(46, 204, 64, 0.65);
+  color: rgba(220, 255, 220, 1);
+}
+
+/* Keys tray-toggle button — sits in the octave row at osc-kbd-col so
+   its top edge aligns flush with the top of the ×2 octave button next
+   to it. Caption ("more" / "less") sits beneath. The cell overrides
+   the .octave-cell flex-column gap (which was sized for two stacked
+   ×2 / /2 buttons) so a single button + caption packs to the top. */
+.osc-kbd-tray-cell {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 2px;
+}
+.osc-kbd-tray-arrow {
+  width: 100%;
+  padding: 4px 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.2s;
+}
+.osc-kbd-tray-arrow:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.osc-kbd-tray-arrow .button-icon {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  transition: transform 0.2s;
+}
+.osc-kbd-tray-arrow.open .button-icon {
+  transform: rotate(180deg);
+}
+
+/* Paused drone state — when the user presses spacebar / the play
+   button, drones go silent but the orbs (which represent drone slots)
+   keep showing. Dim them so the visual reflects the audio. Excludes:
+   muted (already dim), kbd-active (the keyboard is currently sounding
+   that slot — full bright wins), drag/grab/active/active-freq (user
+   interaction). */
+#wrapper.paused .fsb-dot:not(.muted):not(.kbd-active):not(.dragging):not(.grabbed):not(.boosted) {
+  opacity: 0.42;
+  box-shadow: 0 0 6px var(--dot-color);
+}
+#wrapper.paused .fsb-dot-label:not(.muted):not(.kbd-active):not(.active-freq) {
+  opacity: 0.55;
+}
+/* The unmuted bottom-row mute buttons (drone toggle cells) also dim
+   slightly when paused, so their "ready to play" state reads as
+   paused-but-on. Subtle drop, not a full mute look. */
+#wrapper.paused .bottom-mute:not(.muted) {
+  opacity: 0.7;
 }
 
 /* Global "all" orb — matches the per-osc orbs on the spectrum bar (same size,
@@ -1617,8 +1791,11 @@ kbd {
   flex-shrink: 0;
 }
 
-/* Master fader has no per-osc freq, so only vertical drag matters. */
-.volume-fader.master-fader {
+/* Master + keyboard faders have no per-osc freq, so only vertical
+   drag matters. Both also share the same "global" hover treatment
+   below (white brightening rather than per-osc color). */
+.volume-fader.master-fader,
+.volume-fader.kbd-fader {
   cursor: ns-resize;
 }
 
@@ -1651,21 +1828,24 @@ kbd {
 
 /* Hover preview: half-strength osc color when the user hovers but isn't dragging.
    Excluded on .active (so the active state wins) and on .muted (so muted faders
-   stay neutral). The :not(.master-fader) keeps this from dimming the master
-   (which has no --row-color and would otherwise render the fill invisible). */
-.fader-cell:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-fill {
+   stay neutral). The :not(.master-fader):not(.kbd-fader) keeps this from
+   touching the global faders (no --row-color set on those columns; using it
+   would render their fill invisible). */
+.fader-cell:not(.active):not(.muted) .volume-fader:not(.master-fader):not(.kbd-fader):hover .volume-fader-fill {
   background: var(--row-color);
   opacity: 0.5;
 }
-.fader-cell:not(.active):not(.muted) .volume-fader:not(.master-fader):hover .volume-fader-thumb {
+.fader-cell:not(.active):not(.muted) .volume-fader:not(.master-fader):not(.kbd-fader):hover .volume-fader-thumb {
   background: var(--row-color);
 }
 
-/* Master fader hover: brighten the white fill instead of dimming. */
-.osc-all-col .volume-fader.master-fader:hover .volume-fader-fill {
+/* Master + keyboard fader hover: brighten the white fill instead of dimming. */
+.osc-all-col .volume-fader.master-fader:hover .volume-fader-fill,
+.osc-kbd-col .volume-fader.kbd-fader:hover .volume-fader-fill {
   background: rgba(255, 255, 255, 0.45);
 }
-.osc-all-col .volume-fader.master-fader:hover .volume-fader-thumb {
+.osc-all-col .volume-fader.master-fader:hover .volume-fader-thumb,
+.osc-kbd-col .volume-fader.kbd-fader:hover .volume-fader-thumb {
   background: rgba(255, 255, 255, 0.95);
 }
 
@@ -1917,9 +2097,9 @@ kbd {
   transition: opacity 0.15s, width 0.15s;
 }
 
-.fsb-freq-marker.muted {
-  opacity: 0.25;
-}
+/* Spectrum-bar markers stay bright regardless of mute — they're
+   purely a position indicator on the log-scale bar, not a playing-or-
+   not signifier. (The orb itself still dims when muted.) */
 
 .fsb-freq-marker.active {
   width: 3px;
@@ -1999,17 +2179,100 @@ kbd {
 
 /* Muted oscillators: hide both the orb and its number label entirely.
    The colored vertical marker on the bar still shows the freq position. */
+/* Muted orbs stay visible — at reduced opacity / no glow — so they can
+   still serve as drag targets. Two scenarios in particular need this:
+   (1) the user wants to grab a muted orb, drag it, and have the drone
+   come back on (the existing auto-unmute-on-drag does this); (2) the
+   keyboard tray is open and the user is using these orbs as a *tuning*
+   interface for the keyboard — in that case auto-unmute is suppressed
+   (see FrequencySpectrumBar.jsx) but the orbs still need to be
+   manipulable. */
 .fsb-dot.muted {
-  display: none;
+  opacity: 0.4;
+  box-shadow: none;
+}
+.fsb-dot.muted:hover {
+  opacity: 0.6;
 }
 .fsb-dot-label.muted {
+  opacity: 0.5;
+}
+
+/* `kbd-active` = the keyboard is currently sounding any octave of this
+   slot. Pushed past the drone-unmuted baseline (0.7 + 12 px glow) so
+   keyboard activation visibly *outshines* a normally-playing drone —
+   the user can spot a played slot at a glance. Layered glow gives it
+   the same bloomy treatment as `.boosted`, with slightly more spread.
+   Excludes drag / grabbed via :not() so user interaction always wins;
+   the same selector overrides both muted's dim opacity and the
+   default's lower brightness. */
+.fsb-dot.kbd-active:not(.dragging):not(.grabbed) {
+  opacity: 1;
+  box-shadow: 0 0 28px var(--dot-color), 0 0 12px var(--dot-color);
+  z-index: 25;
+}
+.fsb-dot-label.kbd-active {
+  opacity: 1;
+  text-shadow: 0 0 6px currentColor, 0 0 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Octave columns flanking the number — a vertical stack of up to 5
+   bubbles per side, each representing one octave's distance from the
+   slot's pitch. Per the layout spec:
+     LEFT col  top → bottom = -1, -2, -3, -4, -5  (down means deeper)
+     RIGHT col top → bottom = +5, +4, +3, +2, +1  (down means closer)
+   Both columns extend OUTWARD from the central drone-root row. */
+.fsb-octave-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* No gap — each visible bubble manages its own vertical margin so
+     the column collapses to 0 height when nothing is sounding. */
+}
+.fsb-octave-col-left  { justify-content: flex-start; }
+.fsb-octave-col-right { justify-content: flex-end; }
+
+/* Each bubble: collapsed to 0 height when not playing, expands to a
+   3-px disk when its octave (or a further-out one on the same side) is
+   active. rAF loop sets data-state to 'on' or 'dim'. Same IG-pagination
+   logic as before, just stacked vertically. */
+.fsb-octave-bubble {
+  display: block;
+  width: 3px;
+  height: 0;
+  margin: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.08s linear, height 0.08s linear, margin 0.08s linear;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+.fsb-octave-bubble[data-state='dim'],
+.fsb-octave-bubble[data-state='on'] {
+  height: 3px;
+  margin: 1px 0;
+}
+.fsb-octave-bubble[data-state='dim'] { opacity: 0.25; }
+.fsb-octave-bubble[data-state='on']  { opacity: 0.95; }
+/* While dragging an orb the label morphs into a freq readout — hide
+   the bubble columns in that state so the readout reads cleanly. */
+.fsb-dot-label.active-freq .fsb-octave-col {
   display: none;
 }
 
 .fsb-dot-label {
   position: absolute;
   transform: translate(-50%, -100%);
-  width: 28px;
+  /* Flex layout: [left octave column] [number] [right octave column].
+     align-items: stretch so the columns can reach the full label
+     height (handled by gap below). The number sits in its own flex
+     child between the columns. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 28px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
   font-weight: 700;
@@ -2021,6 +2284,7 @@ kbd {
   opacity: 0.9;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
 }
+.fsb-label-text { /* the number itself sits in the flex row's center */ }
 
 .fsb-active-freq {
   position: absolute;
@@ -2036,9 +2300,8 @@ kbd {
   z-index: 200;
 }
 
-.fsb-dot-label.muted {
-  opacity: 0.35;
-}
+/* (The earlier `.fsb-dot-label.muted` rule defines opacity; do not
+   re-override here.) */
 
 /* Active drag: show frequency value instead of oscillator number.
    Wider + bolder so the readout reads cleanly above the orb. */
@@ -2049,5 +2312,403 @@ kbd {
   opacity: 1;
   text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
   letter-spacing: -0.3px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Keyboard tray — slim ~50 px strip rolling up from the bottom edge.
+   When `#wrapper.kbd-tray-open` is set, every bottom-anchored fixed
+   element shifts up by --kbd-tray-h via the overrides at the end of
+   this block. Closed state shows a small handle in the bottom-right
+   corner.
+   ─────────────────────────────────────────────────────────────────── */
+
+#wrapper {
+  --kbd-tray-h: 64px;
+}
+
+.kbd-tray-handle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 600;
+  background: rgba(20, 20, 20, 0.85);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.kbd-tray-handle:hover {
+  background: rgba(40, 40, 40, 0.95);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.kbd-tray {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--kbd-tray-h);
+  z-index: 600;
+  display: grid;
+  grid-template-columns: 130px 1fr 130px;
+  align-items: stretch;
+  background: rgba(15, 15, 15, 0.92);
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.kbd-tray-left,
+.kbd-tray-right {
+  display: flex;
+  padding: 0 10px;
+  color: #fff;
+  font-size: 12px;
+}
+.kbd-tray-left {
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 3px;
+}
+.kbd-tray-right {
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 4px;
+}
+.kbd-tray-octave-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: center;
+}
+
+.kbd-octave-btn {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.4px;
+}
+.kbd-octave-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.kbd-octave-label {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  letter-spacing: 0.2px;
+  opacity: 0.85;
+  min-width: 40px;
+  text-align: center;
+}
+
+.kbd-labels-toggle {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.2px;
+}
+.kbd-labels-toggle.on {
+  background: rgba(46, 204, 64, 0.18);
+  border-color: rgba(46, 204, 64, 0.6);
+  opacity: 1;
+}
+.kbd-labels-toggle.off {
+  opacity: 0.65;
+}
+.kbd-labels-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.kbd-labels-toggle.on:hover {
+  background: rgba(46, 204, 64, 0.28);
+}
+
+.kbd-input-toggle,
+.kbd-tray-close {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 8px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.kbd-input-toggle.on {
+  background: rgba(46, 204, 64, 0.18);
+  border-color: rgba(46, 204, 64, 0.6);
+}
+.kbd-input-toggle.off {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.15);
+  opacity: 0.7;
+}
+.kbd-tray-close {
+  width: 28px;
+  padding: 0;
+}
+.kbd-input-toggle:hover,
+.kbd-tray-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+/* Keys area — relative parent for the absolute-positioned key elements
+   AND for the off-screen arrow indicators (rendered as siblings of
+   `.osk`). The top padding reserves a "dot row" zone above the keys
+   where each key's color dot floats; the side padding reserves
+   gutters where the L/R arrows sit, outside the actual key blocks. */
+.kbd-tray-keys {
+  position: relative;
+  height: 100%;
+  padding: 14px 22px 2px 22px;
+  box-sizing: border-box;
+}
+
+.osk {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.osk-key {
+  position: absolute;
+  top: 0;
+  cursor: pointer;
+  box-sizing: border-box;
+  border-radius: 0 0 1px 1px;
+  transition: border-color 0.06s linear;
+}
+
+/* Flat slate-gray whites (not actual white) and dark grays for blacks
+   — no gradients, no inset shadows, minimal skeumorphism. Activation
+   is signaled by the colored ::after overlay (drone slot color) plus
+   a brighter outline tint, both driven by --glow-alpha. */
+.osk-white {
+  width: calc(100% / var(--white-count));
+  height: 100%;
+  background: #b8b8b8;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-top: none;
+  z-index: 1;
+}
+
+.osk-black {
+  height: 62%;
+  background: #2a2a2a;
+  border: 1px solid rgba(0, 0, 0, 0.95);
+  border-top: none;
+  z-index: 2;
+}
+
+/* Mapping-silent keys (jump-mode out-of-scale, or black keys in white-only
+   mode). Faded so the active mapping is visible at a glance. Pointer
+   events still fire — voice manager just no-ops on these keys. */
+.osk-key.silent {
+  filter: brightness(0.45) saturate(0.5);
+  cursor: default;
+}
+.osk-key.silent::after {
+  display: none;
+}
+
+/* Right side of keyboard tray: compact mapping picker. Two stacked
+   rows ("keys: all/white" and "octaves: jump/fill") sized to fit the
+   ~64 px tray height. Toggle buttons reuse the on/off treatment from
+   .kbd-labels-toggle (green when active, dim when inactive). */
+.kbd-tray-mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+}
+.kbd-tray-mapping-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  min-width: 44px;
+}
+.kbd-tray-mapping-btn {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.2px;
+}
+.kbd-tray-mapping-btn.on {
+  background: rgba(46, 204, 64, 0.18);
+  border-color: rgba(46, 204, 64, 0.6);
+  opacity: 1;
+}
+.kbd-tray-mapping-btn.off {
+  opacity: 0.65;
+}
+.kbd-tray-mapping-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.kbd-tray-mapping-btn.on:hover {
+  background: rgba(46, 204, 64, 0.28);
+}
+
+/* Activation tint — driven by --glow-alpha (set per frame from each
+   voice's envelope amp). Whites DARKEN when played; blacks LIGHTEN.
+   Both effects are subtle (overlay opacity ~0.4 at full amp), so the
+   key still reads as itself rather than a different color. The dot
+   below this key handles the "which slot" affordance via its color. */
+.osk-key::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: var(--glow-alpha, 0);
+  transition: opacity 0.04s linear;
+}
+.osk-white::after { background: rgba(0, 0, 0, 0.4); }
+.osk-black::after { background: rgba(255, 255, 255, 0.45); }
+
+/* Color dot — small disk floating ABOVE each key, colored after the
+   drone slot supplying that scale degree. Sits in the dot-row zone
+   reserved by `.kbd-tray-keys`'s top padding so every key's dot lines
+   up at the same y, regardless of black-vs-white. The disk EXPANDS on
+   activation: scale tracks --glow-alpha (1× idle, ~2.5× at full
+   envelope amp) so a played key reads as a bright bigger circle. */
+.key-dot {
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transform: translateX(-50%) scale(calc(1 + var(--glow-alpha, 0) * 1.6));
+  transform-origin: 50% 50%;
+  background: transparent;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.05s linear;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Off-screen note indicators — small triangles in the L/R gutters of
+   `.kbd-tray-keys` (outside the actual keys), vertically aligned with
+   the dot row above the keyboard. Light up in the slot color of any
+   voice currently playing outside the visible MIDI range. CSS triangle
+   drawn with borders; --arrow-color and --arrow-alpha are set per
+   frame from the rAF tick. */
+.osk-arrow {
+  position: absolute;
+  top: 2px;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  opacity: var(--arrow-alpha, 0);
+  transition: opacity 0.08s linear;
+  z-index: 5;
+  filter: drop-shadow(0 0 2px var(--arrow-color, rgba(255, 255, 255, 0.6)));
+}
+.osk-arrow-left {
+  left: 4px;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-right: 8px solid var(--arrow-color, #fff);
+}
+.osk-arrow-right {
+  right: 4px;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 8px solid var(--arrow-color, #fff);
+}
+
+/* Computer-keyboard letter overlay — visible only when the labels
+   toggle is on. Positioned just above the color dot so both can coexist
+   on the same slim key. White-key text reads dark; black-key text reads
+   light. */
+.key-letter {
+  position: absolute;
+  left: 50%;
+  bottom: 13px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  font-family: inherit;
+}
+.osk-white .key-letter {
+  color: rgba(0, 0, 0, 0.85);
+}
+.osk-black .key-letter {
+  color: rgba(255, 255, 255, 0.95);
+  bottom: 11px;
+  font-size: 9px;
+}
+
+/* When the tray is open, shift bottom-anchored fixed elements up by the
+   tray height so they don't get hidden behind it. Listed explicitly
+   rather than via a wholesale `bottom += var(...)` because each element
+   has its own bottom origin (some include safe-area inset, some don't). */
+#wrapper.kbd-tray-open .freq-spectrum-bar {
+  bottom: calc(60px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
+}
+#wrapper.kbd-tray-open.expanded-mode .freq-spectrum-bar {
+  bottom: calc(254px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
+}
+#wrapper.kbd-tray-open.fullscreen-mode .freq-spectrum-bar {
+  bottom: calc(20px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
+}
+#wrapper.kbd-tray-open .osc-controls-panel {
+  bottom: calc(8px + var(--kbd-tray-h));
+}
+#wrapper.kbd-tray-open .settings-panel {
+  bottom: calc(70px + var(--kbd-tray-h));
+}
+#wrapper.kbd-tray-open .fullscreen-freq-list {
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
 }
 

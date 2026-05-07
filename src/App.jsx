@@ -1,12 +1,35 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import audioEngine from './audio/AudioEngine';
+import tuning from './audio/Tuning';
+import keyboardVoiceManager from './audio/KeyboardVoiceManager';
+import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
+import midiInput from './audio/MidiInput';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
 import FullscreenFreqList from './components/FullscreenFreqList';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
+import KeyboardTray from './components/KeyboardTray';
 import './App.css';
+
+// Parse "A,D,S,R" envelope param (A/D/R in ms, S in 0..1 or 0..100). Returns
+// {attack, decay, sustain, release} with each in seconds, or null on bad input.
+function parseEnvParam(str) {
+  if (!str) return null;
+  const parts = str.split(',').map(Number);
+  if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return null;
+  let [aMs, dMs, s, rMs] = parts;
+  // Sustain may be encoded as 0..100 (older URLs) or 0..1 — both round-trip
+  // sanely if we treat anything > 1 as a percentage.
+  if (s > 1) s = s / 100;
+  return {
+    attack: Math.max(0.001, aMs / 1000),
+    decay: Math.max(0.001, dMs / 1000),
+    sustain: Math.max(0, Math.min(1, s)),
+    release: Math.max(0.001, rMs / 1000),
+  };
+}
 
 // Parse URL params for initial state (called once at module load)
 function getInitialStateFromURL() {
@@ -14,11 +37,15 @@ function getInitialStateFromURL() {
   const fParam = params.get('f');
   const vParam = params.get('v');
   const rParam = params.get('r');
-  
+  const dEnv = parseEnvParam(params.get('dEnv'));
+  const kEnv = parseEnvParam(params.get('kEnv'));
+
+  let base = { count: 4, frequencies: null, volumes: null, routing: null };
+
   if (fParam && vParam) {
     const frequencies = fParam.split(',').map(Number);
     const volumes = vParam.split(',').map(Number); // Keep as 0-100 (initialize() will convert)
-    
+
     // Parse routing: "0:0.1,1:1,2:0" => { 0: [0,1], 1: [1], 2: [0] }
     let routing = null;
     if (rParam) {
@@ -30,22 +57,39 @@ function getInitialStateFromURL() {
         }
       });
     }
-    
+
     if (frequencies.length >= 2 && volumes.length >= 2) {
       const count = Math.min(frequencies.length, volumes.length, 10);
-      return { 
-        count, 
-        frequencies: frequencies.slice(0, count), 
+      base = {
+        count,
+        frequencies: frequencies.slice(0, count),
         volumes: volumes.slice(0, count),
-        routing
+        routing,
       };
     }
   }
-  return { count: 4, frequencies: null, volumes: null, routing: null };
+  return { ...base, dEnv, kEnv };
 }
 
 // Compute once at module load
 const INITIAL_URL_STATE = getInitialStateFromURL();
+
+// Push envelope params from the URL into the singletons immediately, so
+// the first audio scheduled (initial drone fade-in, default keyboard
+// state) already uses the user's saved values rather than the
+// hard-coded defaults.
+if (INITIAL_URL_STATE.dEnv) {
+  droneEnvelope.attack = INITIAL_URL_STATE.dEnv.attack;
+  droneEnvelope.decay = INITIAL_URL_STATE.dEnv.decay;
+  droneEnvelope.sustain = INITIAL_URL_STATE.dEnv.sustain;
+  droneEnvelope.release = INITIAL_URL_STATE.dEnv.release;
+}
+if (INITIAL_URL_STATE.kEnv) {
+  keyboardEnvelope.attack = INITIAL_URL_STATE.kEnv.attack;
+  keyboardEnvelope.decay = INITIAL_URL_STATE.kEnv.decay;
+  keyboardEnvelope.sustain = INITIAL_URL_STATE.kEnv.sustain;
+  keyboardEnvelope.release = INITIAL_URL_STATE.kEnv.release;
+}
 
 
 function App() {
@@ -101,6 +145,34 @@ function App() {
   }, [selectedOscs, fineTuningOscs]);
   // 'simple' (default compact strip) | 'expanded' (full panel) | 'fullscreen' (only scope+spectrum)
   const [uiMode, setUiMode] = useState('simple');
+  // Keyboard tray (slim ~50 px strip rolling up from the bottom). Lifted
+  // to App so the wrapper can pick up a `kbd-tray-open` class — that
+  // class shifts every bottom-anchored fixed element up by the tray's
+  // height (see App.css).
+  const [isKbdTrayOpen, setIsKbdTrayOpen] = useState(false);
+  // Keyboard mapping picker. Lives in React state so SettingsPanel can
+  // render the radios; pushed into the Tuning singleton on change so
+  // non-React callers (voice manager, computer-keyboard hook) see it via
+  // tuning.degreeAndOctaveForMidi.
+  const [kbdKeyMode, setKbdKeyMode] = useState('chromatic'); // 'chromatic' | 'white-only'
+  const [kbdFillMode, setKbdFillMode] = useState('fill');    // 'fill' | 'jump'
+  useEffect(() => { tuning.setKeyMode(kbdKeyMode); }, [kbdKeyMode]);
+  useEffect(() => { tuning.setFillMode(kbdFillMode); }, [kbdFillMode]);
+  // Auto-default: when there are more drone notes than fit in one
+  // octave for the current key mode, the only useful fill mode is
+  // "fill" (jump would silence the extra notes). Threshold: 7 for
+  // white-only (7 keys per octave), 11 for chromatic (12 keys per
+  // octave — at N=12 jump and fill collapse to the same thing, but
+  // beyond that fill is the only mode that exposes every degree).
+  useEffect(() => {
+    const threshold = kbdKeyMode === 'white-only' ? 7 : 11;
+    if (oscillatorCount > threshold) setKbdFillMode('fill');
+  }, [oscillatorCount, kbdKeyMode]);
+  // Hold mode: each key press latches the note on; pressing again
+  // toggles it off. Mirrored into the voice manager so all input
+  // sources (MIDI, computer kbd, on-screen) get the toggle behavior.
+  const [kbdHoldOn, setKbdHoldOn] = useState(false);
+  useEffect(() => { keyboardVoiceManager.setHold(kbdHoldOn); }, [kbdHoldOn]);
   // Tune feature config. Lifted to App because the trigger button lives on the
   // main control panel (OscillatorControls) while the sliders that configure
   // variance/glide live inside the Settings popup — both need the same values.
@@ -177,8 +249,14 @@ function App() {
   const handleStart = () => {
     // Use the pre-parsed URL state
     const { frequencies, volumes, routing } = INITIAL_URL_STATE;
-    
+
     audioEngine.initialize(frequencies, volumes); // volumes already in 0-100 format
+
+    // Kick off Web MIDI from the user gesture. requestMIDIAccess on
+    // Chrome/Edge with sysex:false typically doesn't prompt, but doing
+    // it from the click is safe regardless. Status / devices are
+    // surfaced in SettingsPanel.
+    midiInput.connect();
     
     // Apply routing from URL if present
     if (routing) {
@@ -225,7 +303,16 @@ function App() {
     // Build URL without encoding for readability
     let queryParts = [`f=${freqStr}`, `v=${volStr}`];
     if (routingStr) queryParts.push(`r=${routingStr}`);
-    
+
+    // Envelope params: A/D/R in ms (rounded), S as 0..1 with two decimals.
+    const encEnv = (env) =>
+      `${Math.round(env.attack * 1000)},` +
+      `${Math.round(env.decay * 1000)},` +
+      `${env.sustain.toFixed(2)},` +
+      `${Math.round(env.release * 1000)}`;
+    queryParts.push(`dEnv=${encEnv(droneEnvelope)}`);
+    queryParts.push(`kEnv=${encEnv(keyboardEnvelope)}`);
+
     const url = `${window.location.origin}${window.location.pathname}?${queryParts.join('&')}`;
     
     // Update browser URL without reload
@@ -353,24 +440,11 @@ function App() {
     });
   }, []);
 
-  // F toggles fullscreen at any time. Disabled on mobile widths since the
-  // mode is meant for desktop and the toggle button is hidden there too.
-  // Also avoid intercepting if focus is in an editable element.
-  useEffect(() => {
-    if (!isStarted) return;
-    const onKey = (e) => {
-      if (e.key !== 'f' && e.key !== 'F') return;
-      if (window.matchMedia('(max-width: 768px)').matches) return;
-      const t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      toggleFullscreen();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [isStarted, toggleFullscreen]);
+  // (F-key fullscreen shortcut removed — `f` is reserved for the keyboard's
+  // computer-key input. Fullscreen still toggles via the on-screen button.)
 
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode${isKbdTrayOpen ? ' kbd-tray-open' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -393,6 +467,7 @@ function App() {
             fineTuneEnabled={fineTuneEnabled}
             onActiveChange={setActiveOscs}
             extraActive={spectrumExtraActive}
+            suppressAutoUnmute={isKbdTrayOpen}
           />
           {uiMode === 'fullscreen' && (
             <FullscreenFreqList
@@ -421,6 +496,10 @@ function App() {
             tuneVarianceHz={tuneVarianceHz}
             tuneGlideSec={tuneGlideSec}
             onFineTuningChange={handleFineTuningChange}
+            isKbdTrayOpen={isKbdTrayOpen}
+            onKbdTrayToggle={() => setIsKbdTrayOpen((v) => !v)}
+            kbdHoldOn={kbdHoldOn}
+            onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
           />
           <button
             className="help-toggle"
@@ -516,6 +595,14 @@ function App() {
             onTuneVarianceChange={setTuneVarianceHz}
             tuneGlideSec={tuneGlideSec}
             onTuneGlideChange={setTuneGlideSec}
+          />
+          <KeyboardTray
+            isOpen={isKbdTrayOpen}
+            onOpenChange={setIsKbdTrayOpen}
+            kbdKeyMode={kbdKeyMode}
+            onKbdKeyModeChange={setKbdKeyMode}
+            kbdFillMode={kbdFillMode}
+            onKbdFillModeChange={setKbdFillMode}
           />
         </>
       )}

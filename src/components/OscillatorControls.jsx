@@ -284,6 +284,56 @@ const MasterVolumeFader = memo(function MasterVolumeFader({ volume }) {
   );
 });
 
+// Keyboard volume fader — same drag mechanics as the master, but writes
+// to audioEngine.setKeyboardVolume so it controls the keyboard bus
+// independently from the drone bus.
+const KeyboardVolumeFader = memo(function KeyboardVolumeFader({ volume, disabled }) {
+  const ref = useRef(null);
+  const draggingRef = useRef(false);
+
+  const setFromY = (clientY) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const relY = clientY - rect.top;
+    const v = 1 - Math.max(0, Math.min(1, relY / rect.height));
+    audioEngine.setKeyboardVolume(v);
+  };
+
+  const handlePointerDown = (e) => {
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+    draggingRef.current = true;
+    setFromY(e.clientY);
+  };
+  const handlePointerMove = (e) => {
+    if (!draggingRef.current) return;
+    e.preventDefault();
+    setFromY(e.clientY);
+  };
+  const handlePointerUp = (e) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+  };
+
+  const fillPct = volume * 100;
+
+  return (
+    <div
+      ref={ref}
+      className={`volume-fader kbd-fader ${disabled ? 'disabled' : ''}`}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div className="volume-fader-fill" style={{ height: `${fillPct}%` }} />
+      <div className="volume-fader-thumb" style={{ bottom: `calc(${fillPct}% - 2px)` }} />
+    </div>
+  );
+});
+
 // Right-side "MORE" column — only visible in expanded mode. Holds osc count
 // ±, settings, help, save, and the chevron-down to collapse back to simple.
 const MoreCol = memo(function MoreCol({
@@ -544,6 +594,10 @@ function OscillatorControls({
   tuneVarianceHz = 0,
   tuneGlideSec = 1.0,
   onFineTuningChange,
+  isKbdTrayOpen = false,
+  onKbdTrayToggle,
+  kbdHoldOn = false,
+  onKbdHoldToggle,
 }) {
   const createInitialArray = (defaultValue, length) => Array(length).fill(defaultValue);
 
@@ -551,6 +605,8 @@ function OscillatorControls({
   const [frequencies, setFrequencies] = useState(() => createInitialArray(60, oscillatorCount));
   const [volumes, setVolumes] = useState(() => createInitialArray(50, oscillatorCount));
   const [masterVolume, setMasterVolume] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
+  const [kbdVolume, setKbdVolume] = useState(() => audioEngine.getKeyboardVolume?.() ?? 1);
+  const [kbdEnabled, setKbdEnabled] = useState(() => audioEngine.getKeyboardEnabled?.() ?? true);
   const [isPaused, setIsPaused] = useState(false);
   const [isTuning, setIsTuning] = useState(false);
   // Tracked separately from frequencies/volumes because the bottom-row
@@ -635,6 +691,10 @@ function OscillatorControls({
           }
           const mv = audioEngine.getMasterVolume?.() ?? 1;
           setMasterVolume((prev) => (prev === mv ? prev : mv));
+          const kv = audioEngine.getKeyboardVolume?.() ?? 1;
+          setKbdVolume((prev) => (prev === kv ? prev : kv));
+          const ke = audioEngine.getKeyboardEnabled?.() ?? true;
+          setKbdEnabled((prev) => (prev === ke ? prev : ke));
           const nr = audioEngine.getRoutingMap?.() ?? {};
           setRoutingMap((prev) => (routingMapsEqual(prev, nr) ? prev : nr));
           const nc = audioEngine.getMaxOutputChannels?.() ?? 2;
@@ -653,6 +713,13 @@ function OscillatorControls({
     if (!audioEngine.initialized) return;
     audioEngine.togglePlayPause();
     setIsPaused(audioEngine.paused);
+  };
+
+  const handleKbdToggle = () => {
+    if (!audioEngine.initialized) return;
+    const next = !audioEngine.getKeyboardEnabled();
+    audioEngine.setKeyboardEnabled(next);
+    setKbdEnabled(next);
   };
 
   const shiftAllOctaves = (factor) => {
@@ -700,6 +767,19 @@ function OscillatorControls({
           <div className="expanded-inner">
             {/* Readout row: freq + note (per-osc only; ALL holds detune orb, MORE empty) */}
             <div className="osc-grid-row readout-row">
+              <div className="grid-cell osc-kbd-col osc-kbd-hold-cell">
+                <button
+                  type="button"
+                  className={`osc-kbd-hold-btn ${kbdHoldOn ? 'on' : ''}`}
+                  onClick={onKbdHoldToggle}
+                  aria-pressed={kbdHoldOn}
+                  title="Hold notes — each key press toggles its note on/off"
+                >
+                  hold
+                </button>
+              </div>
+              {/* The keys tray-toggle moved to the octave row below so its
+                  top edge aligns with the ×2 button next to it. */}
               <div className="grid-cell grid-empty osc-all-col">
                 <GlobalDetuneOrb />
               </div>
@@ -736,8 +816,23 @@ function OscillatorControls({
               </div>
             </div>
 
-            {/* Octave row: ALL ×2 / /2 | per-osc ×2 / /2 | MORE + / − */}
+            {/* Octave row: kbd tray-toggle | ALL ×2 / /2 | per-osc ×2 / /2 | MORE + / − */}
             <div className="osc-grid-row octave-row">
+              <div className="grid-cell octave-cell osc-kbd-col osc-kbd-tray-cell">
+                <button
+                  type="button"
+                  className={`osc-kbd-tray-arrow ${isKbdTrayOpen ? 'open' : ''}`}
+                  onClick={onKbdTrayToggle}
+                  aria-pressed={isKbdTrayOpen}
+                  title={isKbdTrayOpen ? 'Hide keyboard panel' : 'Show keyboard panel'}
+                >
+                  <svg viewBox="0 0 24 24" className="button-icon">
+                    {/* up-chevron — flipped via CSS when the tray is open */}
+                    <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
+                  </svg>
+                </button>
+                <span className="bottom-cell-caption">{isKbdTrayOpen ? 'less' : 'more'}</span>
+              </div>
               <div className="grid-cell octave-cell osc-all-col">
                 <button className="osc-octave-btn" onClick={() => shiftAllOctaves(2)} title="All ×2" aria-label="All ×2">×2</button>
                 <button className="osc-octave-btn" onClick={() => shiftAllOctaves(0.5)} title="All /2" aria-label="All /2">/2</button>
@@ -770,8 +865,11 @@ function OscillatorControls({
               </div>
             </div>
 
-            {/* Fader row: master | per-osc | MORE icon stack (settings/save) */}
+            {/* Fader row: kbd | master | per-osc | MORE icon stack (settings/save) */}
             <div className="osc-grid-row fader-row">
+              <div className="grid-cell fader-cell osc-kbd-col">
+                <KeyboardVolumeFader volume={kbdVolume} disabled={!kbdEnabled} />
+              </div>
               <div className="grid-cell fader-cell osc-all-col">
                 <MasterVolumeFader volume={masterVolume} />
               </div>
@@ -817,66 +915,100 @@ function OscillatorControls({
           </div>
         </div>
 
-        {/* Bottom row — always rendered. Play/pause, per-osc mute cells, expand/collapse chevron. */}
+        {/* Bottom row — always rendered. Kbd on/off, play/pause, per-osc
+            mute cells, expand/collapse chevron. Each cell is a wrapper
+            <div> with the button on top + a small caption beneath, so
+            the labels (drone / keyboard / left / right / more / less)
+            sit OUTSIDE the buttons rather than inside them. */}
         <div className="osc-grid-row bottom-row">
-          <button
-            className={`grid-cell bottom-cell bottom-play ${isPaused ? 'paused' : ''}`}
-            onClick={handlePlayPause}
-            title={isPaused ? 'Play (Space)' : 'Pause (Space)'}
-            aria-label={isPaused ? 'Play' : 'Pause'}
-          >
-            {isPaused ? (
-              <svg viewBox="0 0 24 24" className="button-icon">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" className="button-icon">
-                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-              </svg>
-            )}
-          </button>
+          <div className="grid-cell bottom-cell-wrap osc-kbd-col">
+            <button
+              className={`bottom-cell bottom-kbd-toggle ${kbdEnabled ? 'on' : 'off'}`}
+              onClick={handleKbdToggle}
+              title={kbdEnabled ? 'Stop keyboard' : 'Start keyboard'}
+              aria-label={kbdEnabled ? 'Stop keyboard' : 'Start keyboard'}
+              aria-pressed={kbdEnabled}
+            >
+              {kbdEnabled ? (
+                /* stop icon — keyboard is on, click to stop */
+                <svg viewBox="0 0 24 24" className="button-icon">
+                  <path d="M6 6h12v12H6z" />
+                </svg>
+              ) : (
+                /* play icon — keyboard is off, click to start */
+                <svg viewBox="0 0 24 24" className="button-icon">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+            </button>
+            <span className="bottom-cell-caption">keyboard</span>
+          </div>
+          <div className="grid-cell bottom-cell-wrap">
+            <button
+              className={`bottom-cell bottom-play ${isPaused ? 'paused' : ''}`}
+              onClick={handlePlayPause}
+              title={isPaused ? 'Play (Space)' : 'Pause (Space)'}
+              aria-label={isPaused ? 'Play' : 'Pause'}
+            >
+              {isPaused ? (
+                <svg viewBox="0 0 24 24" className="button-icon">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" className="button-icon">
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                </svg>
+              )}
+            </button>
+            <span className="bottom-cell-caption">drone</span>
+          </div>
           {oscillators.map((osc) => {
             const muted = mutedOscillators[osc.index] || false;
-            // Only annotate routing when the output is plain stereo —
-            // for multichannel setups (>2) a single letter isn't
-            // expressive enough so we just drop the suffix.
-            let channelSuffix = '';
+            // Channel routing → caption text. Only when the output is
+            // plain stereo; multichannel setups (>2) drop the caption
+            // since a single word can't represent N channels.
+            let channelLabel = '';
             if (maxChannels === 2) {
               const channels = routingMap[osc.index] || [];
               const onL = channels.includes(0);
               const onR = channels.includes(1);
-              if (onL && onR) channelSuffix = 'LR';
-              else if (onL) channelSuffix = 'L';
-              else if (onR) channelSuffix = 'R';
+              if (onL && onR) channelLabel = 'both';
+              else if (onL) channelLabel = 'left';
+              else if (onR) channelLabel = 'right';
             }
             return (
-              <button
+              <div
                 key={`m-${osc.index}`}
-                className={`grid-cell bottom-cell bottom-mute ${muted ? 'muted' : ''}`}
+                className="grid-cell bottom-cell-wrap"
                 style={{ '--cell-color': osc.color }}
-                onClick={() => handleMuteToggle(osc.index)}
-                title={muted ? 'Unmute' : 'Mute'}
-                aria-pressed={!muted}
               >
-                {osc.label}
-                {channelSuffix && (
-                  <span className="bottom-mute-channel">{channelSuffix}</span>
-                )}
-              </button>
+                <button
+                  className={`bottom-cell bottom-mute ${muted ? 'muted' : ''}`}
+                  onClick={() => handleMuteToggle(osc.index)}
+                  title={muted ? 'Unmute' : 'Mute'}
+                  aria-pressed={!muted}
+                >
+                  {osc.label}
+                </button>
+                <span className="bottom-cell-caption">{channelLabel}</span>
+              </div>
             );
           })}
-          <button
-            className="grid-cell bottom-cell bottom-chevron"
-            onClick={() => onModeChange?.(isExpanded ? 'simple' : 'expanded')}
-            title={isExpanded ? 'Collapse controls' : 'Expand controls'}
-            aria-label={isExpanded ? 'Collapse controls' : 'Expand controls'}
-            aria-expanded={isExpanded}
-          >
-            <svg viewBox="0 0 24 24" className={`button-icon double-chevron ${isExpanded ? 'flipped' : ''}`}>
-              <path d="M7.41 18.59L12 14l4.59 4.59L18 17.17l-6-6-6 6z" transform="translate(0 -3)" />
-              <path d="M7.41 11.59L12 7l4.59 4.59L18 10.17l-6-6-6 6z" transform="translate(0 5)" />
-            </svg>
-          </button>
+          <div className="grid-cell bottom-cell-wrap">
+            <button
+              className="bottom-cell bottom-chevron"
+              onClick={() => onModeChange?.(isExpanded ? 'simple' : 'expanded')}
+              title={isExpanded ? 'Collapse controls' : 'Expand controls'}
+              aria-label={isExpanded ? 'Collapse controls' : 'Expand controls'}
+              aria-expanded={isExpanded}
+            >
+              <svg viewBox="0 0 24 24" className={`button-icon double-chevron ${isExpanded ? 'flipped' : ''}`}>
+                <path d="M7.41 18.59L12 14l4.59 4.59L18 17.17l-6-6-6 6z" transform="translate(0 -3)" />
+                <path d="M7.41 11.59L12 7l4.59 4.59L18 10.17l-6-6-6 6z" transform="translate(0 5)" />
+              </svg>
+            </button>
+            <span className="bottom-cell-caption">{isExpanded ? 'less' : 'more'}</span>
+          </div>
         </div>
       </div>
     </div>

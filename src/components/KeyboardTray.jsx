@@ -60,7 +60,7 @@ export default function KeyboardTray({
             aria-label="Octave down"
             title={labelsOn ? 'Octave down (Z)' : 'Octave down'}
           >
-            {labelsOn ? '◀Z' : '◀'}
+            {labelsOn ? 'Z ↓' : '↓'}
           </button>
           <span className="kbd-octave-label">oct {keyboardOctave}</span>
           <button
@@ -70,7 +70,7 @@ export default function KeyboardTray({
             aria-label="Octave up"
             title={labelsOn ? 'Octave up (X)' : 'Octave up'}
           >
-            {labelsOn ? 'X▶' : '▶'}
+            {labelsOn ? '↑ X' : '↑'}
           </button>
         </div>
         <button

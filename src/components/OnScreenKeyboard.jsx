@@ -10,6 +10,7 @@ import { OFFSET_TO_LETTER } from '../hooks/useComputerKeyboard';
 const OSCILLATOR_COLORS = [
   '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
   '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
+  '#ff7eb6', '#a78bfa',
 ];
 
 // Standard piano-keyboard layout within an octave.
@@ -102,7 +103,10 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
         const dao = midiToDegreeOctave(midi); // null if mapping silences this key
         const slot = dao ? tuning.droneSlotForDegree(dao.degree) : -1;
         if (!dao || slot < 0) {
-          if (dot) dot.style.opacity = '0';
+          if (dot) {
+            dot.style.opacity = '0';
+            dot.classList.remove('is-drone');
+          }
           el.style.removeProperty('--key-color');
           el.classList.add('silent');
           return;
@@ -113,6 +117,7 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
         if (dot) {
           dot.style.background = color;
           dot.style.opacity = '1';
+          dot.classList.toggle('is-drone', dao.octave === 0);
         }
       };
       for (const w of whites) updateOne(w.midi);

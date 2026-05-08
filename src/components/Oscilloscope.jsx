@@ -1,12 +1,58 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
+import tuning from '../audio/Tuning';
 
 // Kept in sync with the palette used by FrequencySpectrumBar / OscillatorControls.
 const OSCILLATOR_COLORS = [
   '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
   '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
+  '#ff7eb6', '#a78bfa',
 ];
+
+// Synth-buffer length policy for the XY / Hilbert / face scopes.
+// - At low frequencies, we want a long buffer so the trace visibly
+//   drifts frame-to-frame (the "playhead" feel below ~130 Hz).
+// - At high frequencies, we want a short buffer so the figure shows
+//   only a handful of cycles instead of dozens of overlapping copies
+//   that smear from sub-pixel jitter and accumulated phase noise.
+// Adaptive N = clamp(target_cycles × sampleRate / highestFreq, MIN, MAX).
+// Sized off the HIGHEST active freq so a multi-kHz pair gets a short
+// buffer regardless of any bass present — bass will visualize as a
+// near-DC offset rather than a full cycle, but trying to do both
+// well is impossible (long enough for bass = treble smears 20+ cycles).
+// Rounded to a multiple of N_STEP so dragging an orb across the cap
+// boundary doesn't make N (and therefore the figure) breathe.
+// See research/oscilloscope-frequency-adaptive.md for the full diagnosis.
+const VIZ_BUF_MIN_N = 128;
+const VIZ_BUF_MAX_N = 2048;
+const VIZ_BUF_N_STEP = 32;
+
+function adaptiveBufferSize(highestActiveFreq, sampleRate, targetCycles) {
+  if (!(highestActiveFreq > 0)) return VIZ_BUF_MAX_N;
+  const ideal = (targetCycles * sampleRate) / highestActiveFreq;
+  const stepped = Math.round(ideal / VIZ_BUF_N_STEP) * VIZ_BUF_N_STEP;
+  return Math.max(VIZ_BUF_MIN_N, Math.min(VIZ_BUF_MAX_N, stepped));
+}
+
+// Highest-frequency component currently sounding (drone or keyboard).
+// Returns 0 if nothing is making sound — caller falls back to
+// VIZ_BUF_MAX_N. Drones that are muted contribute 0 gain so they're
+// excluded; keyboard voices include release tails (still on screen).
+function highestActiveFreq() {
+  let highest = 0;
+  const freqs = audioEngine.getAllFrequencies();
+  for (let i = 0; i < freqs.length; i++) {
+    if (audioEngine.isMuted(i)) continue;
+    const f = freqs[i];
+    if (f > highest) highest = f;
+  }
+  const voices = keyboardVoiceManager.getVoicesForSynth();
+  for (const v of voices) {
+    if (v.freq > highest) highest = v.freq;
+  }
+  return highest;
+}
 
 // Window function that ramps amplitude to 0 at the left/right edges so
 // traces terminate at a single point on the center axis rather than
@@ -40,6 +86,17 @@ function drawStatic(
   const freqs = audioEngine.getAllFrequencies();
   const volumes = audioEngine.volumeValues || [];
   const phases = audioEngine.getAllPhases();
+  // Keyboard voices contribute alongside drones — same standing-wave
+  // model, just with envelope-driven amp instead of a tweened slider.
+  // Each voice already carries its own phase + smoothed freq from
+  // keyboardVoiceManager.updatePhases() in drawScope, so we just read
+  // them. The keyboard pool's bus gain (kbd-on/off + volume) is folded
+  // in via getKeyboardEffectiveGain() below so muting the kbd bus
+  // hides voices visually too.
+  const voices = keyboardVoiceManager.getVoicesForSynth();
+  const kbdEffectiveGain = audioEngine.getKeyboardEffectiveGain
+    ? audioEngine.getKeyboardEffectiveGain()
+    : 1;
 
   // Tween each oscillator's render volume toward its target so mute /
   // unmute / volume changes reshape the trace smoothly.
@@ -59,12 +116,22 @@ function drawStatic(
 
   const visThreshold = 0.005;
   const isActive = (i) => freqs[i] > 0 && renderVolumes[i] > visThreshold;
+  // Voice-side amp is already envelope-shaped (release tail fades it
+  // out) and bus-gated — multiply by kbdEffectiveGain so the kbd-off
+  // toggle hides voices instantly. Threshold matches drone path.
+  const voiceAmp = (v) => v.amp * kbdEffectiveGain;
+  const isVoiceActive = (v) => v.freq > 0 && voiceAmp(v) > visThreshold;
   const fadeZone = 0.1;
 
-  // Target fundamental (lowest active freq). Fallback chain.
+  // Target fundamental (lowest active freq across drones AND voices).
+  // Including voices means a low-pitched key + high drones still picks
+  // a window long enough to show the keyboard's slowest cycle.
   let targetFundamental = Infinity;
   for (let i = 0; i < freqs.length; i++) {
     if (isActive(i) && freqs[i] < targetFundamental) targetFundamental = freqs[i];
+  }
+  for (const v of voices) {
+    if (isVoiceActive(v) && v.freq < targetFundamental) targetFundamental = v.freq;
   }
   if (!isFinite(targetFundamental)) {
     for (const f of freqs) if (f > 0 && f < targetFundamental) targetFundamental = f;
@@ -98,17 +165,20 @@ function drawStatic(
   const traceWidth = Math.min(width - 20, spectrumWidth * 1.5);
   const traceOffsetX = (width - traceWidth) / 2;
   const centerY = height * 0.5;
-  // Live master gain (incl. user volume, count clip-scale, and any
-  // fade ramp). Scales both the wave's amplitude AND the stroke
-  // alphas so the static trace shrinks + fades with master volume and
-  // disappears cleanly during pause/fade-out.
-  // drawStatic renders the drone-only static wave; use the drone bus's
-  // effective gain so the strip fades when drones are paused (spacebar).
-  const masterMultiplier = audioEngine.getDroneEffectiveGain();
+  // Per-pool effective gain (master × pool bus) folds into each pool's
+  // *contribution amount* below, so spacebar (pauses droneBusGain) fades
+  // drone contributions out while leaving keyboard voices visible, and
+  // toggling the keyboard bus does the inverse. Master fade-out
+  // (routing/device changes) drops both since master is in both pool
+  // gains.
+  const droneScale = audioEngine.getDroneEffectiveGain();
+  const kbdScale = kbdEffectiveGain;
   // 'wave' keeps individuals at ±0.22·h (aggregate up to 1.75× that).
   // 'beating' renders only the aggregate and gets ~1.5× the amplitude so
-  // it's the dominant feature of the strip.
-  const ampScale = (mode === 'beating' ? height * 0.33 : height * 0.22) * masterMultiplier;
+  // it's the dominant feature of the strip. NB: ampScale is just
+  // height — pool gains are multiplied into each per-osc contribution
+  // separately so drones and voices can fade independently.
+  const ampScale = mode === 'beating' ? height * 0.33 : height * 0.22;
 
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
   ctx.lineWidth = 1;
@@ -126,13 +196,28 @@ function drawStatic(
   const aggOuterWidth = aggWidth + outlineThickness * 2 * lineScale;
   const TWO_PI = Math.PI * 2;
 
+  // Per-pool contribution amount = the effective amplitude this source
+  // adds to the audio output (= slot volume × pool bus gain × master).
+  // volSum / maxVol are computed in this gained space so the aggregate
+  // normalization correctly accounts for both pools' loudness.
+  const droneContrib = (i) => renderVolumes[i] * droneScale;
+  const voiceContrib = (v) => v.amp * kbdScale;
+
   let volSum = 0;
   let maxVol = 0;
   for (let i = 0; i < freqs.length; i++) {
     if (!isActive(i)) continue;
-    volSum += renderVolumes[i];
-    if (renderVolumes[i] > maxVol) maxVol = renderVolumes[i];
+    const c = droneContrib(i);
+    volSum += c;
+    if (c > maxVol) maxVol = c;
   }
+  for (const v of voices) {
+    if (!isVoiceActive(v)) continue;
+    const c = voiceContrib(v);
+    volSum += c;
+    if (c > maxVol) maxVol = c;
+  }
+
   // In 'wave' mode each individual line peaks at ±ampScale (normalized by
   // maxVol so line height is stable across osc count), and the aggregate
   // is clamped to 1.75× that via aggHeightScale.
@@ -154,26 +239,36 @@ function drawStatic(
 
   const samples = Math.min(1600, Math.max(256, Math.floor(traceWidth)));
 
-  // Anchor to the lowest-freq active oscillator so its trace stays
-  // visually pinned (zero crossing at window center). Every other osc's
-  // rendered phase is taken relative to the anchor, so the aggregate's
-  // beat envelope evolves in real time and lines up with what you hear.
-  // relPhases[k] = phases[k] - (freqs[k] / freqs[anchor]) * phases[anchor]
-  // — anchor gets 0, others get their actual phase offset vs. the anchor.
-  let anchorIdx = -1;
+  // Anchor to the lowest-freq active source (drone OR voice) so its
+  // trace stays visually pinned (zero crossing at window center).
+  // Every other source's rendered phase is taken relative to the
+  // anchor, so the aggregate's beat envelope evolves in real time
+  // and lines up with what you hear.
+  //   relPhase = sourcePhase − (sourceFreq / anchorFreq) × anchorPhase
+  let anchorFreq = 0;
+  let anchorPhase = 0;
   for (let i = 0; i < freqs.length; i++) {
-    if (isActive(i) && (anchorIdx === -1 || freqs[i] < freqs[anchorIdx])) {
-      anchorIdx = i;
+    if (!isActive(i)) continue;
+    if (anchorFreq === 0 || freqs[i] < anchorFreq) {
+      anchorFreq = freqs[i];
+      anchorPhase = phases[i] || 0;
     }
   }
-  const anchorFreq = anchorIdx >= 0 ? freqs[anchorIdx] : 0;
-  const anchorPhase = anchorIdx >= 0 ? (phases[anchorIdx] || 0) : 0;
+  for (const v of voices) {
+    if (!isVoiceActive(v)) continue;
+    if (anchorFreq === 0 || v.freq < anchorFreq) {
+      anchorFreq = v.freq;
+      anchorPhase = v.phase || 0;
+    }
+  }
   const relPhases = new Array(freqs.length);
   for (let k = 0; k < freqs.length; k++) {
     relPhases[k] = anchorFreq > 0
       ? (phases[k] || 0) - (freqs[k] / anchorFreq) * anchorPhase
       : 0;
   }
+  const relVoicePhase = (v) =>
+    anchorFreq > 0 ? v.phase - (v.freq / anchorFreq) * anchorPhase : 0;
   // Temporal smoothing on these phases happens upstream in
   // calibratePhases (which caps the LSQ blend alpha so frame-to-frame
   // LSQ noise gets averaged across a few frames). That smoothing
@@ -186,12 +281,13 @@ function drawStatic(
   if (mode === 'wave') {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    // Drones first.
     for (let k = 0; k < freqs.length; k++) {
       if (!isActive(k)) continue;
-      const v = renderVolumes[k];
+      const c = droneContrib(k);
       const f = freqs[k];
       const color = OSCILLATOR_COLORS[k % OSCILLATOR_COLORS.length];
-      ctx.globalAlpha = Math.min(1, v / fadeZone) * masterMultiplier;
+      ctx.globalAlpha = Math.min(1, renderVolumes[k] / fadeZone) * droneScale;
       ctx.beginPath();
       ctx.lineWidth = indivWidth;
       ctx.lineCap = 'round';
@@ -202,7 +298,37 @@ function drawStatic(
       for (let i = 0; i < samples; i++) {
         const p = i / (samples - 1);
         const t = p * windowSec - windowHalf;
-        const amp = v * Math.sin(TWO_PI * f * t + relPhases[k]) * synthNorm * edgeWindow(p, edgeFade);
+        const amp = c * Math.sin(TWO_PI * f * t + relPhases[k]) * synthNorm * edgeWindow(p, edgeFade);
+        const x = traceOffsetX + p * traceWidth;
+        const y = centerY - amp * ampScale;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // Then keyboard voices. Each voice borrows the color of the drone
+    // slot at its scale degree, so a kbd note at degree 1 reads as
+    // "the same color as the drone playing degree 1." Voices outside
+    // the current scale (degree < 0) fall back to white.
+    for (const v of voices) {
+      if (!isVoiceActive(v)) continue;
+      const c = voiceContrib(v);
+      const slot = tuning.droneSlotForDegree(v.degree);
+      const color = slot >= 0
+        ? OSCILLATOR_COLORS[slot % OSCILLATOR_COLORS.length]
+        : 'rgba(255, 255, 255, 0.85)';
+      ctx.globalAlpha = Math.min(1, v.amp / fadeZone) * kbdScale;
+      ctx.beginPath();
+      ctx.lineWidth = indivWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = color;
+      ctx.shadowBlur = 14 * lineScale;
+      ctx.shadowColor = typeof color === 'string' ? color : '#fff';
+      const rp = relVoicePhase(v);
+      for (let i = 0; i < samples; i++) {
+        const p = i / (samples - 1);
+        const t = p * windowSec - windowHalf;
+        const amp = c * Math.sin(TWO_PI * v.freq * t + rp) * synthNorm * edgeWindow(p, edgeFade);
         const x = traceOffsetX + p * traceWidth;
         const y = centerY - amp * ampScale;
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -218,6 +344,19 @@ function drawStatic(
   // halo) drawn first, then the white core on top. Mirrors the XY
   // scope's colored-glow-over-white-core look so the static wave reads
   // as part of the same visual language.
+  // Pre-compute relative phases for keyboard voices once so the
+  // per-sample loop just reads them — same shape as relPhases for
+  // drones. Skipped voices are filtered out here, not inside the loop.
+  const activeVoices = [];
+  for (const v of voices) {
+    if (!isVoiceActive(v)) continue;
+    activeVoices.push({
+      freq: v.freq,
+      contrib: voiceContrib(v),
+      relPhase: relVoicePhase(v),
+    });
+  }
+
   const drawAggPath = () => {
     ctx.beginPath();
     for (let i = 0; i < samples; i++) {
@@ -226,7 +365,10 @@ function drawStatic(
       let sum = 0;
       for (let k = 0; k < freqs.length; k++) {
         if (!isActive(k)) continue;
-        sum += renderVolumes[k] * Math.sin(TWO_PI * freqs[k] * t + relPhases[k]);
+        sum += droneContrib(k) * Math.sin(TWO_PI * freqs[k] * t + relPhases[k]);
+      }
+      for (const av of activeVoices) {
+        sum += av.contrib * Math.sin(TWO_PI * av.freq * t + av.relPhase);
       }
       const x = traceOffsetX + p * traceWidth;
       const y = centerY - sum * synthNorm * ampScale * aggHeightScale * edgeWindow(p, edgeFade);
@@ -235,7 +377,9 @@ function drawStatic(
     ctx.stroke();
   };
 
-  ctx.globalAlpha = aggAlpha * masterMultiplier;
+  // aggAlpha already incorporates per-pool gain via volSum (which is
+  // in contribution-space) — no extra master multiplier needed here.
+  ctx.globalAlpha = aggAlpha;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -448,15 +592,12 @@ function drawXY(
   lineScale, r, g, b, timeData1, timeData2
 ) {
   const dataLen = timeData1.length;
-  // Render only the most recent XY_RENDER_N samples, not the full
-  // analyzer buffer. calibratePhases benefits from the full 8192-sample
-  // buffer (finer LSQ conditioning), but the visual Lissajous density
-  // is set by the rendered window: more samples → more per-frame line
-  // segments + more frame-to-frame window overlap → heavier trail
-  // accumulation. 2048 samples (~46 ms at 44.1 kHz) matches the
-  // previous density.
-  const XY_RENDER_N = 2048;
-  const renderStart = Math.max(0, dataLen - XY_RENDER_N);
+  // Render the entire incoming buffer. The synth helpers now produce
+  // exactly the desired length per frame (adaptive on freq via
+  // adaptiveBufferSize), so we don't need to re-trim here. Cap at
+  // VIZ_BUF_MAX_N as a defensive ceiling for callers that pass in
+  // longer buffers.
+  const renderStart = Math.max(0, dataLen - VIZ_BUF_MAX_N);
 
   // Direction-change count over the head of the rendered window = rough
   // frequency proxy. Drives adaptive sample step, line width, and
@@ -521,6 +662,7 @@ export default function Oscilloscope({
   staticLineWidth = 1.0,
   staticOutlineThickness = 0,
   vizMode = 0,
+  vizCycles = 6,
 }) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -557,6 +699,14 @@ export default function Oscilloscope({
   useEffect(() => {
     vizModeRef.current = vizMode;
   }, [vizMode]);
+  // User-controlled "trace cycles" — the synth buffer length per frame
+  // tracks this × sampleRate / lowest-active-freq, clamped. Higher =
+  // more history (richer drift at low freqs), lower = crisper figures
+  // at high freqs. See research/oscilloscope-frequency-adaptive.md §5.
+  const vizCyclesRef = useRef(vizCycles);
+  useEffect(() => {
+    vizCyclesRef.current = vizCycles;
+  }, [vizCycles]);
 
   // Per-oscillator rendered amplitude, tweened toward the real (muted-or-not)
   // volume each frame so mute/unmute fades the static trace instead of
@@ -663,6 +813,16 @@ export default function Oscilloscope({
 
       const vizMode = vizModeRef.current;
 
+      // Adaptive synth-buffer length — driven by the highest active
+      // freq + the user's "cycles" slider. Computed once per frame so
+      // every mode that consumes synth buffers gets the same N this
+      // tick. See research/oscilloscope-frequency-adaptive.md.
+      const synthN = adaptiveBufferSize(
+        highestActiveFreq(),
+        sampleRate,
+        vizCyclesRef.current
+      );
+
       if (vizMode === 0) {
         // ── MODE 0: single centered synth XY scope ────────────────────
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
@@ -670,7 +830,7 @@ export default function Oscilloscope({
         const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
-        const { L, R } = synthStereoData(2048, sampleRate);
+        const { L, R } = synthStereoData(synthN, sampleRate);
         drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, L, R);
 
       } else if (vizMode === 1) {
@@ -747,7 +907,7 @@ export default function Oscilloscope({
 
         // Both eyes show the full L/R synth mix — identical traces
         // left and right.
-        const { L, R } = synthStereoData(2048, sampleRate);
+        const { L, R } = synthStereoData(synthN, sampleRate);
         drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R);
         drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R);
 
@@ -780,7 +940,7 @@ export default function Oscilloscope({
         const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * 0.6);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
-        const { X, Y } = synthHilbertData(2048, sampleRate);
+        const { X, Y } = synthHilbertData(synthN, sampleRate);
         drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y);
       }
     };

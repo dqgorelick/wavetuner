@@ -15,6 +15,8 @@ const OSCILLATOR_COLORS = [
   '#f8b500',
   '#e74c3c',
   '#1abc9c',
+  '#ff7eb6',
+  '#a78bfa',
 ];
 
 function freqToNote(freq) {
@@ -339,8 +341,6 @@ const KeyboardVolumeFader = memo(function KeyboardVolumeFader({ volume, disabled
 const MoreCol = memo(function MoreCol({
   oscillatorCount,
   onOscillatorCountChange,
-  onSettingsToggle,
-  isSettingsOpen,
   onShowHelp,
   onShare,
   onCollapse,
@@ -369,16 +369,6 @@ const MoreCol = memo(function MoreCol({
       </div>
 
       <div className="osc-more-stack">
-        <button
-          className={`osc-more-btn icon-btn ${isSettingsOpen ? 'active' : ''}`}
-          onClick={onSettingsToggle}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <svg viewBox="0 0 24 24" className="button-icon">
-            <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
-          </svg>
-        </button>
         <button
           className="osc-more-btn icon-btn"
           onClick={onShowHelp}
@@ -582,8 +572,6 @@ function OscillatorControls({
   oscillatorCount = 2,
   maxOscillators = 10,
   onShare,
-  onSettingsToggle,
-  isSettingsOpen,
   onShowHelp,
   fineTuneEnabled = false,
   onFineTuneToggle,
@@ -598,6 +586,8 @@ function OscillatorControls({
   onKbdTrayToggle,
   kbdHoldOn = false,
   onKbdHoldToggle,
+  isPaused = false,
+  onPausedChange,
 }) {
   const createInitialArray = (defaultValue, length) => Array(length).fill(defaultValue);
 
@@ -607,7 +597,10 @@ function OscillatorControls({
   const [masterVolume, setMasterVolume] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
   const [kbdVolume, setKbdVolume] = useState(() => audioEngine.getKeyboardVolume?.() ?? 1);
   const [kbdEnabled, setKbdEnabled] = useState(() => audioEngine.getKeyboardEnabled?.() ?? true);
-  const [isPaused, setIsPaused] = useState(false);
+  // Pause state is owned by the parent (App.jsx) so the wrapper can pick
+  // up `.paused` and dim the global UI in step. The togglePlayPause
+  // sites below call onPausedChange directly to keep parent + engine
+  // in lockstep.
   const [isTuning, setIsTuning] = useState(false);
   // Tracked separately from frequencies/volumes because the bottom-row
   // mute buttons append an L/R/LR suffix derived from routing (only
@@ -712,7 +705,7 @@ function OscillatorControls({
   const handlePlayPause = () => {
     if (!audioEngine.initialized) return;
     audioEngine.togglePlayPause();
-    setIsPaused(audioEngine.paused);
+    onPausedChange?.(audioEngine.paused);
   };
 
   const handleKbdToggle = () => {
@@ -736,12 +729,12 @@ function OscillatorControls({
         e.preventDefault();
         if (!audioEngine.initialized) return;
         audioEngine.togglePlayPause();
-        setIsPaused(audioEngine.paused);
+        onPausedChange?.(audioEngine.paused);
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [onPausedChange]);
 
   const handleMuteToggle = (index) => {
     if (!audioEngine.initialized) return;
@@ -802,18 +795,7 @@ function OscillatorControls({
                   </div>
                 );
               })}
-              <div className="grid-cell osc-more-col osc-tune-cell">
-                <button
-                  type="button"
-                  className="osc-tune-btn"
-                  onClick={handleTune}
-                  disabled={isTuning}
-                  title="Tune to just-intonation ratios (configure in settings)"
-                  aria-label="Tune"
-                >
-                  {isTuning ? '…' : 'tune'}
-                </button>
-              </div>
+              <div className="grid-cell osc-more-col" />
             </div>
 
             {/* Octave row: kbd tray-toggle | ALL ×2 / /2 | per-osc ×2 / /2 | MORE + / − */}
@@ -895,20 +877,17 @@ function OscillatorControls({
               <div className="grid-cell fader-cell osc-more-col">
                 <div className="osc-more-stack">
                   <button
-                    className={`osc-more-btn icon-btn ${isSettingsOpen ? 'active' : ''}`}
-                    onClick={onSettingsToggle}
-                    title="Settings"
-                    aria-label="Settings"
+                    className="osc-more-btn icon-btn"
+                    onClick={handleTune}
+                    disabled={isTuning}
+                    title="Tune to just-intonation ratios (configure in settings)"
+                    aria-label="Tune"
                   >
                     <svg viewBox="0 0 24 24" className="button-icon">
-                      <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                      <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" />
                     </svg>
                   </button>
-                  <button className="osc-more-btn icon-btn" onClick={onShare} title="Save / Share" aria-label="Save">
-                    <svg viewBox="0 0 24 24" className="button-icon">
-                      <path d="M17 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
-                    </svg>
-                  </button>
+                  <span className="osc-more-btn-caption">align</span>
                 </div>
               </div>
             </div>

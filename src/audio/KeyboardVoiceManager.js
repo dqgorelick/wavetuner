@@ -43,6 +43,10 @@ class KeyboardVoiceManager {
     // a second noteOn on the same midi).
     this._hold = false;
 
+    // Velocity curve preset. Applied to the 0-1 input velocity before it
+    // becomes the envelope peak. 'linear' = identity (pre-existing behavior).
+    this._velocityCurve = 'linear';
+
     // Lazy subscriptions so the audio context can come up first.
     this._tuningUnsubscribe = null;
     this._envelopeUnsubscribe = null;
@@ -108,6 +112,25 @@ class KeyboardVoiceManager {
 
   getHold() { return this._hold; }
 
+  setVelocityCurve(curve) {
+    if (typeof curve !== 'string') return;
+    this._velocityCurve = curve;
+  }
+
+  getVelocityCurve() { return this._velocityCurve; }
+
+  // Map 0-1 raw velocity → 0-1 envelope peak per the active curve preset.
+  _applyVelocityCurve(v) {
+    const x = Math.max(0, Math.min(1, v));
+    switch (this._velocityCurve) {
+      case 'soft':  return x * x;          // quieter touches stay quiet
+      case 'hard':  return Math.sqrt(x);   // flatten dynamics
+      case 'fixed': return x > 0 ? 1 : 0;  // any non-zero hit → full
+      case 'linear':
+      default:      return x;
+    }
+  }
+
   noteOn(midiNote, velocity = 1) {
     if (!audioEngine.isInitialized) return null;
     // Gate input on the keyboard pool's enable state — toggling
@@ -159,10 +182,10 @@ class KeyboardVoiceManager {
     gain.connect(panner);
     panner.connect(dest);
 
-    // Velocity scales the attack peak linearly (no envelope-time effects
-    // yet). `peak` is captured on the voice so a later sustain change
-    // can retarget held notes to peak·newSustain.
-    const peak = Math.max(0, Math.min(1, velocity));
+    // Velocity → envelope peak via the active curve preset. `peak` is
+    // captured on the voice so a later sustain change can retarget held
+    // notes to peak·newSustain.
+    const peak = this._applyVelocityCurve(velocity);
     const t0 = ctx.currentTime;
     keyboardEnvelope.applyNoteOn(gain.gain, ctx, peak);
 
@@ -337,6 +360,11 @@ class KeyboardVoiceManager {
         phase: v.phase,
         amp,
         pan: v.panner.pan.value,
+        // Scale degree exposes which drone slot supplies this voice's
+        // pitch — visualizers use it to color the voice's trace
+        // matching the drone palette so a kbd note at degree N reads
+        // as "the same color as drone slot N's color".
+        degree: v.degree,
       });
     }
     return out;

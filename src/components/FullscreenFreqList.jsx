@@ -5,6 +5,7 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 const OSCILLATOR_COLORS = [
   '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
   '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
+  '#ff7eb6', '#a78bfa',
 ];
 
 function freqToNote(freq) {

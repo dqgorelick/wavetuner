@@ -17,18 +17,14 @@ export default function SettingsPanel({
   routingMap,
   onRoutingChange,
   onDeviceChange,
-  staticMode,
-  onStaticModeChange,
-  staticPeriods,
-  onStaticPeriodsChange,
-  staticLineWidth,
-  onStaticLineWidthChange,
-  staticOutlineThickness,
-  onStaticOutlineThicknessChange,
   tuneVarianceHz,
   onTuneVarianceChange,
   tuneGlideSec,
   onTuneGlideChange,
+  vizCycles,
+  onVizCyclesChange,
+  velocityCurve,
+  onVelocityCurveChange,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -135,10 +131,11 @@ export default function SettingsPanel({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="settings-panel">
+    <div
+      className={`settings-panel${isOpen ? ' open' : ''}`}
+      aria-hidden={!isOpen}
+    >
       <div className="settings-header">
         <h3>Settings</h3>
         <button className="settings-close" onClick={onClose} title="Close">
@@ -267,6 +264,17 @@ export default function SettingsPanel({
             )}
           </>
         )}
+        <label className="settings-sublabel">Velocity curve</label>
+        <select
+          className="settings-select"
+          value={velocityCurve || 'linear'}
+          onChange={(e) => onVelocityCurveChange?.(e.target.value)}
+        >
+          <option value="linear">Linear (default)</option>
+          <option value="soft">Soft — quieter touches feel quieter</option>
+          <option value="hard">Hard — flatten dynamics</option>
+          <option value="fixed">Fixed — ignore velocity</option>
+        </select>
       </div>
 
       <div className="settings-section">
@@ -291,54 +299,24 @@ export default function SettingsPanel({
       </div>
 
       <div className="settings-section">
-        <label className="settings-label">Static waveform</label>
-        <select
-          className="settings-select"
-          value={staticMode}
-          onChange={(e) => onStaticModeChange(e.target.value)}
-        >
-          <option value="beating">Beating (aggregate only)</option>
-          <option value="wave">Wave (individuals + aggregate)</option>
-          <option value="off">Off</option>
-        </select>
+        <label className="settings-label">Visualizer</label>
         <div className="tune-slider-row">
-          <span className="tune-slider-label">Periods</span>
+          <span
+            className="tune-slider-label"
+            title="How many cycles of the lowest sounding frequency fit in the synth buffer per frame. Lower = crisper figures at high frequencies; higher = more drift / playhead feel at low frequencies."
+          >
+            Cycles
+          </span>
           <input
             type="range"
             min="1"
-            max="60"
+            max="16"
             step="1"
-            value={staticPeriods}
-            onChange={(e) => onStaticPeriodsChange(parseInt(e.target.value, 10))}
+            value={vizCycles}
+            onChange={(e) => onVizCyclesChange(parseInt(e.target.value, 10))}
             className="tune-slider"
           />
-          <span className="tune-slider-value">{staticPeriods}</span>
-        </div>
-        <div className="tune-slider-row">
-          <span className="tune-slider-label">Line</span>
-          <input
-            type="range"
-            min="0.2"
-            max="3"
-            step="0.1"
-            value={staticLineWidth}
-            onChange={(e) => onStaticLineWidthChange(parseFloat(e.target.value))}
-            className="tune-slider"
-          />
-          <span className="tune-slider-value">{staticLineWidth.toFixed(1)}×</span>
-        </div>
-        <div className="tune-slider-row">
-          <span className="tune-slider-label">Outline</span>
-          <input
-            type="range"
-            min="0"
-            max="15"
-            step="0.5"
-            value={staticOutlineThickness}
-            onChange={(e) => onStaticOutlineThicknessChange(parseFloat(e.target.value))}
-            className="tune-slider"
-          />
-          <span className="tune-slider-value">{staticOutlineThickness.toFixed(1)} px</span>
+          <span className="tune-slider-value">{vizCycles}</span>
         </div>
       </div>
 

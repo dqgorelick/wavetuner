@@ -32,7 +32,7 @@ class AudioEngine {
     
     // Dynamic oscillator management
     this.oscillatorCount = 4;
-    this.maxOscillators = 10;
+    this.maxOscillators = 12;
     this.minOscillators = 2;
 
     // User-controllable master volume multiplier (0..1). Multiplies on top of
@@ -44,7 +44,7 @@ class AudioEngine {
     // `_kbdEnabled` is the on/off switch. Effective bus gain is the
     // product (0 when disabled). _kbdEffectiveGain() returns the live
     // value for the audio node.
-    this._kbdVolume = 1.0;
+    this._kbdVolume = 0.75;
     this._kbdEnabled = true;
 
     // Stack of per-osc state captured when an oscillator is removed via

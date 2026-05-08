@@ -11,6 +11,9 @@ import FullscreenFreqList from './components/FullscreenFreqList';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
+import PatchesPanel from './components/PatchesPanel';
+import { getAutosave, setAutosave } from './patches/storage';
+import { preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
 
 // Parse "A,D,S,R" envelope param (A/D/R in ms, S in 0..1 or 0..100). Returns
@@ -39,6 +42,12 @@ function getInitialStateFromURL() {
   const rParam = params.get('r');
   const dEnv = parseEnvParam(params.get('dEnv'));
   const kEnv = parseEnvParam(params.get('kEnv'));
+  // Visualizer "trace cycles": clamp to slider range and reject NaN.
+  // See research/oscilloscope-frequency-adaptive.md §5.
+  const cyParam = parseInt(params.get('cy') || '', 10);
+  const vizCycles = Number.isFinite(cyParam) && cyParam >= 1 && cyParam <= 16
+    ? cyParam
+    : null;
 
   let base = { count: 4, frequencies: null, volumes: null, routing: null };
 
@@ -68,7 +77,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { ...base, dEnv, kEnv };
+  return { ...base, dEnv, kEnv, vizCycles };
 }
 
 // Compute once at module load
@@ -91,11 +100,49 @@ if (INITIAL_URL_STATE.kEnv) {
   keyboardEnvelope.release = INITIAL_URL_STATE.kEnv.release;
 }
 
+// Visualizer modes — defined at module scope so the SVG icons are
+// constructed once and reused across renders. The trigger button shows
+// the active mode's icon; the dropdown fans the others out below it.
+const VIZ_MODES = [
+  {
+    id: 0,
+    label: 'Circle',
+    icon: <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" strokeWidth="2" />,
+  },
+  {
+    id: 1,
+    label: 'Wave',
+    icon: <path d="M2 12 Q 6 5, 9 12 T 16 12 T 22 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />,
+  },
+  {
+    id: 2,
+    label: 'Face',
+    icon: (
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <circle cx="8" cy="9" r="1.6" fill="currentColor" stroke="none" />
+        <circle cx="16" cy="9" r="1.6" fill="currentColor" stroke="none" />
+        <path d="M7.5 15 Q 12 18, 16.5 15" />
+      </g>
+    ),
+  },
+  {
+    id: 3,
+    label: 'Hilbert',
+    icon: (
+      <g fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="9.5" cy="12" r="5" />
+        <circle cx="14.5" cy="12" r="5" />
+      </g>
+    ),
+  },
+];
+
 
 function App() {
   const [isStarted, setIsStarted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isPatchesOpen, setIsPatchesOpen] = useState(false);
   // Static waveform style. 'beating' shows only the aggregate line;
   // 'wave' shows per-oscillator colored lines + aggregate; 'off' hides
   // the static entirely. Number of periods visible is user-controlled
@@ -114,6 +161,26 @@ function App() {
   const [staticOutlineThickness, setStaticOutlineThickness] = useState(2.5);
   // Visualizer mode: 0 circle (XY), 1 line (standing wave), 2 face, 3 hilbert.
   const [vizMode, setVizMode] = useState(0);
+  // Visualizer-mode dropdown: the trigger button (active mode's symbol)
+  // toggles a vertical fan of the remaining modes below it. Closes on
+  // outside click and after picking an option.
+  const [isVizDropdownOpen, setIsVizDropdownOpen] = useState(false);
+  const vizDropdownRef = useRef(null);
+  useEffect(() => {
+    if (!isVizDropdownOpen) return;
+    const onDocPointerDown = (e) => {
+      if (vizDropdownRef.current && !vizDropdownRef.current.contains(e.target)) {
+        setIsVizDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocPointerDown);
+    return () => document.removeEventListener('mousedown', onDocPointerDown);
+  }, [isVizDropdownOpen]);
+  // Adaptive synth-buffer length is derived from this × sampleRate /
+  // highest-active-freq, clamped to [128, 2048]. Higher = more cycles
+  // / richer drift; lower = crisper figures (especially at high freqs).
+  // Default 6 reads as "a few clean cycles" across the audible range.
+  const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? 6);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
@@ -173,6 +240,11 @@ function App() {
   // sources (MIDI, computer kbd, on-screen) get the toggle behavior.
   const [kbdHoldOn, setKbdHoldOn] = useState(false);
   useEffect(() => { keyboardVoiceManager.setHold(kbdHoldOn); }, [kbdHoldOn]);
+  // MIDI velocity curve: 'linear' | 'soft' | 'hard' | 'fixed'.
+  // Pushed into the voice manager on change; default 'linear' = identity,
+  // matches pre-existing behavior.
+  const [velocityCurve, setVelocityCurve] = useState('linear');
+  useEffect(() => { keyboardVoiceManager.setVelocityCurve(velocityCurve); }, [velocityCurve]);
   // Tune feature config. Lifted to App because the trigger button lives on the
   // main control panel (OscillatorControls) while the sliders that configure
   // variance/glide live inside the Settings popup — both need the same values.
@@ -190,7 +262,7 @@ function App() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
-  const maxOscillators = isMobile ? 4 : 10;
+  const maxOscillators = isMobile ? 4 : 12;
   
   const initializedRef = useRef(false);
   
@@ -240,15 +312,59 @@ function App() {
     };
     
     window.addEventListener('beforeunload', handleBeforeUnload);
-    
+
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
-  
+
+  // Autosave: once a second, snapshot the current engine state and write
+  // to the rolling autosave slot if anything changed since last write.
+  // Refreshing the page restores from this slot (see handleStart). 1-second
+  // granularity is fine — the UI mutates faster than that during drags but
+  // the user only sees the result after they let go.
+  useEffect(() => {
+    if (!isStarted) return;
+    let lastJson = '';
+    const flush = () => {
+      if (!audioEngine.isInitialized) return;
+      try {
+        const patch = capturePatch({
+          id: 'autosave',
+          name: 'Autosave',
+          source: 'user',
+        });
+        const sig = JSON.stringify({
+          f: patch.frequencies,
+          v: patch.snapshot.volumes,
+          m: patch.snapshot.muted,
+          r: patch.snapshot.routing,
+        });
+        if (sig !== lastJson) {
+          lastJson = sig;
+          setAutosave(patch);
+        }
+      } catch (e) {
+        console.warn('autosave failed', e);
+      }
+    };
+    const id = setInterval(flush, 1000);
+    return () => {
+      clearInterval(id);
+      flush();
+    };
+  }, [isStarted]);
+
   const handleStart = () => {
-    // Use the pre-parsed URL state
+    // Precedence: URL params > autosave > engine random defaults. URL is
+    // explicit (the user pasted a share link); autosave is the rolling
+    // last-state save so refresh restores work.
     const { frequencies, volumes, routing } = INITIAL_URL_STATE;
+    let pendingAutosave = null;
+    if (!frequencies) {
+      pendingAutosave = getAutosave();
+      if (pendingAutosave) preInitApplyPatch(pendingAutosave);
+    }
 
     audioEngine.initialize(frequencies, volumes); // volumes already in 0-100 format
 
@@ -257,7 +373,7 @@ function App() {
     // it from the click is safe regardless. Status / devices are
     // surfaced in SettingsPanel.
     midiInput.connect();
-    
+
     // Apply routing from URL if present
     if (routing) {
       // Clear default routing and apply URL routing
@@ -273,12 +389,14 @@ function App() {
           audioEngine.addRouting(oscIdx, ch);
         }
       }
+    } else if (pendingAutosave) {
+      applyPatchRoutingPostInit(pendingAutosave);
     }
-    
+
     // Sync oscillator count and routing from audio engine
     setOscillatorCount(audioEngine.getOscillatorCount());
     setRoutingMap(audioEngine.getRoutingMap());
-    
+
     setIsStarted(true);
   };
   
@@ -312,6 +430,7 @@ function App() {
       `${Math.round(env.release * 1000)}`;
     queryParts.push(`dEnv=${encEnv(droneEnvelope)}`);
     queryParts.push(`kEnv=${encEnv(keyboardEnvelope)}`);
+    queryParts.push(`cy=${vizCycles}`);
 
     const url = `${window.location.origin}${window.location.pathname}?${queryParts.join('&')}`;
     
@@ -357,10 +476,19 @@ function App() {
     } else {
       alert('URL updated! Copy it from your browser address bar to share.');
     }
-  }, []);
-  
+  }, [vizCycles]);
+
   const handleSettingsToggle = useCallback(() => {
     setIsSettingsOpen(prev => !prev);
+  }, []);
+
+  // Pull oscillator count + routing back from the engine after a path that
+  // bypasses handleOscillatorCountChange / handleRoutingChange (currently:
+  // patch loading). The engine is the source of truth; React state needs
+  // to follow so the spectrum bar, controls, and routing UI redraw.
+  const syncStateFromEngine = useCallback(() => {
+    setOscillatorCount(audioEngine.getOscillatorCount());
+    setRoutingMap(audioEngine.getRoutingMap());
   }, []);
 
   const handleOscillatorCountChange = useCallback((newCount) => {
@@ -458,6 +586,7 @@ function App() {
         staticLineWidth={staticLineWidth}
         staticOutlineThickness={staticOutlineThickness}
         vizMode={vizMode}
+        vizCycles={vizCycles}
       />
 
       {isStarted && (
@@ -484,8 +613,6 @@ function App() {
             oscillatorCount={oscillatorCount}
             maxOscillators={maxOscillators}
             onShare={handleShare}
-            onSettingsToggle={handleSettingsToggle}
-            isSettingsOpen={isSettingsOpen}
             onShowHelp={handleShowHelp}
             fineTuneEnabled={fineTuneEnabled}
             onFineTuneToggle={handleFineTuneToggle}
@@ -500,6 +627,8 @@ function App() {
             onKbdTrayToggle={() => setIsKbdTrayOpen((v) => !v)}
             kbdHoldOn={kbdHoldOn}
             onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
+            isPaused={isPaused}
+            onPausedChange={setIsPaused}
           />
           <button
             className="help-toggle"
@@ -511,54 +640,90 @@ function App() {
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
             </svg>
           </button>
-          <div className="scope-mode-buttons" role="radiogroup" aria-label="Visualizer mode">
-            {[
-              {
-                id: 0,
-                label: 'Circle',
-                icon: <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" strokeWidth="2" />,
-              },
-              {
-                id: 1,
-                label: 'Wave',
-                icon: <path d="M2 12 Q 6 5, 9 12 T 16 12 T 22 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />,
-              },
-              {
-                id: 2,
-                label: 'Face',
-                icon: (
-                  <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <circle cx="8" cy="9" r="1.6" fill="currentColor" stroke="none" />
-                    <circle cx="16" cy="9" r="1.6" fill="currentColor" stroke="none" />
-                    <path d="M7.5 15 Q 12 18, 16.5 15" />
-                  </g>
-                ),
-              },
-              {
-                id: 3,
-                label: 'Hilbert',
-                icon: (
-                  <g fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="9.5" cy="12" r="5" />
-                    <circle cx="14.5" cy="12" r="5" />
-                  </g>
-                ),
-              },
-            ].map(({ id, label, icon }) => (
-              <button
-                key={id}
-                type="button"
-                role="radio"
-                aria-checked={vizMode === id}
-                className={`scope-mode-btn ${vizMode === id ? 'active' : ''}`}
-                onClick={() => setVizMode(id)}
-                title={label}
-                aria-label={label}
+          <button
+            className={`patches-toggle${isPatchesOpen ? ' active' : ''}`}
+            onClick={() => setIsPatchesOpen((v) => !v)}
+            title="Patches"
+            aria-label="Patches"
+            aria-expanded={isPatchesOpen}
+          >
+            <svg viewBox="0 0 24 24" className="button-icon" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="6" width="16" height="3" rx="1" />
+              <rect x="4" y="11" width="16" height="3" rx="1" />
+              <rect x="4" y="16" width="16" height="3" rx="1" />
+            </svg>
+          </button>
+          <PatchesPanel
+            isOpen={isPatchesOpen}
+            onClose={() => setIsPatchesOpen(false)}
+            onAfterLoad={syncStateFromEngine}
+          />
+          {(() => {
+            const activeViz = VIZ_MODES.find((m) => m.id === vizMode) || VIZ_MODES[0];
+            const otherViz = VIZ_MODES.filter((m) => m.id !== vizMode);
+            return (
+              <div
+                className="scope-mode-buttons"
+                ref={vizDropdownRef}
+                role="radiogroup"
+                aria-label="Visualizer mode"
               >
-                <svg viewBox="0 0 24 24" className="button-icon">{icon}</svg>
-              </button>
-            ))}
-          </div>
+                <button
+                  type="button"
+                  className={`scope-mode-btn active ${isVizDropdownOpen ? 'open' : ''}`}
+                  onClick={() => setIsVizDropdownOpen((v) => !v)}
+                  title={`Visualizer: ${activeViz.label}`}
+                  aria-label={`Visualizer: ${activeViz.label}`}
+                  aria-haspopup="true"
+                  aria-expanded={isVizDropdownOpen}
+                >
+                  <svg viewBox="0 0 24 24" className="button-icon">{activeViz.icon}</svg>
+                </button>
+                {isVizDropdownOpen && (
+                  <div className="scope-mode-dropdown">
+                    {otherViz.map(({ id, label, icon }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="radio"
+                        aria-checked={false}
+                        className="scope-mode-btn"
+                        onClick={() => {
+                          setVizMode(id);
+                          setIsVizDropdownOpen(false);
+                        }}
+                        title={label}
+                        aria-label={label}
+                      >
+                        <svg viewBox="0 0 24 24" className="button-icon">{icon}</svg>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          <button
+            className="share-toggle"
+            onClick={handleShare}
+            title="Share — copy a URL of the current state"
+            aria-label="Share"
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              <path fill="currentColor" d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" />
+            </svg>
+          </button>
+          <button
+            className={`settings-toggle${isSettingsOpen ? ' active' : ''}`}
+            onClick={handleSettingsToggle}
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={isSettingsOpen}
+          >
+            <svg viewBox="0 0 24 24" className="button-icon">
+              <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+            </svg>
+          </button>
           <button
             className="fullscreen-toggle"
             onClick={toggleFullscreen}
@@ -583,18 +748,14 @@ function App() {
             routingMap={routingMap}
             onRoutingChange={handleRoutingChange}
             onDeviceChange={handleDeviceChange}
-            staticMode={staticMode}
-            onStaticModeChange={setStaticMode}
-            staticPeriods={staticPeriods}
-            onStaticPeriodsChange={setStaticPeriods}
-            staticLineWidth={staticLineWidth}
-            onStaticLineWidthChange={setStaticLineWidth}
-            staticOutlineThickness={staticOutlineThickness}
-            onStaticOutlineThicknessChange={setStaticOutlineThickness}
             tuneVarianceHz={tuneVarianceHz}
             onTuneVarianceChange={setTuneVarianceHz}
             tuneGlideSec={tuneGlideSec}
             onTuneGlideChange={setTuneGlideSec}
+            vizCycles={vizCycles}
+            onVizCyclesChange={setVizCycles}
+            velocityCurve={velocityCurve}
+            onVelocityCurveChange={setVelocityCurve}
           />
           <KeyboardTray
             isOpen={isKbdTrayOpen}

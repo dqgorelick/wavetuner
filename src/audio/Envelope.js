@@ -99,9 +99,9 @@ export const droneEnvelope = new Envelope({
   release: 0.5,
 });
 export const keyboardEnvelope = new Envelope({
-  attack: 0.03,
-  decay: 0.2,
-  sustain: 0.7,
+  attack: 0.1,
+  decay: 1.0,
+  sustain: 0.4,
   release: 0.3,
 });
 

@@ -6,6 +6,7 @@ import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 const OSCILLATOR_COLORS = [
   '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
   '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
+  '#ff7eb6', '#a78bfa',
 ];
 
 const FREQ_MIN = 0.1;

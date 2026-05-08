@@ -5,6 +5,10 @@
  */
 
 import { droneEnvelope } from './Envelope';
+import { droneWave } from './Wave';
+import { droneFold, keyboardFold } from './Fold';
+import { reverb } from './Reverb';
+import { stereoWidth } from './StereoWidth';
 
 // Topology-change ramp for adding/removing drone slots via the count
 // control. Decoupled from droneEnvelope on purpose — see
@@ -207,6 +211,48 @@ class AudioEngine {
     this.keyboardBusGain = this.audioContext.createGain();
     this.keyboardBusGain.gain.setValueAtTime(this._kbdEffectiveGain(), this.audioContext.currentTime);
 
+    // Per-pool wavefolder. Inserted right after each pool's bus gain,
+    // before master, so it sees the post-bus signal but doesn't
+    // double-fold across pools. Curve starts as identity (amount=0)
+    // and is rebuilt on droneFold/keyboardFold.onChange.
+    this.droneFoldShaper = this.audioContext.createWaveShaper();
+    droneFold.applyTo(this.droneFoldShaper);
+    this.keyboardFoldShaper = this.audioContext.createWaveShaper();
+    keyboardFold.applyTo(this.keyboardFoldShaper);
+
+    // Count-based attenuator for the drone bus, applied PRE-shaper so
+    // the WaveShaperNode never sees signal exceeding ±1 (it would
+    // clamp, and the clamp itself is hard-clipping — audible distortion
+    // even at fold=0). Master volume is applied separately at
+    // masterGainNode AFTER the shaper. Together they reproduce the
+    // original (count × user) attenuation, but the order matters: the
+    // shaper must see pre-attenuated signal.
+    this.droneCountScale = this.audioContext.createGain();
+    this.droneCountScale.gain.setValueAtTime(
+      this._getDroneCountScale(), this.audioContext.currentTime
+    );
+
+    // Parallel dry/wet gains around each fold shaper. At fold=0 the
+    // dry path carries 100% and the shaper's output is muted by wet=0
+    // — so any artifacts from WaveShaperNode (input clamp on phase-
+    // aligned peaks, oversample filter ringing, etc.) never reach the
+    // master. Linear crossfade because dry/wet are correlated:
+    //   total_at_fold_0:   dry=1, wet=0 → input passed through
+    //   total_at_fold_1:   dry=0, wet=1 → pure folded shape
+    //   total_at_fold_0.5: dry=0.5, wet=0.5 → 50/50 mix (matches the
+    //                      previous internal-mix behavior)
+    this.droneFoldDry = this.audioContext.createGain();
+    this.droneFoldWet = this.audioContext.createGain();
+    this.keyboardFoldDry = this.audioContext.createGain();
+    this.keyboardFoldWet = this.audioContext.createGain();
+    {
+      const t0 = this.audioContext.currentTime;
+      this.droneFoldDry.gain.setValueAtTime(1 - droneFold.amount, t0);
+      this.droneFoldWet.gain.setValueAtTime(droneFold.amount, t0);
+      this.keyboardFoldDry.gain.setValueAtTime(1 - keyboardFold.amount, t0);
+      this.keyboardFoldWet.gain.setValueAtTime(keyboardFold.amount, t0);
+    }
+
     // Create channel gain nodes (one per output channel for mixing)
     this.channelGains = [
       this.audioContext.createGain(), // Left channel
@@ -220,23 +266,96 @@ class AudioEngine {
     this.channelGains[0].connect(this.stereoMerger, 0, 0); // Left
     this.channelGains[1].connect(this.stereoMerger, 0, 1); // Right
 
-    // stereoMerger → droneBusGain → masterGainNode
+    //                                              ┌→ droneFoldDry ─┐
+    // stereoMerger → droneBusGain → droneCountScale ┤                ├→ masterGainNode
+    //                                              └→ shaper → wet ─┘
     this.stereoMerger.connect(this.droneBusGain);
-    this.droneBusGain.connect(this.masterGainNode);
+    this.droneBusGain.connect(this.droneCountScale);
+    this.droneCountScale.connect(this.droneFoldDry);
+    this.droneCountScale.connect(this.droneFoldShaper);
+    this.droneFoldShaper.connect(this.droneFoldWet);
+    this.droneFoldDry.connect(this.masterGainNode);
+    this.droneFoldWet.connect(this.masterGainNode);
 
-    // keyboardBusGain → masterGainNode (parallel to drone branch)
-    this.keyboardBusGain.connect(this.masterGainNode);
+    //                  ┌→ keyboardFoldDry ─┐
+    // keyboardBusGain ─┤                    ├→ masterGainNode
+    //                  └→ shaper → wet ─────┘
+    this.keyboardBusGain.connect(this.keyboardFoldDry);
+    this.keyboardBusGain.connect(this.keyboardFoldShaper);
+    this.keyboardFoldShaper.connect(this.keyboardFoldWet);
+    this.keyboardFoldDry.connect(this.masterGainNode);
+    this.keyboardFoldWet.connect(this.masterGainNode);
     
-    // Create splitter for visualization (after master gain)
+    // Create splitter for visualization (directly off masterGainNode).
+    // Width and reverb both sit AFTER this split-off, so the analyzer —
+    // and therefore every visualizer — always sees the full-width, dry
+    // signal regardless of what the listener hears.
     const splitter = this.audioContext.createChannelSplitter(2);
     const finalMerger = this.audioContext.createChannelMerger(2);
-    
+
     this.masterGainNode.connect(splitter);
     splitter.connect(this.analyserNode1, 0);
     splitter.connect(this.analyserNode2, 1);
     this.analyserNode1.connect(finalMerger, 0, 0);
     this.analyserNode2.connect(finalMerger, 0, 1);
-    finalMerger.connect(this.audioContext.destination);
+
+    // Stereo-width crossfeed sits AFTER the analyzer so the XY scope
+    // shows the underlying L/R relationship and isn't muted to a line
+    // when the listener collapses to mono. At width=1 the four gains
+    // are {through:1, cross:0} (pass-through), at width=0 they're all
+    // 0.5 so each output channel carries (L+R)/2. Topology:
+    //
+    //   finalMerger → widthSplitter ┬→ leftThrough ─┬→ widthMerger.in0
+    //                               ├→ leftCross   ─┘
+    //                               ├→ rightCross  ─┬→ widthMerger.in1
+    //                               └→ rightThrough─┘
+    //
+    // The four gains are attached to `this` so the onChange callback
+    // outside initialize() can ramp them on width changes.
+    const widthSplitter = this.audioContext.createChannelSplitter(2);
+    const widthMerger = this.audioContext.createChannelMerger(2);
+    this.widthLeftThrough  = this.audioContext.createGain();
+    this.widthLeftCross    = this.audioContext.createGain();
+    this.widthRightThrough = this.audioContext.createGain();
+    this.widthRightCross   = this.audioContext.createGain();
+    {
+      const t = this.audioContext.currentTime;
+      const { through, cross } = stereoWidth.gains();
+      this.widthLeftThrough.gain.setValueAtTime(through, t);
+      this.widthRightThrough.gain.setValueAtTime(through, t);
+      this.widthLeftCross.gain.setValueAtTime(cross, t);
+      this.widthRightCross.gain.setValueAtTime(cross, t);
+    }
+    finalMerger.connect(widthSplitter);
+    widthSplitter.connect(this.widthLeftThrough,  0);
+    widthSplitter.connect(this.widthLeftCross,    0);
+    widthSplitter.connect(this.widthRightThrough, 1);
+    widthSplitter.connect(this.widthRightCross,   1);
+    this.widthLeftThrough.connect(widthMerger,  0, 0);
+    this.widthRightCross.connect(widthMerger,   0, 0);
+    this.widthRightThrough.connect(widthMerger, 0, 1);
+    this.widthLeftCross.connect(widthMerger,    0, 1);
+
+    // Reverb sits at the tail. Wet/dry crossfade is equal-power so
+    // perceived loudness stays flat across the slider. ConvolverNode IR
+    // is rebuilt on room change.
+    this.reverbConvolver = this.audioContext.createConvolver();
+    this.reverbConvolver.normalize = false;  // we RMS-normalize the IR ourselves
+    this.reverbConvolver.buffer = reverb.buildIR(this.audioContext);
+    this.reverbDryGain = this.audioContext.createGain();
+    this.reverbWetGain = this.audioContext.createGain();
+    const initGains = reverb.gains();
+    this.reverbDryGain.gain.setValueAtTime(initGains.dry, this.audioContext.currentTime);
+    this.reverbWetGain.gain.setValueAtTime(initGains.wet, this.audioContext.currentTime);
+
+    // widthMerger → dryGain ─┐
+    //                        ├→ destination
+    // widthMerger → conv  → wetGain ─┘
+    widthMerger.connect(this.reverbDryGain);
+    widthMerger.connect(this.reverbConvolver);
+    this.reverbConvolver.connect(this.reverbWetGain);
+    this.reverbDryGain.connect(this.audioContext.destination);
+    this.reverbWetGain.connect(this.audioContext.destination);
     
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;
@@ -248,8 +367,9 @@ class AudioEngine {
     // Setup default routing (odd → left, even → right)
     this._setupDefaultRouting();
     
-    // Fade in
-    this.masterGainNode.gain.setTargetAtTime(this._getScaledMasterGain(), this.audioContext.currentTime, 0.1);
+    // Fade in master to user volume only — count-scale lives on
+    // droneCountScale (already set above).
+    this.masterGainNode.gain.setTargetAtTime(this.masterVolumeUser, this.audioContext.currentTime, 0.1);
 
     this.isInitialized = true;
     this.isPaused = false;
@@ -259,6 +379,63 @@ class AudioEngine {
     // slot's gain glides to volumeValues[i] × droneEnvelope.sustain.
     if (!this._envelopeUnsubscribe) {
       this._envelopeUnsubscribe = droneEnvelope.onChange(() => this._retargetDronesForSustain());
+    }
+    // Re-apply the morphed waveform to every running drone when the
+    // slider moves. setPeriodicWave on a running oscillator preserves
+    // phase in practice on Chrome/Safari.
+    if (!this._waveUnsubscribe) {
+      this._waveUnsubscribe = droneWave.onChange(() => this._reapplyDroneWave());
+    }
+    // Two things happen on a fold change: (a) the shaper's curve is
+    // rebuilt for the new drive (sin(drive·π·x)), and (b) the dry/wet
+    // gains around the shaper crossfade so fold=0 ⇒ pure dry / shaper
+    // muted, fold=1 ⇒ pure shaper output. Gain ramp uses ~30 ms tau so
+    // a slider drag feels like a smooth fade rather than stepping.
+    if (!this._foldUnsubscribe) {
+      const apply = (foldInst, shaper, dryNode, wetNode) => {
+        if (shaper) foldInst.applyTo(shaper);
+        if (dryNode && wetNode && this.audioContext) {
+          const t = this.audioContext.currentTime;
+          dryNode.gain.setTargetAtTime(1 - foldInst.amount, t, 0.03);
+          wetNode.gain.setTargetAtTime(foldInst.amount, t, 0.03);
+        }
+      };
+      const unsubA = droneFold.onChange(() =>
+        apply(droneFold, this.droneFoldShaper, this.droneFoldDry, this.droneFoldWet));
+      const unsubB = keyboardFold.onChange(() =>
+        apply(keyboardFold, this.keyboardFoldShaper, this.keyboardFoldDry, this.keyboardFoldWet));
+      this._foldUnsubscribe = () => { unsubA(); unsubB(); };
+    }
+    // Reverb: rebuild IR on room change, ramp gains on wet change.
+    // Gain ramp uses setTargetAtTime (~50 ms tau) so dragging the wet
+    // slider feels like a smooth crossfade, not a step.
+    // Stereo-width: ramp the four crossfeed gains on slider change.
+    // 30 ms tau matches the fold crossfade — fast enough to feel
+    // responsive, slow enough to avoid zipper noise when dragging.
+    if (!this._widthUnsubscribe) {
+      this._widthUnsubscribe = stereoWidth.onChange(() => {
+        if (!this.audioContext || !this.widthLeftThrough) return;
+        const t = this.audioContext.currentTime;
+        const { through, cross } = stereoWidth.gains();
+        this.widthLeftThrough.gain.setTargetAtTime(through, t, 0.03);
+        this.widthRightThrough.gain.setTargetAtTime(through, t, 0.03);
+        this.widthLeftCross.gain.setTargetAtTime(cross, t, 0.03);
+        this.widthRightCross.gain.setTargetAtTime(cross, t, 0.03);
+      });
+    }
+    if (!this._reverbUnsubscribe) {
+      this._reverbUnsubscribe = reverb.onChange((_inst, info) => {
+        if (!this.audioContext) return;
+        if (info && info.kind === 'room' && this.reverbConvolver) {
+          this.reverbConvolver.buffer = reverb.buildIR(this.audioContext);
+        }
+        if (this.reverbDryGain && this.reverbWetGain) {
+          const t = this.audioContext.currentTime;
+          const g = reverb.gains();
+          this.reverbDryGain.gain.setTargetAtTime(g.dry, t, 0.05);
+          this.reverbWetGain.gain.setTargetAtTime(g.wet, t, 0.05);
+        }
+      });
     }
   }
 
@@ -271,21 +448,45 @@ class AudioEngine {
       droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, this.volumeValues[i]);
     }
   }
+
+  _reapplyDroneWave() {
+    if (!this.isInitialized || !this.audioContext) return;
+    const wave = droneWave.getPeriodicWave(this.audioContext);
+    if (!wave) return;
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      const osc = this.oscillators[i];
+      if (osc) osc.setPeriodicWave(wave);
+    }
+  }
   
   /**
-   * Get scaled master gain based on oscillator count to prevent clipping,
-   * multiplied by the user master volume.
+   * Combined drone-path attenuation = count-scale (pre-shaper) × user
+   * master volume (post-shaper). Visualizer + LSQ calibration use this
+   * to compute the expected analyzer amplitude for one drone slot.
    */
   _getScaledMasterGain() {
-    return (1.0 / Math.sqrt(this.oscillatorCount / 2)) * this.masterVolumeUser;
+    return this._getDroneCountScale() * this.masterVolumeUser;
+  }
+
+  /**
+   * Count-based clip-prevention attenuator applied at droneCountScale
+   * BEFORE droneFoldShaper. Splits the original combined master gain
+   * so the shaper's input clamp ([-1, 1]) doesn't introduce hard
+   * clipping when many drones sum past unity.
+   */
+  _getDroneCountScale() {
+    return 1.0 / Math.sqrt(this.oscillatorCount / 2);
   }
 
   setMasterVolume(value) {
     const clamped = Math.max(0, Math.min(1, value));
     this.masterVolumeUser = clamped;
+    // Master node now carries ONLY user volume; count-scale lives on
+    // droneCountScale and is updated independently when oscillator
+    // count changes.
     if (this.isInitialized && !this.isPaused && this.masterGainNode) {
       this.masterGainNode.gain.setTargetAtTime(
-        this._getScaledMasterGain(),
+        this.masterVolumeUser,
         this.audioContext.currentTime,
         0.05
       );
@@ -352,13 +553,18 @@ class AudioEngine {
 
 
   /**
-   * Update master gain scaling when oscillator count changes
+   * Ramp the drone count-scale gain when the oscillator count changes.
+   * This sits PRE-shaper, so adding/removing drones smoothly adjusts
+   * the input level the shaper sees rather than scaling its output.
+   * Master node is unaffected by count changes — it stays at user
+   * volume.
    */
   _updateMasterGainScaling() {
     if (!this.isInitialized || this.isPaused) return;
-    
-    const targetGain = this._getScaledMasterGain();
-    this.masterGainNode.gain.setTargetAtTime(
+    if (!this.droneCountScale) return;
+
+    const targetGain = this._getDroneCountScale();
+    this.droneCountScale.gain.setTargetAtTime(
       targetGain,
       this.audioContext.currentTime,
       0.1
@@ -391,6 +597,11 @@ class AudioEngine {
 
       const oscillator = this.audioContext.createOscillator();
       const gainNode = this.audioContext.createGain();
+
+      // Apply the drone pool's current waveform shape. Cached per
+      // quantized position so dragging the slider doesn't allocate.
+      const wave = droneWave.getPeriodicWave(this.audioContext);
+      if (wave) oscillator.setPeriodicWave(wave);
 
       oscillator.connect(gainNode);
 
@@ -751,9 +962,12 @@ class AudioEngine {
       this.channelGains[i].connect(this.stereoMerger, 0, i);
     }
     
-    // Connect merger to master gain
-    this.stereoMerger.connect(this.masterGainNode);
-    
+    // Reconnect through the drone bus chain so droneBusGain
+    // (spacebar/drone-pause) and droneFoldShaper stay in the path
+    // after a device change. Connecting directly to masterGainNode
+    // here would silently bypass both — see waveshaping.md.
+    this.stereoMerger.connect(this.droneBusGain);
+
     // Re-setup default routing for current oscillators
     this._setupDefaultRouting();
     
@@ -1055,6 +1269,62 @@ class AudioEngine {
   }
 
   /**
+   * Smoothly tween every oscillator's volume from its current value to a
+   * per-osc target over `durationMs`, in linear space (0-1 scale). Same
+   * ease curve as glideToFrequencies so a parallel freq+vol glide moves
+   * in lockstep — used by the patch "return" button so a revert sounds
+   * like a slide back rather than a fade-out / fade-in. Cancels any
+   * previous in-flight volume glide.
+   */
+  glideVolumes(targets, durationMs = 1000, onComplete = null) {
+    if (!this.isInitialized) return;
+    if (this._volGlideRaf != null) {
+      cancelAnimationFrame(this._volGlideRaf);
+      this._volGlideRaf = null;
+    }
+    const count = Math.min(targets.length, this.oscillatorCount);
+    const starts = this.volumeValues.slice(0, count);
+    const safeTargets = new Array(count);
+    for (let i = 0; i < count; i++) {
+      safeTargets[i] = Math.max(0, Math.min(1, targets[i]));
+    }
+
+    if (durationMs <= 0) {
+      this.setAllVolumesBatch(safeTargets);
+      if (onComplete) onComplete();
+      return;
+    }
+
+    const startMs = performance.now();
+    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+    const step = () => {
+      const elapsed = performance.now() - startMs;
+      const t = Math.min(1, elapsed / durationMs);
+      const k = ease(t);
+      const frame = new Array(count);
+      for (let i = 0; i < count; i++) {
+        frame[i] = starts[i] + (safeTargets[i] - starts[i]) * k;
+      }
+      this.setAllVolumesBatch(frame);
+      if (t >= 1) {
+        this._volGlideRaf = null;
+        if (onComplete) onComplete();
+        return;
+      }
+      this._volGlideRaf = requestAnimationFrame(step);
+    };
+    this._volGlideRaf = requestAnimationFrame(step);
+  }
+
+  cancelVolumeGlide() {
+    if (this._volGlideRaf != null) {
+      cancelAnimationFrame(this._volGlideRaf);
+      this._volGlideRaf = null;
+    }
+  }
+
+  /**
    * Get current frequency value for an oscillator
    */
   getFrequency(index) {
@@ -1169,14 +1439,14 @@ class AudioEngine {
     
     const fadeDuration = 0.5; // 500ms fade
     const currentTime = this.audioContext.currentTime;
-    const targetGain = this._getScaledMasterGain();
-    
+    const targetGain = this.masterVolumeUser;
+
     this.masterGainNode.gain.cancelScheduledValues(currentTime);
     this.masterGainNode.gain.setValueAtTime(0.001, currentTime);
     this.masterGainNode.gain.exponentialRampToValueAtTime(targetGain, currentTime + fadeDuration);
-    
+
     this.isPaused = false;
-    
+
     return new Promise(resolve => setTimeout(resolve, fadeDuration * 1000));
   }
   
@@ -1217,7 +1487,7 @@ class AudioEngine {
     if (this.masterGainNode.gain.value < 0.01) {
       this.masterGainNode.gain.cancelScheduledValues(t);
       this.masterGainNode.gain.setValueAtTime(0.001, t);
-      this.masterGainNode.gain.exponentialRampToValueAtTime(this._getScaledMasterGain(), t + 0.5);
+      this.masterGainNode.gain.exponentialRampToValueAtTime(this.masterVolumeUser, t + 0.5);
     }
     this.isPaused = false;
   }

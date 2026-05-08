@@ -2,7 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import midiInput from '../audio/MidiInput';
 import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
+import { droneWave, keyboardWave } from '../audio/Wave';
+import { droneFold, keyboardFold } from '../audio/Fold';
 import EnvelopeControls from './EnvelopeControls';
+import WaveControls from './WaveControls';
+import ReverbControls from './ReverbControls';
+import WidthControls from './WidthControls';
 import RoutingPatchBay from './RoutingPatchBay';
 
 /**
@@ -25,6 +30,8 @@ export default function SettingsPanel({
   onVizCyclesChange,
   velocityCurve,
   onVelocityCurveChange,
+  theme,
+  onThemeChange,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -146,6 +153,30 @@ export default function SettingsPanel({
       </div>
 
       <div className="settings-section">
+        <label className="settings-label">Color theme</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${theme === 'duo' ? 'on' : 'off'}`}
+            onClick={() => onThemeChange?.('duo')}
+            aria-pressed={theme === 'duo'}
+            title="Sparse two-accent palette (blue + orange + white)"
+          >
+            duo
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${theme === 'classic' ? 'on' : 'off'}`}
+            onClick={() => onThemeChange?.('classic')}
+            aria-pressed={theme === 'classic'}
+            title="Original 12-color rainbow palette"
+          >
+            classic
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-section">
         <label className="settings-label">Audio Output</label>
         <select 
           className="settings-select"
@@ -207,6 +238,13 @@ export default function SettingsPanel({
 
       <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
       <EnvelopeControls title="Keyboard envelope" envelope={keyboardEnvelope} />
+
+      <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
+      <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
+
+      <WidthControls />
+
+      <ReverbControls />
 
       <div className="settings-section">
         <label className="settings-label">MIDI input</label>

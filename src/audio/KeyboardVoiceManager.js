@@ -5,11 +5,15 @@
  * → masterGainNode (shared with the drone). Voices are spawned on
  * noteOn and stopped after release tail.
  *
- * Voice identity is (degree, octave) so that retunes propagate when the
- * drone's tuning changes. midiNote is also stored to match noteOff back
- * to the right voice. Pan is captured at note-on from the drone's L/R
- * routing for the corresponding scale degree's drone slot, then static
- * for the voice's lifetime (per the v1 panning rule).
+ * Voice identity is (slot, octave) — the drone slot resolved at noteOn
+ * from the pressed key's scale degree. Holding a key while the user
+ * drags an orb past another lets the held voice track the ORIGINALLY-
+ * pressed orb instead of jumping to whichever drone now occupies that
+ * scale degree (see `pitchForSlotAndOctave` in Tuning). Degree is also
+ * stored, but only as metadata for visualizers — retunes go via slot.
+ * midiNote is stored to match noteOff back to the right voice. Pan is
+ * captured at note-on from the drone's L/R routing for the slot, then
+ * static for the voice's lifetime (per the v1 panning rule).
  *
  * Voice cap is 32. When exceeded, prefer stealing an already-released
  * voice; if none, fast-fade-out the oldest held voice over ~10 ms.
@@ -21,10 +25,16 @@
 import audioEngine from './AudioEngine';
 import tuning from './Tuning';
 import { keyboardEnvelope } from './Envelope';
+import { keyboardWave } from './Wave';
+import { stereoWidth } from './StereoWidth';
 
 const MAX_VOICES = 32;
 const RETUNE_TAU = 0.016; // matches drone's setTargetAtTime tau
 const STEAL_FADE = 0.01;  // 10 ms fast fade for stolen held voices
+// Tau for re-panning live voices on width/mode change. ~50 ms reads as a
+// smooth glide rather than a jump but is fast enough that dragging the
+// width slider feels live.
+const PAN_RAMP_TAU = 0.05;
 const TWO_PI = Math.PI * 2;
 
 class KeyboardVoiceManager {
@@ -50,6 +60,8 @@ class KeyboardVoiceManager {
     // Lazy subscriptions so the audio context can come up first.
     this._tuningUnsubscribe = null;
     this._envelopeUnsubscribe = null;
+    this._waveUnsubscribe = null;
+    this._widthUnsubscribe = null;
 
     KeyboardVoiceManager.instance = this;
   }
@@ -62,6 +74,57 @@ class KeyboardVoiceManager {
   _ensureEnvelopeSubscribed() {
     if (this._envelopeUnsubscribe) return;
     this._envelopeUnsubscribe = keyboardEnvelope.onChange(() => this._retargetVoiceSustain());
+  }
+
+  _ensureWaveSubscribed() {
+    if (this._waveUnsubscribe) return;
+    this._waveUnsubscribe = keyboardWave.onChange(() => this._reapplyVoiceWave());
+  }
+
+  // Width / mode subscription. Repans every live voice on either:
+  //   - mode flip (lr ↔ voicepan): voices switch from per-degree L/R
+  //     to random spread (or back), so held notes follow without
+  //     waiting for the next note-on
+  //   - width drag in voicepan mode: re-randomizes positions live
+  //   - width drag in lr mode: bus crossfeed handles the narrowing,
+  //     but we still re-trigger _repanAllVoices to keep the panner
+  //     values consistent (cheap, no-op effect on hard-panned voices)
+  _ensureWidthSubscribed() {
+    if (this._widthUnsubscribe) return;
+    this._widthUnsubscribe = stereoWidth.onChange(() => this._repanAllVoices());
+  }
+
+  /**
+   * Glide every live voice's pan to its current target — random in
+   * [-width,+width] for voicepan, per-degree L/R for lr. Tau is 50 ms
+   * so a slider drag feels live but doesn't zip.
+   */
+  _repanAllVoices() {
+    const ctx = audioEngine.audioContext;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    for (const v of this.voices) {
+      const target = stereoWidth.mode === 'voicepan'
+        ? stereoWidth.randomPan()
+        : this._panForDegree(v.degree);
+      v.panner.pan.setTargetAtTime(target, t, PAN_RAMP_TAU);
+    }
+  }
+
+  /**
+   * Re-apply the morphed waveform to every running voice (held + in
+   * release tail) when the keyboard wave slider moves. setPeriodicWave
+   * on a running oscillator preserves phase in practice on Chrome and
+   * Safari.
+   */
+  _reapplyVoiceWave() {
+    const ctx = audioEngine.audioContext;
+    if (!ctx) return;
+    const wave = keyboardWave.getPeriodicWave(ctx);
+    if (!wave) return;
+    for (const v of this.voices) {
+      v.osc.setPeriodicWave(wave);
+    }
   }
 
   /**
@@ -81,15 +144,18 @@ class KeyboardVoiceManager {
 
   /**
    * Push a freq update into every active (held or releasing) voice from
-   * the current tuning. If a voice's degree no longer exists in the
-   * scale (drone count was reduced), the voice keeps its previous freq.
+   * the current tuning. Resolved via the voice's bound SLOT (not its
+   * degree) so a held note follows the orb the user originally pressed
+   * even if a mid-drag reorder shuffles the degree-to-slot map. If the
+   * voice's slot was removed (drone count reduced past it), the voice
+   * keeps its previous freq.
    */
   _retuneAllVoices() {
     const ctx = audioEngine.audioContext;
     if (!ctx) return;
     const now = ctx.currentTime;
     for (const voice of this.voices) {
-      const raw = tuning.pitchForDegreeAndOctave(voice.degree, voice.octave);
+      const raw = tuning.pitchForSlotAndOctave(voice.slot, voice.octave);
       if (raw === null) continue;
       const newFreq = Math.max(0.001, Math.min(20000, raw));
       voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
@@ -100,9 +166,17 @@ class KeyboardVoiceManager {
   setHold(on) {
     const wasHold = this._hold;
     this._hold = !!on;
-    // Turning hold OFF releases everything that was latched, since
-    // there's no real "press" holding those voices anymore.
-    if (wasHold && !this._hold) {
+    if (!wasHold && this._hold) {
+      // Turning hold ON — latch every voice that's currently sounding so
+      // the user can lift their fingers and the held chord persists.
+      // Voices in their release tail are skipped (they're already on
+      // their way out — re-latching would make hold feel sticky).
+      for (const v of this.voices) {
+        if (!v.released) v._latched = true;
+      }
+    } else if (wasHold && !this._hold) {
+      // Turning hold OFF releases everything that was latched, since
+      // there's no real "press" holding those voices anymore.
       for (const v of this.voices) {
         if (v._latched && !v.released) this._releaseVoice(v);
         if (v) v._latched = false;
@@ -156,7 +230,12 @@ class KeyboardVoiceManager {
     const dao = tuning.degreeAndOctaveForMidi(midiNote);
     if (!dao) return null; // empty scale
     const { degree, octave } = dao;
-    const rawFreq = tuning.pitchForDegreeAndOctave(degree, octave);
+    // Resolve the drone slot at noteOn and bind the voice to it. Held
+    // voices retune by slot (not degree), so dragging this orb past
+    // another won't snap the held pitch onto the new degree-occupant.
+    const slot = tuning.droneSlotForDegree(degree);
+    if (slot < 0) return null;
+    const rawFreq = tuning.pitchForSlotAndOctave(slot, octave);
     if (rawFreq === null) return null;
     // Clamp into the audible range — Z/X spamming or a high MIDI note
     // can otherwise push freq above Nyquist (silent + alias risk).
@@ -164,16 +243,28 @@ class KeyboardVoiceManager {
 
     this._ensureTuningSubscribed();
     this._ensureEnvelopeSubscribed();
+    this._ensureWaveSubscribed();
+    this._ensureWidthSubscribed();
 
     if (this.voices.length >= MAX_VOICES) {
       this._stealVoice();
     }
 
-    const pan = this._panForDegree(degree);
+    // Pan mode dictates note-on pan:
+    //   - 'voicepan': fresh random in [-width, +width] (Oberheim-style)
+    //   - 'lr': inherit the drone slot's L/R routing (legacy hard pan)
+    const pan = stereoWidth.mode === 'voicepan'
+      ? stereoWidth.randomPan()
+      : this._panForDegree(degree);
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     const panner = ctx.createStereoPanner();
+
+    // Apply the keyboard pool's current waveform shape before start so
+    // the voice's first sample is already in the right shape.
+    const wave = keyboardWave.getPeriodicWave(ctx);
+    if (wave) osc.setPeriodicWave(wave);
 
     osc.frequency.setValueAtTime(freq, ctx.currentTime);
     panner.pan.setValueAtTime(pan, ctx.currentTime);
@@ -195,6 +286,10 @@ class KeyboardVoiceManager {
       id: this._nextVoiceId++,
       midiNote,
       degree,
+      // Slot is the load-bearing identity for retunes. Degree is kept
+      // alongside it for visualizers / debug — don't use it to look up
+      // freq once the voice is alive.
+      slot,
       octave,
       osc,
       gain,
@@ -293,9 +388,9 @@ class KeyboardVoiceManager {
   }
 
   /**
-   * Per-voice pan (v1): inherited from the drone's L/R routing for the
-   * drone slot that supplies this scale degree. L-only → −1, R-only →
-   * +1, both or neither → 0.
+   * Hard-pan inherited from the drone's L/R routing for the slot that
+   * supplies this scale degree. L-only → −1, R-only → +1, both or
+   * neither → 0. Used in 'lr' pan mode.
    */
   _panForDegree(degree) {
     const slot = tuning.droneSlotForDegree(degree);
@@ -318,6 +413,10 @@ class KeyboardVoiceManager {
       id: v.id,
       midiNote: v.midiNote,
       degree: v.degree,
+      // The slot the voice is actually sounding (bound at noteOn).
+      // Consumers should prefer this over `tuning.droneSlotForDegree(v.degree)`
+      // since the degree-to-slot map can shift mid-press when orbs reorder.
+      slot: v.slot,
       octave: v.octave,
       released: v.released,
       amp: v.gain.gain.value,
@@ -360,10 +459,11 @@ class KeyboardVoiceManager {
         phase: v.phase,
         amp,
         pan: v.panner.pan.value,
-        // Scale degree exposes which drone slot supplies this voice's
-        // pitch — visualizers use it to color the voice's trace
-        // matching the drone palette so a kbd note at degree N reads
-        // as "the same color as drone slot N's color".
+        // Voice is bound to a drone slot at noteOn — visualizers color
+        // the voice's trace from the slot's palette entry so the trace
+        // matches the orb being held. Slot-bound (not degree) so the
+        // color stays put when a mid-drag reorder shuffles degrees.
+        slot: v.slot,
         degree: v.degree,
       });
     }

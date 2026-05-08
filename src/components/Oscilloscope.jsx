@@ -1,14 +1,8 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
-import tuning from '../audio/Tuning';
-
-// Kept in sync with the palette used by FrequencySpectrumBar / OscillatorControls.
-const OSCILLATOR_COLORS = [
-  '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
-  '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
-  '#ff7eb6', '#a78bfa',
-];
+import { stereoWidth } from '../audio/StereoWidth';
+import palette from '../theme/palette';
 
 // Synth-buffer length policy for the XY / Hilbert / face scopes.
 // - At low frequencies, we want a long buffer so the trace visibly
@@ -52,6 +46,69 @@ function highestActiveFreq() {
     if (v.freq > highest) highest = v.freq;
   }
   return highest;
+}
+
+// ── Hilbert FIR (windowed-sinc, 33 taps centered) ─────────────────────
+// Used by the "Audio" source path of the Hilbert visualizer to compute
+// the 90°-phase-shifted partner of the analyzer's mono signal. The
+// ideal Hilbert kernel has h[k] = 2/(πk) for odd k, zero for even k.
+// Hamming-windowing tapers the tails so the truncation doesn't ripple
+// in the response. 33 taps gives a usable approximation across the
+// audible range; longer kernels widen the dead-band near DC + Nyquist
+// but cost more per sample. At 8192 input samples × ~16 nonzero taps,
+// total cost is ~130k mults/frame — sub-millisecond.
+const HILBERT_FIR = (() => {
+  const L = 33;
+  const center = (L - 1) / 2;
+  const h = new Float32Array(L);
+  for (let n = 0; n < L; n++) {
+    const k = n - center;
+    if (k === 0 || k % 2 === 0) {
+      h[n] = 0;
+      continue;
+    }
+    const win = 0.54 - 0.46 * Math.cos((2 * Math.PI * n) / (L - 1));
+    h[n] = (2 / (Math.PI * k)) * win;
+  }
+  // Pre-extract the nonzero (odd-k) tap indices + values for a tighter
+  // inner loop — skips half the multiplies that would otherwise hit a
+  // guaranteed zero.
+  const taps = [];
+  for (let n = 0; n < L; n++) {
+    if (h[n] !== 0) taps.push({ offset: n - center, coef: h[n] });
+  }
+  return { center, taps };
+})();
+
+// Apply the FIR Hilbert transform to `input`, writing into `output`.
+// Output[i] approximates the Hilbert-transformed input at sample i.
+// Edge samples (within ±center of the buffer ends) get zero-padded
+// context, so the very first / last 16 samples are slightly attenuated.
+// We slice out only the buffer's middle region for visualization
+// downstream, so this edge dimming is invisible.
+function hilbertTransform(input, output) {
+  const { taps } = HILBERT_FIR;
+  const N = input.length;
+  for (let i = 0; i < N; i++) {
+    let sum = 0;
+    for (const { offset, coef } of taps) {
+      const idx = i + offset;
+      if (idx >= 0 && idx < N) sum += coef * input[idx];
+    }
+    output[i] = sum;
+  }
+}
+
+// Reusable scratch buffers for analyzer-mode Hilbert. Resized on demand
+// so each frame doesn't allocate.
+let _hilbertMono = null;
+let _hilbertImag = null;
+function ensureHilbertScratch(n) {
+  if (!_hilbertMono || _hilbertMono.length !== n) {
+    _hilbertMono = new Float32Array(n);
+    _hilbertImag = new Float32Array(n);
+  }
+  return { mono: _hilbertMono, imag: _hilbertImag };
 }
 
 // Window function that ramps amplitude to 0 at the left/right edges so
@@ -282,11 +339,12 @@ function drawStatic(
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     // Drones first.
+    const totalCount = freqs.length;
     for (let k = 0; k < freqs.length; k++) {
       if (!isActive(k)) continue;
       const c = droneContrib(k);
       const f = freqs[k];
-      const color = OSCILLATOR_COLORS[k % OSCILLATOR_COLORS.length];
+      const color = palette.oscColor(k, totalCount);
       ctx.globalAlpha = Math.min(1, renderVolumes[k] / fadeZone) * droneScale;
       ctx.beginPath();
       ctx.lineWidth = indivWidth;
@@ -312,9 +370,11 @@ function drawStatic(
     for (const v of voices) {
       if (!isVoiceActive(v)) continue;
       const c = voiceContrib(v);
-      const slot = tuning.droneSlotForDegree(v.degree);
-      const color = slot >= 0
-        ? OSCILLATOR_COLORS[slot % OSCILLATOR_COLORS.length]
+      // Use the slot the voice is bound to (set at noteOn) rather than
+      // resolving via degree — keeps the trace color stable when a
+      // mid-press orb drag reorders the scale.
+      const color = v.slot >= 0
+        ? palette.oscColor(v.slot, totalCount)
         : 'rgba(255, 255, 255, 0.85)';
       ctx.globalAlpha = Math.min(1, v.amp / fadeZone) * kbdScale;
       ctx.beginPath();
@@ -503,6 +563,107 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   return { L, R };
 }
 
+// Round-robin variant of synthStereoData: distributes oscillators by
+// index parity (even→L, odd→R) regardless of actual routing or pan.
+// Used as a viz-only fallback when the audio is genuinely mono and the
+// real lissajous would degenerate to a diagonal line — the round-robin
+// distribution restores meaningful L≠R motion for the scope. Voices
+// inherit parity from their bound drone slot so a held note's color and
+// side stay stable across drone-count changes.
+function synthStereoDataRoundRobin(N, sampleRate, sampleOffsetBackward = 0) {
+  const freqs = audioEngine.getAllFrequencies();
+  const phases = audioEngine.getAllPhases();
+  const volumes = audioEngine.volumeValues || [];
+  // Drone count-scale (1/sqrt(count/2)) is normally applied by the
+  // droneCountScale audio node BEFORE the analyzer, so the analyzer
+  // already sees attenuated drones. The synth path doesn't go through
+  // that node — without folding the same factor in, the round-robin
+  // sums easily exceed [-1,+1] (e.g. 12 drones × vol=0.5 sums to 3.0
+  // per channel) and the lissajous clips off the scope edges.
+  const count = audioEngine.getOscillatorCount
+    ? audioEngine.getOscillatorCount() || 1
+    : 1;
+  const countScale = 1 / Math.sqrt(Math.max(1, count) / 2);
+  const droneScale = audioEngine.getDroneEffectiveGain() * countScale;
+  // Voices: equal-power center pan gives cos(π/4)=√½ to each channel.
+  // Round-robin routes 100% to one side, √2× louder than the audio's
+  // average per-channel amplitude — multiply by 1/√2 to fit [-1,+1].
+  const voiceEqualPower = 1 / Math.sqrt(2);
+  const keyboardScale = audioEngine.getKeyboardEffectiveGain() * voiceEqualPower;
+
+  const L = new Float32Array(N);
+  const R = new Float32Array(N);
+  const TWO_PI = Math.PI * 2;
+
+  // RANK parity, not slot/index parity: scan active drones in order
+  // and alternate L/R by their rank (1st active → L, 2nd → R, …).
+  // Slot parity breaks when several active items happen to share the
+  // same parity — e.g. drones at slots 1 and 3 (both odd) would both
+  // go to R, leaving L empty and the lissajous a horizontal line.
+  // Rank parity guarantees alternation regardless of which slots are
+  // muted or which scale degrees are pressed.
+  let droneRank = 0;
+  for (let k = 0; k < freqs.length; k++) {
+    const muted = audioEngine.isMuted(k);
+    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
+    if (amp <= 0) continue;
+    const f = freqs[k];
+    if (!(f > 0)) continue;
+
+    const toLeft = (droneRank % 2) === 0;
+    droneRank++;
+    const dTheta = TWO_PI * f / sampleRate;
+    let theta = (phases[k] || 0) - (N - 1 + sampleOffsetBackward) * dTheta;
+    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
+    let sinT = Math.sin(theta);
+    let cosT = Math.cos(theta);
+    const sinD = Math.sin(dTheta);
+    const cosD = Math.cos(dTheta);
+
+    for (let s = 0; s < N; s++) {
+      const v = amp * sinT;
+      if (toLeft) L[s] += v; else R[s] += v;
+      const newSin = sinT * cosD + cosT * sinD;
+      const newCos = cosT * cosD - sinT * sinD;
+      sinT = newSin;
+      cosT = newCos;
+    }
+  }
+
+  // Voices: sort active voices by frequency (stable, slot-independent)
+  // and apply rank parity. Two notes that happen to land on slots of
+  // the same parity (e.g. C major scale degrees 0 and 2 both even)
+  // would otherwise both go to one channel — the audio out is fine
+  // because each voice has its own random pan, but the round-robin
+  // viz used to collapse to a line. Sorting+ranking fixes that.
+  const voices = keyboardVoiceManager.getVoicesForSynth();
+  const active = voices.filter(v => v.freq > 0 && v.amp * keyboardScale > 0);
+  active.sort((a, b) => a.freq - b.freq);
+  for (let i = 0; i < active.length; i++) {
+    const v = active[i];
+    const amp = v.amp * keyboardScale;
+    const toLeft = (i % 2) === 0;
+    const dTheta = TWO_PI * v.freq / sampleRate;
+    let theta = v.phase - (N - 1 + sampleOffsetBackward) * dTheta;
+    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
+    let sinT = Math.sin(theta);
+    let cosT = Math.cos(theta);
+    const sinD = Math.sin(dTheta);
+    const cosD = Math.cos(dTheta);
+
+    for (let s = 0; s < N; s++) {
+      const samp = amp * sinT;
+      if (toLeft) L[s] += samp; else R[s] += samp;
+      const newSin = sinT * cosD + cosT * sinD;
+      const newCos = cosT * cosD - sinT * sinD;
+      sinT = newSin;
+      cosT = newCos;
+    }
+  }
+
+  return { L, R };
+}
+
 // Hilbertscope — plots the analytic signal (x, ĥ) in the complex plane,
 // where ĥ is the Hilbert transform (90° phase shift) of x. For a pure
 // sine x = amp·sin(θ), the Hilbert partner is −amp·cos(θ), so each
@@ -589,8 +750,16 @@ function synthHilbertData(bufferSize, sampleRate) {
 function drawXY(
   ctx,
   scopeSize, scopeOffsetX, scopeOffsetY,
-  lineScale, r, g, b, timeData1, timeData2
+  lineScale, r, g, b, timeData1, timeData2,
+  options = {}
 ) {
+  // source='audio' means the input is the analyzer's actual post-FX
+  // signal (fold + shape). The complexity-based smoothing below was
+  // tuned for synth mode where direction-change count ≈ "many oscs";
+  // applied to a folded signal it averages adjacent samples 90% and
+  // erases the fold's harmonics. Audio mode uses fixed minimal
+  // smoothing so the fold/shape detail survives the render.
+  const { source = 'synth' } = options;
   const dataLen = timeData1.length;
   // Render the entire incoming buffer. The synth helpers now produce
   // exactly the desired length per frame (adaptive on freq via
@@ -599,25 +768,37 @@ function drawXY(
   // longer buffers.
   const renderStart = Math.max(0, dataLen - VIZ_BUF_MAX_N);
 
-  // Direction-change count over the head of the rendered window = rough
-  // frequency proxy. Drives adaptive sample step, line width, and
-  // smoothing so high-frequency content renders cleanly without a hard
-  // performance hit.
-  let directionChanges = 0;
-  let prevDiff = 0;
-  const scanEnd = Math.min(dataLen, renderStart + 256);
-  for (let i = renderStart + 2; i < scanEnd; i++) {
-    const diff = timeData1[i] - timeData1[i - 1];
-    if ((diff > 0 && prevDiff < 0) || (diff < 0 && prevDiff > 0)) {
-      directionChanges++;
+  let sampleStep, smoothingFactor, colorWidth, whiteWidth;
+  if (source === 'audio') {
+    // Walk every sample, lightly bind successive points just for visual
+    // continuity. Line widths fixed at the synth-mode "low complexity"
+    // baseline — wider strokes would re-blob the fold detail we're
+    // trying to expose.
+    sampleStep = 1;
+    smoothingFactor = 0.2;
+    colorWidth = 18 * lineScale;
+    whiteWidth = 4 * lineScale;
+  } else {
+    // Direction-change count over the head of the rendered window = rough
+    // frequency proxy. Drives adaptive sample step, line width, and
+    // smoothing so high-frequency content renders cleanly without a hard
+    // performance hit.
+    let directionChanges = 0;
+    let prevDiff = 0;
+    const scanEnd = Math.min(dataLen, renderStart + 256);
+    for (let i = renderStart + 2; i < scanEnd; i++) {
+      const diff = timeData1[i] - timeData1[i - 1];
+      if ((diff > 0 && prevDiff < 0) || (diff < 0 && prevDiff > 0)) {
+        directionChanges++;
+      }
+      prevDiff = diff;
     }
-    prevDiff = diff;
+    const complexity = Math.min(directionChanges / 50, 1);
+    sampleStep = Math.round(1 + complexity * 7);
+    colorWidth = (20 + complexity * 10) * lineScale;
+    whiteWidth = (5 + complexity * 3) * lineScale;
+    smoothingFactor = 0.6 + complexity * 0.3;
   }
-  const complexity = Math.min(directionChanges / 50, 1);
-  const sampleStep = Math.round(1 + complexity * 7);
-  const colorWidth = (20 + complexity * 10) * lineScale;
-  const whiteWidth = (5 + complexity * 3) * lineScale;
-  const smoothingFactor = 0.6 + complexity * 0.3;
 
   const strokePath = (color, lw, blur, glowColor) => {
     ctx.beginPath();
@@ -823,15 +1004,69 @@ export default function Oscilloscope({
         vizCyclesRef.current
       );
 
+      // Per-mode source policy:
+      //   0 (Circle), 2 (Face)  → 'audio'  (analyzer's actual signal,
+      //                            so wavefolding + setPeriodicWave
+      //                            shapes show through visibly)
+      //   3 (Hilbert)           → 'synth'  (the per-osc circles +
+      //                            Fourier-epicycle interpretation only
+      //                            holds for pure sines; the FIR
+      //                            audio path is technically valid but
+      //                            visually less informative)
+      //   1 (Standing line)     → synth, baked into drawStatic
+      //
+      // Pulls a stereo (L, R) pair appropriate for the source.
+      // 'audio' returns subarray views of the analyzer's time-domain
+      // buffer (post-master, post-fold, post-shape — the actual sound).
+      // 'synth' returns freshly-synthesized pure-sine arrays from osc
+      // phase. Both are length-bounded by synthN so the viz density
+      // stays consistent across sources.
+      const getXY = (source) => {
+        if (source === 'audio') {
+          // In voicepan mode the audio path is smeared by per-voice
+          // random pans, so the analyzer signal makes a busy lissajous
+          // — render the synth round-robin (rank-based L/R) instead so
+          // the scope shows a clean stereo figure. In lr mode the
+          // audio is already cleanly panned; read the analyzer directly.
+          if (stereoWidth.mode === 'voicepan') {
+            return synthStereoDataRoundRobin(synthN, sampleRate);
+          }
+          const L = audioEngine.getTimeDataLeft();
+          const R = audioEngine.getTimeDataRight();
+          if (!L || !R) return { L: new Float32Array(0), R: new Float32Array(0) };
+          const start = Math.max(0, L.length - synthN);
+          return { L: L.subarray(start), R: R.subarray(start) };
+        }
+        return synthStereoData(synthN, sampleRate);
+      };
+
+      // Hilbert path is synth-only by policy. The audio variant
+      // (FIR-transformed mono) is left available below in case we
+      // expose it again later, but the call site picks 'synth'.
+      const getHilbertXY = (source) => {
+        if (source === 'audio') {
+          const L = audioEngine.getTimeDataLeft();
+          const R = audioEngine.getTimeDataRight();
+          if (!L || !R) return { X: new Float32Array(0), Y: new Float32Array(0) };
+          const N = L.length;
+          const { mono, imag } = ensureHilbertScratch(N);
+          for (let i = 0; i < N; i++) mono[i] = (L[i] + R[i]) * 0.5;
+          hilbertTransform(mono, imag);
+          const start = Math.max(0, N - synthN);
+          return { X: mono.subarray(start), Y: imag.subarray(start) };
+        }
+        return synthHilbertData(synthN, sampleRate);
+      };
+
       if (vizMode === 0) {
-        // ── MODE 0: single centered synth XY scope ────────────────────
+        // ── MODE 0: single centered XY scope ──────────────────────────
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(0, 0, width, usableHeight);
         const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
-        const { L, R } = synthStereoData(synthN, sampleRate);
-        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, L, R);
+        const { L, R } = getXY('audio');
+        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, L, R, { source: 'audio' });
 
       } else if (vizMode === 1) {
         // ── MODE 1: tall standing wave filling the scope region ──────
@@ -905,11 +1140,12 @@ export default function Oscilloscope({
         ctx.fillStyle = 'rgba(0, 0, 0, 1)';
         ctx.fillRect(0, mouthTop, width, usableHeight - mouthTop);
 
-        // Both eyes show the full L/R synth mix — identical traces
-        // left and right.
-        const { L, R } = synthStereoData(synthN, sampleRate);
-        drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R);
-        drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R);
+        // Both eyes show the full L/R mix — identical traces left and
+        // right. Source switches between synth (clean sines) and audio
+        // (post-master analyzer buffer) per the Visualizer setting.
+        const { L, R } = getXY('audio');
+        drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R, { source: 'audio' });
+        drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R, { source: 'audio' });
 
         // Mouth: white-line static wave, constrained to the eye span
         // so it can never be wider than the eyes above it.
@@ -940,8 +1176,8 @@ export default function Oscilloscope({
         const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * 0.6);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
-        const { X, Y } = synthHilbertData(synthN, sampleRate);
-        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y);
+        const { X, Y } = getHilbertXY('synth');
+        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y, { source: 'synth' });
       }
     };
 

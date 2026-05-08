@@ -1,23 +1,9 @@
 import { memo, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import audioEngine from '../audio/AudioEngine';
+import palette, { useTheme } from '../theme/palette';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-
-const OSCILLATOR_COLORS = [
-  '#ff4136',
-  '#2ecc40',
-  '#0074d9',
-  '#ffdc00',
-  '#bb8fce',
-  '#85c1e9',
-  '#82e0aa',
-  '#f8b500',
-  '#e74c3c',
-  '#1abc9c',
-  '#ff7eb6',
-  '#a78bfa',
-];
 
 function freqToNote(freq) {
   if (freq <= 0) return { note: '--', octave: 0, cents: 0 };
@@ -588,6 +574,8 @@ function OscillatorControls({
   onKbdHoldToggle,
   isPaused = false,
   onPausedChange,
+  currentPatch = null,
+  onRevertToPatch,
 }) {
   const createInitialArray = (defaultValue, length) => Array(length).fill(defaultValue);
 
@@ -636,13 +624,18 @@ function OscillatorControls({
     });
   }, [oscillatorCount]);
 
+  // Subscribing triggers a re-render when the user flips themes; the
+  // actual color value is resolved fresh from the palette singleton
+  // each render so non-React readers see the same source of truth.
+  const themeName = useTheme();
   const oscillators = useMemo(() => {
+    void themeName; // dep gates re-memo when the user flips palette
     return Array.from({ length: oscillatorCount }, (_, i) => ({
       index: i,
       label: getOscillatorLabel(i),
-      color: OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length],
+      color: palette.oscColor(i, oscillatorCount),
     }));
-  }, [oscillatorCount]);
+  }, [oscillatorCount, themeName]);
 
   // Single horizontally-scrolling row at all widths — mirrors the mobile layout
   // on desktop too so the master ALL column lines up the same way everywhere.
@@ -888,6 +881,21 @@ function OscillatorControls({
                     </svg>
                   </button>
                   <span className="osc-more-btn-caption">align</span>
+                  <button
+                    className="osc-more-btn icon-btn"
+                    onClick={onRevertToPatch}
+                    disabled={!currentPatch}
+                    title={currentPatch
+                      ? `Return to "${currentPatch.name || 'patch'}" — restores the loaded patch's frequencies, volumes, and routing`
+                      : 'Load a patch first to enable revert'}
+                    aria-label="Return to loaded patch"
+                  >
+                    {/* Curved-arrow "undo / return to source" icon. */}
+                    <svg viewBox="0 0 24 24" className="button-icon">
+                      <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                    </svg>
+                  </button>
+                  <span className="osc-more-btn-caption">return</span>
                 </div>
               </div>
             </div>

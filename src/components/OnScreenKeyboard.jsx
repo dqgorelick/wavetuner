@@ -3,15 +3,7 @@ import audioEngine from '../audio/AudioEngine';
 import tuning from '../audio/Tuning';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { OFFSET_TO_LETTER } from '../hooks/useComputerKeyboard';
-
-// Drone color palette mirrored from FrequencySpectrumBar / OscillatorControls.
-// Each scale degree borrows the color of the drone slot supplying it (live
-// updated as orbs reorder).
-const OSCILLATOR_COLORS = [
-  '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
-  '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
-  '#ff7eb6', '#a78bfa',
-];
+import palette from '../theme/palette';
 
 // Standard piano-keyboard layout within an octave.
 //   Whites at semitone offsets 0,2,4,5,7,9,11
@@ -93,9 +85,11 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
   // activation overlay (.osk-key::after) reads that variable so a
   // playing key lights up in its drone slot's color rather than a
   // generic white glow. Using imperative DOM updates keeps React out
-  // of the per-frame hot path.
+  // of the per-frame hot path. Refresh runs on tuning AND palette
+  // changes so a theme flip recolors every key without remount.
   useEffect(() => {
     const refresh = () => {
+      const count = audioEngine.getOscillatorCount();
       const updateOne = (midi) => {
         const el = keyRefs.current.get(midi);
         if (!el) return;
@@ -103,20 +97,16 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
         const dao = midiToDegreeOctave(midi); // null if mapping silences this key
         const slot = dao ? tuning.droneSlotForDegree(dao.degree) : -1;
         if (!dao || slot < 0) {
-          if (dot) {
-            dot.style.opacity = '0';
-            dot.classList.remove('is-drone');
-          }
+          if (dot) dot.classList.remove('is-drone');
           el.style.removeProperty('--key-color');
           el.classList.add('silent');
           return;
         }
         el.classList.remove('silent');
-        const color = OSCILLATOR_COLORS[slot % OSCILLATOR_COLORS.length];
+        const color = palette.oscColor(slot, count);
         el.style.setProperty('--key-color', color);
         if (dot) {
           dot.style.background = color;
-          dot.style.opacity = '1';
           dot.classList.toggle('is-drone', dao.octave === 0);
         }
       };
@@ -124,7 +114,9 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
       for (const b of blacks) updateOne(b.midi);
     };
     refresh();
-    return tuning.onChange(refresh);
+    const unsubTune = tuning.onChange(refresh);
+    const unsubPalette = palette.onChange(refresh);
+    return () => { unsubTune(); unsubPalette(); };
   }, [whites, blacks]);
 
   // Per-frame glow update from the voice manager. Direct DOM mutation —
@@ -136,8 +128,17 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
     const visibleStart = startMidi;
     const visibleEnd = startMidi + octaveCount * 12; // exclusive
     let raf = null;
+    // Visual amp normalization: with TAP_VELOCITY=0.5 and keyboard
+    // envelope sustain≈0.4, a held note's gain.value sits near 0.2.
+    // Driving --glow-alpha straight from that pegs the visual at 20%
+    // of its range — keys read as dim. Boost so sustain hits ≈1.0
+    // and momentary peaks clamp at 1. Audio is unaffected; this
+    // multiplier only scales the CSS variable.
+    const VISUAL_AMP_GAIN = 5;
+    const toGlow = (amp) => Math.min(1, amp * VISUAL_AMP_GAIN);
     const tick = () => {
       const voices = keyboardVoiceManager.getActiveVoices();
+      const count = audioEngine.getOscillatorCount();
       const ampByMidi = new Map();
       let leftAmp = 0, leftColor = null;
       let rightAmp = 0, rightColor = null;
@@ -149,14 +150,12 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
         if (v.midiNote < visibleStart) {
           if (v.amp > leftAmp) {
             leftAmp = v.amp;
-            const slot = tuning.droneSlotForDegree(v.degree);
-            leftColor = slot >= 0 ? OSCILLATOR_COLORS[slot % OSCILLATOR_COLORS.length] : null;
+            leftColor = v.slot >= 0 ? palette.oscColor(v.slot, count) : null;
           }
         } else if (v.midiNote >= visibleEnd) {
           if (v.amp > rightAmp) {
             rightAmp = v.amp;
-            const slot = tuning.droneSlotForDegree(v.degree);
-            rightColor = slot >= 0 ? OSCILLATOR_COLORS[slot % OSCILLATOR_COLORS.length] : null;
+            rightColor = v.slot >= 0 ? palette.oscColor(v.slot, count) : null;
           }
         }
       }
@@ -164,18 +163,18 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
       // Apply per-key glow.
       for (const [midi, el] of keyRefs.current.entries()) {
         const amp = ampByMidi.get(midi) || 0;
-        el.style.setProperty('--glow-alpha', amp.toFixed(3));
+        el.style.setProperty('--glow-alpha', toGlow(amp).toFixed(3));
       }
 
       // Off-screen arrow indicators.
       const left = leftArrowRef.current;
       if (left) {
-        left.style.setProperty('--arrow-alpha', leftAmp.toFixed(3));
+        left.style.setProperty('--arrow-alpha', toGlow(leftAmp).toFixed(3));
         if (leftColor) left.style.setProperty('--arrow-color', leftColor);
       }
       const right = rightArrowRef.current;
       if (right) {
-        right.style.setProperty('--arrow-alpha', rightAmp.toFixed(3));
+        right.style.setProperty('--arrow-alpha', toGlow(rightAmp).toFixed(3));
         if (rightColor) right.style.setProperty('--arrow-color', rightColor);
       }
 
@@ -189,6 +188,10 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
   // pointer leaving the keyboard area triggers noteOff. Dragging from
   // one key to another performs legato (releases the previous, triggers
   // the next).
+  // Fixed velocity matches the computer-keyboard tray: pointer taps
+  // don't carry real velocity, so we send a moderate value that keeps
+  // polyphonic stacking within bus headroom.
+  const TAP_VELOCITY = 0.5;
   const handlePointerDown = (e, midi) => {
     if (!audioEngine.isInitialized) return;
     e.preventDefault();
@@ -198,7 +201,7 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
       keyboardVoiceManager.noteOff(prev);
     }
     pointerHeld.current.set(id, midi);
-    keyboardVoiceManager.noteOn(midi);
+    keyboardVoiceManager.noteOn(midi, TAP_VELOCITY);
     // Intentionally NOT calling setPointerCapture — pointer capture
     // would prevent pointerenter from firing on neighboring keys, which
     // would break drag-to-glissando.
@@ -211,7 +214,7 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
     if (prev === midi) return;
     if (prev !== undefined) keyboardVoiceManager.noteOff(prev);
     pointerHeld.current.set(id, midi);
-    keyboardVoiceManager.noteOn(midi);
+    keyboardVoiceManager.noteOn(midi, TAP_VELOCITY);
   };
   const handlePointerUp = (e) => {
     const id = e.pointerId;

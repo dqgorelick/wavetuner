@@ -1,12 +1,8 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import palette, { useTheme } from '../theme/palette';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const OSCILLATOR_COLORS = [
-  '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
-  '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
-  '#ff7eb6', '#a78bfa',
-];
 
 function freqToNote(freq) {
   if (freq <= 0) return { note: '--', octave: 0, cents: 0 };
@@ -24,7 +20,14 @@ function formatFreq(freq) {
   return freq.toFixed(2);
 }
 
-function FullscreenFreqList({ oscillatorCount, selectedOscs, onToggleSelect }) {
+function FullscreenFreqList({
+  oscillatorCount,
+  kbdHoldOn = false,
+  onKbdHoldToggle,
+  isPaused = false,
+  onPausedChange,
+}) {
+  useTheme(); // re-render when theme flips
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
 
@@ -54,28 +57,81 @@ function FullscreenFreqList({ oscillatorCount, selectedOscs, onToggleSelect }) {
     return () => cancelAnimationFrame(raf);
   }, [oscillatorCount]);
 
+  // Rank-by-frequency for animated reordering. ranks[i] = sorted position
+  // of oscillator i. Each row uses a stable React key (osc index) and is
+  // positioned absolutely by rank — when frequencies cross, only the
+  // top values change, the CSS transition handles the visual swap.
+  const ranks = useMemo(() => {
+    const idx = frequencies.map((_, i) => i);
+    idx.sort((a, b) => (frequencies[a] - frequencies[b]) || (a - b));
+    const out = new Array(frequencies.length);
+    idx.forEach((origIdx, sortedPos) => { out[origIdx] = sortedPos; });
+    return out;
+  }, [frequencies]);
+
+  const handlePlayPause = () => {
+    if (!audioEngine.initialized) return;
+    audioEngine.togglePlayPause();
+    onPausedChange?.(audioEngine.paused);
+  };
+
   return (
     <div className="fullscreen-freq-list">
-      {frequencies.map((f, i) => {
-        const note = freqToNote(f);
-        const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
-        const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
-        const isSelected = selectedOscs?.has(i);
-        const isMuted = muted[i];
-        return (
-          <button
-            key={i}
-            className={`ff-row ${isSelected ? 'selected' : ''} ${isMuted ? 'muted' : ''}`}
-            style={{ '--osc-color': color }}
-            onClick={() => onToggleSelect?.(i)}
-            title={`Toggle highlight osc ${i + 1}`}
-          >
-            <span className="ff-freq">{formatFreq(f)}</span>
-            <span className="ff-sep">—</span>
-            <span className="ff-note">{note.note}{note.octave}<span className="ff-cents">{cents}</span></span>
-          </button>
-        );
-      })}
+      <div
+        className="ff-rows"
+        style={{ '--ff-row-count': frequencies.length }}
+      >
+        {frequencies.map((f, i) => {
+          const note = freqToNote(f);
+          const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
+          const color = palette.oscColor(i, oscillatorCount);
+          const isMuted = muted[i];
+          return (
+            <button
+              key={i}
+              className={`ff-row ${isMuted ? 'muted' : ''}`}
+              style={{ '--osc-color': color, '--ff-row-rank': ranks[i] }}
+              onClick={() => audioEngine.toggleMute(i)}
+              title={isMuted
+                ? `Unmute drone ${i + 1}`
+                : `Mute drone ${i + 1}`}
+            >
+              <span className="ff-freq">{formatFreq(f)}</span>
+              <span className="ff-sep">—</span>
+              <span className="ff-note">{note.note}{note.octave}<span className="ff-cents">{cents}</span></span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="ff-footer">
+        <button
+          type="button"
+          className={`ff-footer-btn ${kbdHoldOn ? 'on' : ''}`}
+          onClick={onKbdHoldToggle}
+          aria-pressed={kbdHoldOn}
+          title="Hold notes — each key press toggles its note on/off"
+        >
+          hold
+        </button>
+        <button
+          type="button"
+          className={`ff-footer-btn ${isPaused ? 'paused' : ''}`}
+          onClick={handlePlayPause}
+          aria-label={isPaused ? 'Play drone' : 'Pause drone'}
+          title={isPaused ? 'Play drone (Space)' : 'Pause drone (Space)'}
+        >
+          {isPaused ? (
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+            </svg>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

@@ -1,13 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
-import tuning from '../audio/Tuning';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
-
-const OSCILLATOR_COLORS = [
-  '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
-  '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
-  '#ff7eb6', '#a78bfa',
-];
+import palette, { useTheme } from '../theme/palette';
 
 const FREQ_MIN = 0.1;
 const FREQ_MAX = 20000;
@@ -225,7 +219,16 @@ function FrequencySpectrumBar({
   // serve primarily as a tuning interface for the keyboard, so we
   // shouldn't surprise-restart drone playback when the user nudges one.
   suppressAutoUnmute = false,
+  // Fullscreen mode renders orbs at half visual size via CSS scale(0.5).
+  // The bounding box stays full-size for click targets, but collision
+  // resolution should match the smaller visual or otherwise the orbs
+  // get pushed off their freq markers.
+  compactDots = false,
 }) {
+  // Subscribe to theme changes so JSX re-renders when the user flips
+  // palette in settings — every osc-color lookup below reads live from
+  // the palette singleton.
+  useTheme();
   const [barWidth, setBarWidth] = useState(500 - 2 * BAR_H_PADDING);
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
@@ -278,10 +281,9 @@ function FrequencySpectrumBar({
       // slot → Map(octave → maxAmpAtThatOctave)
       const slotOctAmps = new Map();
       for (const v of voices) {
-        const slot = tuning.droneSlotForDegree(v.degree);
-        if (slot < 0) continue;
-        let octs = slotOctAmps.get(slot);
-        if (!octs) { octs = new Map(); slotOctAmps.set(slot, octs); }
+        if (v.slot < 0) continue;
+        let octs = slotOctAmps.get(v.slot);
+        if (!octs) { octs = new Map(); slotOctAmps.set(v.slot, octs); }
         const cur = octs.get(v.octave) || 0;
         if (v.amp > cur) octs.set(v.octave, v.amp);
       }
@@ -452,8 +454,8 @@ function FrequencySpectrumBar({
     [frequencies, barWidth, range.logMin, range.logMax]
   );
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, DOT_SIZE),
-    [freqXs]
+    () => resolveCollisions(freqXs, compactDots ? DOT_SIZE / 2 : DOT_SIZE),
+    [freqXs, compactDots]
   );
 
   const getSensitivity = () =>
@@ -864,7 +866,7 @@ function FrequencySpectrumBar({
         {frequencies.map((f, i) => {
           const x = freqToFraction(f, range.logMin, range.logMax) * barWidth;
           const isActive = draggingDots.has(i) || grabbedOscs.has(i) || extraActive?.has(i);
-          const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
+          const color = palette.oscColor(i, oscillatorCount);
           return (
             <div
               key={i}
@@ -875,73 +877,92 @@ function FrequencySpectrumBar({
         })}
       </div>
 
-      <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
-        {frequencies.map((_, i) => {
-          // Lines stay visible for muted orbs too — same opacity treatment as
-          // unmuted, since the line just maps the orb to its position on the
-          // spectrum bar (it's not a "playing" signifier).
-          const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
-          const isActive = draggingDots.has(i) || grabbedOscs.has(i);
-          const opacity = isActive ? 0.6 : 0.35;
-          const seg = offsetLine(dotXs[i], DOT_CENTER_Y, freqXs[i], BAR_TOP_Y, DOT_SIZE / 2, 0);
-          if (!seg) return null;
-          return (
-            <line
-              key={`dot2bar-${i}`}
-              x1={seg.x1}
-              y1={seg.y1}
-              x2={seg.x2}
-              y2={seg.y2}
-              stroke={color}
-              strokeOpacity={opacity}
-              strokeWidth={isActive ? 1.5 : 1}
-            />
-          );
-        })}
-        {Object.entries(ghosts).map(([pid, g]) => {
-          const color = OSCILLATOR_COLORS[g.index % OSCILLATOR_COLORS.length];
-          const seg = offsetLine(dotXs[g.index], DOT_CENTER_Y, g.x, g.y, DOT_SIZE / 2, DOT_SIZE / 2);
-          if (!seg) return null;
-          return (
-            <line
-              key={`ghost-${pid}`}
-              x1={seg.x1}
-              y1={seg.y1}
-              x2={seg.x2}
-              y2={seg.y2}
-              stroke={color}
-              strokeOpacity={0.5}
-              strokeWidth={1}
-            />
-          );
-        })}
-        {grabCursor &&
-          Array.from(grabbedOscs).map((idx, i, arr) => {
-            const color = OSCILLATOR_COLORS[idx % OSCILLATOR_COLORS.length];
-            const { dx, dy } = ghostOffset(i, arr.length);
-            const seg = offsetLine(
-              dotXs[idx], DOT_CENTER_Y,
-              grabCursor.x + dx, grabCursor.y + dy,
-              DOT_SIZE / 2, DOT_SIZE / 2
-            );
-            if (!seg) return null;
-            return (
-              <line
-                key={`grab-${idx}`}
-                x1={seg.x1}
-                y1={seg.y1}
-                x2={seg.x2}
-                y2={seg.y2}
-                stroke={color}
-                strokeOpacity={0.5}
-                strokeWidth={1}
-              />
-            );
-          })}
-      </svg>
+      {/* Line endpoints in compact (fullscreen) mode have to compensate for
+          the orb / ghost CSS transform: scale(0.5) with transform-origin
+          50% 100%. That transform shifts each visual circle DOWN by
+          DOT_SIZE/4 from its bounding-box center, and shrinks its visual
+          radius from DOT_SIZE/2 to DOT_SIZE/4. Without this compensation
+          the tether terminates above the now-smaller orb instead of at
+          its edge. */}
+      {(() => {
+        const homeY = compactDots ? DOT_CENTER_Y + DOT_SIZE / 4 : DOT_CENTER_Y;
+        const homeR = compactDots ? DOT_SIZE / 4 : DOT_SIZE / 2;
+        const ghostYOffset = compactDots ? DOT_SIZE / 4 : 0;
+        const ghostR = compactDots ? DOT_SIZE / 4 : DOT_SIZE / 2;
+        return (
+          <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
+            {frequencies.map((_, i) => {
+              // Lines stay visible for muted orbs too — same opacity treatment
+              // as unmuted, since the line just maps the orb to its position on
+              // the spectrum bar (it's not a "playing" signifier).
+              const color = palette.oscColor(i, oscillatorCount);
+              const isActive = draggingDots.has(i) || grabbedOscs.has(i);
+              const opacity = isActive ? 0.6 : 0.35;
+              const seg = offsetLine(dotXs[i], homeY, freqXs[i], BAR_TOP_Y, homeR, 0);
+              if (!seg) return null;
+              return (
+                <line
+                  key={`dot2bar-${i}`}
+                  x1={seg.x1}
+                  y1={seg.y1}
+                  x2={seg.x2}
+                  y2={seg.y2}
+                  stroke={color}
+                  strokeOpacity={opacity}
+                  strokeWidth={isActive ? 1.5 : 1}
+                />
+              );
+            })}
+            {Object.entries(ghosts).map(([pid, g]) => {
+              const color = palette.oscColor(g.index, oscillatorCount);
+              const seg = offsetLine(
+                dotXs[g.index], homeY,
+                g.x, g.y + ghostYOffset,
+                homeR, ghostR
+              );
+              if (!seg) return null;
+              return (
+                <line
+                  key={`ghost-${pid}`}
+                  x1={seg.x1}
+                  y1={seg.y1}
+                  x2={seg.x2}
+                  y2={seg.y2}
+                  stroke={color}
+                  strokeOpacity={0.5}
+                  strokeWidth={1}
+                />
+              );
+            })}
+            {grabCursor &&
+              Array.from(grabbedOscs).map((idx, i, arr) => {
+                const color = palette.oscColor(idx, oscillatorCount);
+                const { dx, dy } = ghostOffset(i, arr.length);
+                const seg = offsetLine(
+                  dotXs[idx], homeY,
+                  grabCursor.x + dx, grabCursor.y + dy + ghostYOffset,
+                  homeR, ghostR
+                );
+                if (!seg) return null;
+                return (
+                  <line
+                    key={`grab-${idx}`}
+                    x1={seg.x1}
+                    y1={seg.y1}
+                    x2={seg.x2}
+                    y2={seg.y2}
+                    stroke={color}
+                    strokeOpacity={0.5}
+                    strokeWidth={1}
+                  />
+                );
+              })}
+          </svg>
+        );
+      })()}
 
       {frequencies.map((_, i) => {
-        const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
+        const color = palette.oscColor(i, oscillatorCount);
         const isDragging = draggingDots.has(i);
         const isGrabbed = grabbedOscs.has(i);
         // "Boosted" = externally marked active (fader fine-tune, fullscreen
@@ -976,7 +997,7 @@ function FrequencySpectrumBar({
       })}
 
       {frequencies.map((f, i) => {
-        const color = OSCILLATOR_COLORS[i % OSCILLATOR_COLORS.length];
+        const color = palette.oscColor(i, oscillatorCount);
         const isActive = draggingDots.has(i) || grabbedOscs.has(i);
         return (
           <div
@@ -1013,7 +1034,7 @@ function FrequencySpectrumBar({
       })}
 
       {Object.entries(ghosts).map(([pid, g]) => {
-        const color = OSCILLATOR_COLORS[g.index % OSCILLATOR_COLORS.length];
+        const color = palette.oscColor(g.index, oscillatorCount);
         return (
           <div
             key={`ghost-${pid}`}
@@ -1031,7 +1052,7 @@ function FrequencySpectrumBar({
 
       {grabCursor &&
         Array.from(grabbedOscs).map((idx, i, arr) => {
-          const color = OSCILLATOR_COLORS[idx % OSCILLATOR_COLORS.length];
+          const color = palette.oscColor(idx, oscillatorCount);
           const { dx, dy } = ghostOffset(i, arr.length);
           return (
             <div

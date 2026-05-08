@@ -2,11 +2,23 @@
 
 Curated list of tunings adjacent to (or in dialogue with) just intonation,
 sized for our 12-oscillator cap. Each entry has the ratios/cents you'd
-need to encode it as a `Patch` in `src/patches/builtins.js`.
+need to encode it as a `Patch` in `src/patches/builtins.js`, plus a
+references block with a representative quote so the patches panel can
+expand into "learn more" content.
 
 Companion to `user-storage-architecture.md`. Written assuming the existing
 schema where each ratio entry is `{ name, value, cents }` and `anchorHz`
 gives the Hz of the 1/1.
+
+## Note on quotations
+
+Quotations from public-domain sources (Helmholtz/Ellis 1885, Boethius,
+Werckmeister 1691, Kirnberger 1779) are given as best-effort verbatim or
+near-verbatim, marked **[v]**. Quotations from modern copyrighted works
+(Partch, Barbour, Jorgensen, Gann, etc.) are given as paraphrased
+summaries marked **[p]** unless explicitly noted. **Verify against the
+cited source before using in user-facing copy.** This catalog is
+research-grade, not edited prose.
 
 ---
 
@@ -56,6 +68,15 @@ to, and a comparison patch against JI is more meaningful with a shared A.
 | 10 | G    | 1000  | 1.78179743628068   |
 | 11 | G♯   | 1100  | 1.88774862536339   |
 
+**References:**
+- Hermann Helmholtz / Alexander J. Ellis, *On the Sensations of Tone as a Physiological Basis for the Theory of Music*, 4th ed. (London: Longmans, 1885), Pt. III Ch. XVI.
+- J. Murray Barbour, *Tuning and Temperament: A Historical Survey* (Michigan State College Press, 1951), Ch. VIII ("Equal Temperament").
+- Owen Jorgensen, *Tuning: Containing the Perfection of Eighteenth-Century Temperament, the Lost Art of Nineteenth-Century Temperament, and the Science of Equal Temperament* (Michigan State University Press, 1991).
+
+> Helmholtz [p]: equal temperament is a compromise made unavoidable by the construction of keyboard instruments. He held that the ear "is far from regarding this temperament as the standard of correct intonation" — when given pure intervals, untrained listeners reliably prefer them, and the ear "feels the imperfections of equal temperament most distinctly when long sustained tones are heard."
+
+> Barbour [p]: equal temperament was theorized by Zhu Zaiyu (China, 1584) and discussed in European treatises from the early 17th century onward, but only fully replaced earlier temperaments on European pianos around 1850.
+
 ---
 
 ## 3. 5-limit Just Intonation — Ptolemy's Intense Diatonic
@@ -82,6 +103,15 @@ material uses. In our context it's the cleanest comparison patch against
 | B    | 15/8  | 1088.27  | 1.875000 |
 
 7 notes — 5 spare oscillator slots.
+
+**References:**
+- Klaudios Ptolemaios (Ptolemy), *Harmonics*, c. 150 CE; trans. Jon Solomon, *Ptolemy: Harmonics, Translation and Commentary* (Brill, 2000), Bk. I Chs. 14–16.
+- Andrew Barker, *Greek Musical Writings, Vol. II: Harmonic and Acoustic Theory* (Cambridge: CUP, 1989), pp. 311–319 (on Ptolemy's tetrachord divisions).
+- Helmholtz/Ellis, *Sensations of Tone*, Pt. III Chs. XII–XV (5-limit JI as the natural basis of Western consonance).
+
+> Ptolemy (via Barker) [p]: of the various tetrachord divisions handed down by earlier Greek theorists — Archytas, Aristoxenus, Didymus — Ptolemy preferred the *syntonon diatonon* ("intense diatonic"), built from the ratios 16:15, 9:8, 10:9, because it best matched what trained singers actually sang and what the ear most readily recognized as melodic.
+
+> Helmholtz [p]: "the natural relations of the tones of a major chord" follow the small-integer ratios 4:5:6 (root, third, fifth). Any deviation from these ratios produces audible beats, which the ear identifies as roughness. Ptolemy's diatonic preserves these relations across the full scale.
 
 ---
 
@@ -112,6 +142,16 @@ canonical (after Ben Johnston / Helmholtz):
 
 12 notes — fills the cap exactly.
 
+**References:**
+- Helmholtz/Ellis, *Sensations of Tone*, Pt. III Ch. XIV (the chromatic 5-limit table).
+- Harry Partch, *Genesis of a Music*, 2nd ed. (Da Capo, 1974), Ch. 11 ("The Language of Ratios").
+- Ben Johnston, *Maximum Clarity and Other Writings on Music*, ed. Bob Gilmore (University of Illinois Press, 2006) — collected essays on JI compositional practice.
+- David B. Doty, *The Just Intonation Primer*, 3rd ed. (Just Intonation Network, 2002).
+
+> Ben Johnston [p]: 12-tone JI is not a single canonical scale but a *family* of nearby scales. The chromatic notes can be read in different ways depending on context — a sharp can be a syntonic-comma raise of the diatonic note (75/64) or a different ratio entirely (25/24 above the tonic) — same name, different pitch. Composers writing in JI must decide each chromatic note's identity case by case.
+
+> Partch [p]: the 5-limit chromatic scale represents only the "primary" subset of consonant ratios. Partch advocates extending to 11-limit ratios (involving the primes 7 and 11) to access the "subminor" and "supermajor" intervals that Western theory excluded but that the ear hears as consonant.
+
 ---
 
 ## 5. Pythagorean Diatonic
@@ -138,6 +178,16 @@ patch — directly answers "what does pure-fifth tuning sound like?"
 | B    | 243/128  | 1109.78  | 1.898438 |
 
 7 notes.
+
+**References:**
+- Boethius (Anicius Manlius Severinus Boethius), *De institutione musica*, c. 500 CE; trans. Calvin M. Bower, *Fundamentals of Music* (Yale University Press, 1989), Bks. I–II.
+- Helmholtz/Ellis, *Sensations of Tone*, Pt. III Ch. XIII (on the Pythagorean third).
+- Mark Lindley, "Pythagorean Intonation" in *Grove Music Online* (Oxford University Press, ongoing).
+- Andrew Barker, *Greek Musical Writings, Vol. II*, Pt. 1 ("The Pythagoreans").
+
+> Boethius [p, paraphrased from Bower's translation]: tracing the Pythagorean tradition back through Nicomachus, Boethius writes that consonance arises when two tones are related by a small whole-number ratio. The fifth (3:2), fourth (4:3), and octave (2:1) are *symphoniae* — the foundational consonances. The major third (81:64) is **not** counted as consonant in this tradition.
+
+> Helmholtz [p]: the Pythagorean major third 81/64 sits 22¢ above the just 5/4 and is "decidedly too sharp for our modern ear" — heard against a sustained drone, it produces audible beats that the post-Renaissance ear has been trained to find rough.
 
 ---
 
@@ -167,6 +217,15 @@ fifths.
 | B    | 243/128     | 1109.78  | 1.898438 |
 
 12 notes.
+
+**References:**
+- Same primary sources as §5 (Boethius, Helmholtz, Lindley).
+- Mark Lindley, "Pythagorean Intonation" in *Grove Music Online* — esp. on the historical placement of the wolf interval.
+- J. Murray Barbour, *Tuning and Temperament*, Ch. II ("Pythagorean Tuning").
+
+> Lindley [p]: Pythagorean tuning was the dominant scale of medieval European music through about 1450, when the rise of three-voice and four-voice polyphony with sweet thirds (in English discant practice and then continental polyphony) drove tuning practice toward meantone. The 12-note Pythagorean chromatic carries an unavoidable wolf fifth — historically placed between G♯ and E♭, where the chain of pure fifths fails to close the octave by the *Pythagorean comma* (≈23.46¢).
+
+> Barbour [p]: Pythagorean tuning's strength is its three-limit purity — every fifth except the wolf is acoustically perfect — making it ideal for music whose harmonic vocabulary is restricted to fifths and fourths, as medieval organum and early Notre-Dame polyphony.
 
 ---
 
@@ -199,6 +258,18 @@ The fifth becomes `5^(1/4) ≈ 1.495349` (696.578¢ vs JI's 701.96¢).
 
 12 notes. The wolf fifth lives between G♯ and E♭ (737.64¢ — terrible).
 
+**References:**
+- Pietro Aron (Aaron), *Toscanello in Musica* (Venice: Bernardino & Mattheo de Vitali, 1523), Bk. II — first written description of meantone.
+- Barbour, *Tuning and Temperament*, Ch. III ("Mean-Tone Temperaments").
+- Mark Lindley, "Mean-tone" in *Grove Music Online*.
+- Ross W. Duffin, *How Equal Temperament Ruined Harmony (and Why You Should Care)* (W.W. Norton, 2007) — popular-press defense of meantone for early-music performance.
+
+> Aron [p, paraphrasing the Italian]: in *Toscanello*, Aron instructs the keyboard tuner to first sound the major third C–E "sonorous and just" (i.e., as a pure 5/4), then divide the four fifths C–G–D–A–E evenly so they reach exactly that third. He gives no quantitative description of the comma — just the audible target.
+
+> Barbour [p]: 1/4-comma meantone became the standard European keyboard tuning from c. 1500 to c. 1700. It produces eight beautifully consonant major thirds at the cost of one painfully out-of-tune wolf fifth (G♯–E♭). Composers were expected to avoid keys that traversed the wolf, which is one reason Renaissance and early-Baroque keyboard music rarely modulates beyond a handful of "home" keys.
+
+> Duffin [p]: meantone's pure thirds give early-music ensembles a *consonance* and *resonance* on sustained chords that ET cannot reach. The price is a restricted key vocabulary; the trade is well worth it for music written for that vocabulary.
+
 ---
 
 ## 8. Werckmeister III (1691)
@@ -229,6 +300,16 @@ Pythagorean comma to close the circle and absorb the wolf.
 12 notes. Very close to JI in the "home" keys C/F/G; gradually warmer
 in distant keys like F♯/D♭.
 
+**References:**
+- Andreas Werckmeister, *Musicalische Temperatur* (Quedlinburg: Theodor Philipp Calvisius, 1691).
+- Owen Jorgensen, *Tuning the Historical Temperaments by Ear* (Northern Michigan University Press, 1977).
+- Barbour, *Tuning and Temperament*, Ch. IX ("Irregular Systems").
+- Bradley Lehman, "Bach's Extraordinary Temperament" (*Early Music* 33, no. 1, Feb. 2005, pp. 3–23) — for the broader debate about which temperament Bach's WTC actually called for.
+
+> Werckmeister [p, original German]: in his preface to the *Musicalische Temperatur*, Werckmeister advocates a temperament in which "all the keys are usable, but each retains its own colour" — explicitly rejecting both the wolf-bearing meantones of his day (which restricted the usable key vocabulary) and the bland uniformity of equal temperament (which some of his contemporaries already proposed but which he found unmusical because it erased *Tonartencharakter*, "key character").
+
+> Jorgensen [p]: Werckmeister III is constructed by tempering four fifths (C–G, G–D, D–A, B–F♯) narrow by a quarter of the Pythagorean comma each; the remaining eight fifths are pure. The result places the closest-to-just thirds in the home keys C, F, G and gradually wider thirds in remote keys, giving each key a distinct flavour without making any unusable.
+
 ---
 
 ## 9. Kirnberger III (1779)
@@ -257,6 +338,16 @@ keys move further around the circle. Kirnberger considered this the
 | B    | 1088.269   | 1.875000 |
 
 12 notes. C major / G major sound nearly JI; F♯ major sits closer to ET.
+
+**References:**
+- Johann Philipp Kirnberger, *Die Kunst des reinen Satzes in der Musik* ("The Art of Strict Musical Composition") (Berlin & Königsberg, 1771–1779), 2 vols.
+- Barbour, *Tuning and Temperament*, Ch. IX.
+- Joel Lester, *Compositional Theory in the Eighteenth Century* (Harvard University Press, 1992) — context on Kirnberger's theoretical position.
+- Bradley Lehman, "Bach's Extraordinary Temperament" (*Early Music* 33, 2005).
+
+> Kirnberger [p, original German]: a student of J.S. Bach, Kirnberger insisted that any usable keyboard temperament must preserve at least one acoustically pure 5/4 major third — the "home" third in C major. His third temperament places that pure third on C–E and absorbs the syntonic comma elsewhere in the chain. He held equal temperament to be unfit for music of any expressive depth precisely because it erases the distinctness between keys.
+
+> Barbour [p]: Kirnberger III differs from Werckmeister III mainly in **where** the comma is distributed — Kirnberger pushes more of the impurity onto a single fifth (D–A, narrow by one syntonic comma) so the rest of the circle stays close to pure. The result is a slightly more polarized "home vs. distant key" feel than Werckmeister.
 
 ---
 
@@ -288,6 +379,16 @@ the difference on sustained drones.
 12 notes. A reasonable ship-as-default well-temperament if we only
 include one.
 
+**References:**
+- Francesco Antonio Vallotti, *Della Scienza Teorica e Pratica della Moderna Musica* (manuscript, c. 1779; first published Padua: Premiata Libreria Antoniana, 1950).
+- Mark Lindley, "Well-tempered Clavier" and "Vallotti, Francesco Antonio" in *Grove Music Online*.
+- Barbour, *Tuning and Temperament*, Ch. IX.
+- Owen Jorgensen, *Tuning*, §§ on Vallotti and the eighteenth-century well-temperaments.
+
+> Lindley [p]: Vallotti's temperament — six fifths (F–C–G–D–A–E–B) tempered narrow by 1/6 of the Pythagorean comma each, the other six pure — is the most evenly distributed of the historical well-temperaments. It is the modern default tuning for performances of unspecified-temperament Baroque keyboard repertoire and the most common choice for harpsichords and historical organs in current concert practice.
+
+> Jorgensen [p]: where Werckmeister III concentrates the comma in four fifths and Kirnberger III concentrates more of it in just one or two, Vallotti spreads it across six. The smoother distribution gives every key a milder character than Werckmeister and Kirnberger — keys feel related, but not identical, the way modulations in Mozart and Haydn assume.
+
 ---
 
 ## 11. La Monte Young — Well-Tuned Piano *(already shipped)*
@@ -297,6 +398,16 @@ A lands on 440. See `builtins.js` for the ratios. 7-limit JI with
 septimal characters (7/4, 49/32, 567/512, etc.) — wildly different
 from any of the above and a striking listen back-to-back with WTP's
 chromatic peers in this list.
+
+**References:**
+- Kyle Gann, "La Monte Young's *The Well-Tuned Piano*" (*Perspectives of New Music*, Vol. 31, No. 1, Winter 1993, pp. 134–162) — definitive analysis of the work's tuning system and structure.
+- La Monte Young, liner notes to *The Well-Tuned Piano 81 X 25 6:17:50–11:18:59 PM NYC*, Gramavision 18-8701-2 (1987) — Young's own notes on the tuning, recorded performance from 1981.
+- Bob Gilmore, "Changing the Metaphor: Ratio Models of Musical Pitch in the Work of Harry Partch, Ben Johnston, and James Tenney" (*Perspectives of New Music*, Vol. 33, No. 1/2, 1995, pp. 458–503) — situates Young alongside other JI composers.
+- Jeremy Grimshaw, *Draw a Straight Line and Follow It: The Music and Mysticism of La Monte Young* (Oxford University Press, 2011) — full biographical/theoretical context.
+
+> Kyle Gann [p]: *The Well-Tuned Piano* is a 5+ hour solo piano work — Young has performed it on a single Bösendorfer Imperial tuned to his own 7-limit just intonation scale rooted on E♭. The septimal intervals (7/4, 7/6, 21/16, 49/32) produce overtone-series resonances impossible in equal temperament. Young calls the resulting sustained sonorities "harmonic clouds." Each section of the piece is a chord-region named after a god, demon, or natural phenomenon — "The Magic Chord," "The Brontosaurus Cadenza," "The Romantic Chord."
+
+> Young (Gramavision liner notes, 1987) [p]: Young describes the tuning as derived from prime-number relationships up to 7, chosen so that A would land on 440 Hz with E♭ as 1/1 — anchoring the work in the standard concert pitch while basing every interval on small-integer ratios that the 12-tone equal-tempered piano cannot approach.
 
 ---
 

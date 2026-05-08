@@ -18,6 +18,16 @@ const KEY_TO_OFFSET = {
   w: 1, e: 3, t: 6, y: 8, u: 10, o: 13, p: 15,
 };
 
+// Computer-keyboard hits don't carry real velocity, so we substitute a
+// fixed value at noteOn time. 0.5 is calibrated for safe polyphony:
+// √N × 0.5 stays at or below unity for N ≤ 4 voices (random-phase
+// summation), so typical chording doesn't push the bus past clip.
+// Real MIDI controllers can hit 1.0, but they DON'T do it on every
+// note — dynamic play averages much lower. The fixed-velocity nature
+// of computer keyboard is what makes it stack worse than typical MIDI
+// play, so we compensate by pinning it lower.
+const COMPUTER_KEY_VELOCITY = 0.5;
+
 // Inverse table: semitone offset → uppercase letter, for the on-screen
 // keyboard's labels overlay. Single source of truth for the layout —
 // editing KEY_TO_OFFSET above will propagate here.
@@ -89,7 +99,7 @@ export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboa
 
       const midi = (octaveRef.current + 1) * 12 + offset;
       heldNotes.current.set(key, midi);
-      keyboardVoiceManager.noteOn(midi);
+      keyboardVoiceManager.noteOn(midi, COMPUTER_KEY_VELOCITY);
       e.preventDefault();
     };
 

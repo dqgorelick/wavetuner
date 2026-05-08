@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import palette, { useTheme } from '../theme/palette';
 
 /**
  * RoutingPatchBay - Visual patch-bay with draggable cables
@@ -65,22 +66,12 @@ export default function RoutingPatchBay({
     return () => window.removeEventListener('resize', updatePositions);
   }, [oscillatorCount, outputChannels, outputColumns]);
 
-  // Get color for oscillator - matches OscillatorControls colors
-  const getOscColor = (index) => {
-    const colors = [
-      '#ff4136', // 1 - red
-      '#2ecc40', // 2 - green
-      '#0074d9', // 3 - blue
-      '#ffdc00', // 4 - yellow
-      '#bb8fce', // 5 - purple
-      '#85c1e9', // 6 - light blue
-      '#82e0aa', // 7 - mint
-      '#f8b500', // 8 - orange
-      '#e74c3c', // 9 - coral
-      '#1abc9c', // 10 - teal
-    ];
-    return colors[index % colors.length];
-  };
+  // Subscribe to theme so cable colors live-update when the user flips
+  // it from the settings panel.
+  useTheme();
+  // Get color for oscillator — delegates to the palette singleton so all
+  // UI surfaces share the same source of truth (theme + count-aware).
+  const getOscColor = (index) => palette.oscColor(index, oscillatorCount);
 
   // Generate cable path with physics-like droop
   const getCablePath = (startX, startY, endX, endY) => {

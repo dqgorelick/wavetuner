@@ -2,17 +2,12 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePatches } from '../hooks/usePatches';
 import { applyPatch } from '../patches/apply';
 import { patchFrequencies } from '../patches/schema';
+import palette, { useTheme } from '../theme/palette';
 
 const FREQ_MIN_LOG = Math.log2(20);
 const FREQ_MAX_LOG = Math.log2(20000);
 const STRIP_W = 240;
 const STRIP_H = 28;
-
-const OSCILLATOR_COLORS = [
-  '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
-  '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
-  '#ff7eb6', '#a78bfa',
-];
 
 function freqToFrac(hz) {
   const clamped = Math.max(20, Math.min(20000, hz));
@@ -26,6 +21,8 @@ function formatCents(c) {
 }
 
 const PatchPreviewStrip = memo(function PatchPreviewStrip({ patch }) {
+  // Subscribe so previews recolor when the user flips the theme.
+  useTheme();
   const freqs = useMemo(() => patchFrequencies(patch) || [], [patch]);
   const sortedIndices = useMemo(
     () => freqs.map((_, i) => i).sort((a, b) => freqs[a] - freqs[b]),
@@ -42,7 +39,7 @@ const PatchPreviewStrip = memo(function PatchPreviewStrip({ patch }) {
       <rect x={0} y={STRIP_H / 2 - 1} width={STRIP_W} height={2} className="patch-preview-baseline" />
       {sortedIndices.map((origIdx, n) => {
         const x = freqToFrac(freqs[origIdx]) * STRIP_W;
-        const color = OSCILLATOR_COLORS[origIdx % OSCILLATOR_COLORS.length];
+        const color = palette.oscColor(origIdx, freqs.length);
         return (
           <circle
             key={`${origIdx}-${n}`}
@@ -228,7 +225,7 @@ function PatchesPanel({ isOpen, onClose, onAfterLoad }) {
 
   const handleLoad = useCallback(async (patch) => {
     await applyPatch(patch);
-    onAfterLoad?.();
+    onAfterLoad?.(patch);
     onClose();
   }, [onClose, onAfterLoad]);
 

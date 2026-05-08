@@ -195,6 +195,23 @@ class Tuning {
   }
 
   /**
+   * Look up the live frequency of a drone slot directly, transposed by
+   * `octave`. Used by KeyboardVoiceManager so a held voice tracks the
+   * SLOT it was bound to at noteOn rather than whatever drone now sorts
+   * into the same scale degree — i.e., the held note follows the orb
+   * the user originally pressed, even if a drag reorders the scale.
+   * Returns null if the slot is out of range or the slot's freq is 0.
+   */
+  pitchForSlotAndOctave(slot, octave) {
+    if (slot < 0) return null;
+    const count = audioEngine.getOscillatorCount();
+    if (slot >= count) return null;
+    const baseFreq = audioEngine.getFrequency(slot);
+    if (!baseFreq) return null;
+    return baseFreq * Math.pow(2, octave);
+  }
+
+  /**
    * Map a scale degree back to the drone slot index that supplies it.
    * Used by the voice manager to derive per-voice pan from the drone's
    * L/R routing for that slot. Returns -1 for out-of-range.

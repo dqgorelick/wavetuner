@@ -3,7 +3,12 @@ import audioEngine from './audio/AudioEngine';
 import tuning from './audio/Tuning';
 import keyboardVoiceManager from './audio/KeyboardVoiceManager';
 import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
+import { droneWave, keyboardWave } from './audio/Wave';
+import { droneFold, keyboardFold } from './audio/Fold';
+import { reverb, ROOM_NAMES } from './audio/Reverb';
+import { stereoWidth } from './audio/StereoWidth';
 import midiInput from './audio/MidiInput';
+import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
@@ -13,7 +18,7 @@ import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
 import PatchesPanel from './components/PatchesPanel';
 import { getAutosave, setAutosave } from './patches/storage';
-import { preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
+import { applyPatch, applyPatchSmooth, preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
 
 // Parse "A,D,S,R" envelope param (A/D/R in ms, S in 0..1 or 0..100). Returns
@@ -48,6 +53,24 @@ function getInitialStateFromURL() {
   const vizCycles = Number.isFinite(cyParam) && cyParam >= 1 && cyParam <= 16
     ? cyParam
     : null;
+  // Wave-shape morph (0..3) and wavefolder amount (0..1) per pool.
+  // Both null when the URL doesn't carry them so defaults stay 0.
+  const parseFloatInRange = (raw, min, max) => {
+    const n = parseFloat(raw);
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : null;
+  };
+  const dWave = parseFloatInRange(params.get('dWave'), 0, 3);
+  const kWave = parseFloatInRange(params.get('kWave'), 0, 3);
+  const dFold = parseFloatInRange(params.get('dFold'), 0, 1);
+  const kFold = parseFloatInRange(params.get('kFold'), 0, 1);
+  const revRaw = (params.get('rev') || '').toLowerCase();
+  const reverbRoom = ROOM_NAMES.includes(revRaw) ? revRaw : null;
+  const reverbWet = parseFloatInRange(params.get('wet'), 0, 1);
+  const width = parseFloatInRange(params.get('width'), 0, 1);
+  const panRaw = (params.get('pan') || '').toLowerCase();
+  const panMode = panRaw === 'lr' || panRaw === 'voicepan' ? panRaw : null;
+  const tRaw = (params.get('t') || '').toLowerCase();
+  const theme = tRaw === 'classic' || tRaw === 'duo' ? tRaw : null;
 
   let base = { count: 4, frequencies: null, volumes: null, routing: null };
 
@@ -77,7 +100,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { ...base, dEnv, kEnv, vizCycles };
+  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, reverbRoom, reverbWet, width, panMode, theme };
 }
 
 // Compute once at module load
@@ -99,6 +122,25 @@ if (INITIAL_URL_STATE.kEnv) {
   keyboardEnvelope.sustain = INITIAL_URL_STATE.kEnv.sustain;
   keyboardEnvelope.release = INITIAL_URL_STATE.kEnv.release;
 }
+// Wave + Fold are pool-singletons that drive the audio path directly.
+// Pushing values in BEFORE AudioEngine.initialize means the first
+// PeriodicWave / fold curve created uses the user's saved values
+// rather than the defaults — no audible snap on load.
+if (INITIAL_URL_STATE.dWave !== null) droneWave.setPosition(INITIAL_URL_STATE.dWave);
+if (INITIAL_URL_STATE.kWave !== null) keyboardWave.setPosition(INITIAL_URL_STATE.kWave);
+if (INITIAL_URL_STATE.dFold !== null) droneFold.setAmount(INITIAL_URL_STATE.dFold);
+if (INITIAL_URL_STATE.kFold !== null) keyboardFold.setAmount(INITIAL_URL_STATE.kFold);
+// Reverb runs at the master tail — pushing pre-init means the
+// ConvolverNode's first IR is already the user's saved room.
+if (INITIAL_URL_STATE.reverbRoom !== null) reverb.setRoom(INITIAL_URL_STATE.reverbRoom);
+if (INITIAL_URL_STATE.reverbWet !== null) reverb.setWet(INITIAL_URL_STATE.reverbWet);
+// Stereo width — pre-init keeps the first frame of audio at the saved
+// width rather than briefly snapping from the default.
+if (INITIAL_URL_STATE.width !== null) stereoWidth.setWidth(INITIAL_URL_STATE.width);
+if (INITIAL_URL_STATE.panMode !== null) stereoWidth.setMode(INITIAL_URL_STATE.panMode);
+// Color theme — pushed pre-mount so the very first paint already uses
+// the user's saved palette rather than flashing the default.
+if (INITIAL_URL_STATE.theme) palette.setTheme(INITIAL_URL_STATE.theme);
 
 // Visualizer modes — defined at module scope so the SVG icons are
 // constructed once and reused across renders. The trigger button shows
@@ -143,6 +185,10 @@ function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPatchesOpen, setIsPatchesOpen] = useState(false);
+  // Most recently loaded patch — drives the "return" button beneath the
+  // align button so the user can snap state back to whatever patch they
+  // last opened. Cleared when no patch has been loaded this session.
+  const [currentPatch, setCurrentPatch] = useState(null);
   // Static waveform style. 'beating' shows only the aggregate line;
   // 'wave' shows per-oscillator colored lines + aggregate; 'off' hides
   // the static entirely. Number of periods visible is user-controlled
@@ -181,14 +227,14 @@ function App() {
   // / richer drift; lower = crisper figures (especially at high freqs).
   // Default 6 reads as "a few clean cycles" across the audible range.
   const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? 6);
+  // Visualizer source is now hardcoded per mode in Oscilloscope.jsx
+  // (Circle + Face → audio, Hilbert + Standing-line → synth) — no
+  // user-facing toggle.
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   const [activeOscs, setActiveOscs] = useState(() => new Set());
-  // Set of oscillator indices "selected" via the fullscreen freq list — these
-  // make the spectrum marker glow stronger but don't otherwise change audio.
-  const [selectedOscs, setSelectedOscs] = useState(() => new Set());
   // Set of oscillator indices currently being fine-tuned via horizontal drag
   // on a volume fader. Used to light up the matching spectrum-bar orb so the
   // user sees which osc they're affecting.
@@ -202,14 +248,6 @@ function App() {
       return next;
     });
   }, []);
-  // Union of explicit selections and in-progress fader fine-tunes, passed to
-  // the spectrum bar so it lights up both categories with the same treatment.
-  const spectrumExtraActive = useMemo(() => {
-    if (fineTuningOscs.size === 0) return selectedOscs;
-    const merged = new Set(selectedOscs);
-    for (const i of fineTuningOscs) merged.add(i);
-    return merged;
-  }, [selectedOscs, fineTuningOscs]);
   // 'simple' (default compact strip) | 'expanded' (full panel) | 'fullscreen' (only scope+spectrum)
   const [uiMode, setUiMode] = useState('simple');
   // Keyboard tray (slim ~50 px strip rolling up from the bottom). Lifted
@@ -251,8 +289,23 @@ function App() {
   const [tuneVarianceHz, setTuneVarianceHz] = useState(0);
   const [tuneGlideSec, setTuneGlideSec] = useState(1.0);
 
-  // Mobile caps the oscillator count at 4 (vs 10 on desktop). The matchMedia
-  // listener triggers if the viewport crosses the breakpoint at runtime.
+  // Color theme — mirrors the palette singleton so SettingsPanel can render
+  // the picker. Singleton was already populated from the URL above (and
+  // listeners on the singleton drive non-React redraws), so this state is
+  // primarily for the SettingsPanel UI.
+  const [theme, setThemeState] = useState(palette.theme);
+  const handleThemeChange = useCallback((t) => {
+    palette.setTheme(t);
+    setThemeState(palette.theme);
+  }, []);
+
+  // Mobile caps the oscillator count at 4 — but ONLY on iOS, where the
+  // Web Audio backend is the bottleneck (Safari struggles with 10+ live
+  // oscillators on iPhone). Android and desktop touchscreens get the
+  // full 12. The matchMedia listener triggers if the viewport crosses
+  // the breakpoint at runtime; the iOS check is a one-time UA sniff
+  // (covers iPhone/iPod, iPad pre-iPadOS-13, and modern iPads which
+  // report as MacIntel but expose maxTouchPoints > 1).
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
   );
@@ -262,7 +315,13 @@ function App() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
-  const maxOscillators = isMobile ? 4 : 12;
+  const isIOS = useMemo(() => {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    if (/iPad|iPhone|iPod/.test(ua)) return true;
+    return navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1;
+  }, []);
+  const maxOscillators = (isMobile && isIOS) ? 4 : 12;
   
   const initializedRef = useRef(false);
   
@@ -431,6 +490,22 @@ function App() {
     queryParts.push(`dEnv=${encEnv(droneEnvelope)}`);
     queryParts.push(`kEnv=${encEnv(keyboardEnvelope)}`);
     queryParts.push(`cy=${vizCycles}`);
+    // Wave shape + fold per pool. Skip when at default (0) to keep
+    // URLs short for users who never touched the sliders.
+    if (droneWave.position > 0)    queryParts.push(`dWave=${droneWave.position.toFixed(2)}`);
+    if (keyboardWave.position > 0) queryParts.push(`kWave=${keyboardWave.position.toFixed(2)}`);
+    if (droneFold.amount > 0)      queryParts.push(`dFold=${droneFold.amount.toFixed(2)}`);
+    if (keyboardFold.amount > 0)   queryParts.push(`kFold=${keyboardFold.amount.toFixed(2)}`);
+    if (reverb.wet > 0) {
+      queryParts.push(`rev=${reverb.room}`);
+      queryParts.push(`wet=${reverb.wet.toFixed(2)}`);
+    }
+    // Pan mode + width — only encode each when non-default to keep
+    // URLs short.
+    if (stereoWidth.width < 1) queryParts.push(`width=${stereoWidth.width.toFixed(2)}`);
+    if (stereoWidth.mode !== 'lr') queryParts.push(`pan=${stereoWidth.mode}`);
+    // Theme — only encode when not the default ('duo') to keep URLs short.
+    if (palette.theme !== 'duo') queryParts.push(`t=${palette.theme}`);
 
     const url = `${window.location.origin}${window.location.pathname}?${queryParts.join('&')}`;
     
@@ -490,6 +565,35 @@ function App() {
     setOscillatorCount(audioEngine.getOscillatorCount());
     setRoutingMap(audioEngine.getRoutingMap());
   }, []);
+
+  // PatchesPanel hands back the patch it just applied so we can light up
+  // the "return" affordance in the controls strip. Captures the live
+  // post-load engine state into the stored patch — built-in patches are
+  // tuning-only (no `snapshot`) and applyPatch picks a random voicing
+  // for them, so reverting to the *as-loaded* state means snapshotting
+  // what the user actually heard, not what the patch on disk encoded.
+  const handlePatchLoaded = useCallback((patch) => {
+    const captured = capturePatch({
+      id: patch?.id,
+      name: patch?.name,
+      source: patch?.source,
+      description: patch?.description,
+    });
+    setCurrentPatch(captured);
+    syncStateFromEngine();
+  }, [syncStateFromEngine]);
+
+  // Re-apply the most recently loaded patch — used by the return button
+  // beneath the align icon. Tries applyPatchSmooth first, which lerps
+  // freqs + volumes in parallel without silencing the master when the
+  // current shape (osc count + routing) matches the patch. Falls back
+  // to applyPatch (with its master fade) when the shape diverged —
+  // routing changes can't be crossfaded without a click.
+  const handleRevertToPatch = useCallback(async () => {
+    if (!currentPatch) return;
+    await applyPatchSmooth(currentPatch);
+    syncStateFromEngine();
+  }, [currentPatch, syncStateFromEngine]);
 
   const handleOscillatorCountChange = useCallback((newCount) => {
     const clampedCount = Math.max(2, Math.min(maxOscillators, newCount));
@@ -595,18 +699,17 @@ function App() {
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
             onActiveChange={setActiveOscs}
-            extraActive={spectrumExtraActive}
+            extraActive={fineTuningOscs}
             suppressAutoUnmute={isKbdTrayOpen}
+            compactDots={uiMode === 'fullscreen'}
           />
           {uiMode === 'fullscreen' && (
             <FullscreenFreqList
               oscillatorCount={oscillatorCount}
-              selectedOscs={selectedOscs}
-              onToggleSelect={(idx) => setSelectedOscs((prev) => {
-                const next = new Set(prev);
-                if (next.has(idx)) next.delete(idx); else next.add(idx);
-                return next;
-              })}
+              kbdHoldOn={kbdHoldOn}
+              onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
+              isPaused={isPaused}
+              onPausedChange={setIsPaused}
             />
           )}
           <OscillatorControls
@@ -629,6 +732,8 @@ function App() {
             onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
             isPaused={isPaused}
             onPausedChange={setIsPaused}
+            currentPatch={currentPatch}
+            onRevertToPatch={handleRevertToPatch}
           />
           <button
             className="help-toggle"
@@ -656,7 +761,7 @@ function App() {
           <PatchesPanel
             isOpen={isPatchesOpen}
             onClose={() => setIsPatchesOpen(false)}
-            onAfterLoad={syncStateFromEngine}
+            onAfterLoad={handlePatchLoaded}
           />
           {(() => {
             const activeViz = VIZ_MODES.find((m) => m.id === vizMode) || VIZ_MODES[0];
@@ -756,6 +861,8 @@ function App() {
             onVizCyclesChange={setVizCycles}
             velocityCurve={velocityCurve}
             onVelocityCurveChange={setVelocityCurve}
+            theme={theme}
+            onThemeChange={handleThemeChange}
           />
           <KeyboardTray
             isOpen={isKbdTrayOpen}

@@ -86,12 +86,42 @@ p {
   bottom: calc(20px + env(safe-area-inset-bottom));
 }
 
-/* Orbs, labels, ghost orbs, and dot↔bar connecting lines are hidden in
-   fullscreen — only the bar track + markers + tick labels remain. */
+/* Fullscreen: orbs stay (so users can still drag/grab and see which
+   slots are playing). Half size via scale(0.5), with the scale anchored
+   to the BOTTOM of the bounding box so the visual orb sits low in the
+   box — closer to the spectrum bar below it. The bounding box stays
+   full-size under the transform so click targets remain generous. */
 .fullscreen-mode .fsb-dot,
-.fullscreen-mode .fsb-dot-label,
-.fullscreen-mode .fsb-ghost,
-.fullscreen-mode .fsb-lines {
+.fullscreen-mode .fsb-ghost {
+  transform: scale(0.5);
+  transform-origin: 50% 100%;
+}
+.fullscreen-mode .fsb-dot:hover {
+  transform: scale(0.6);
+  transform-origin: 50% 100%;
+}
+.fullscreen-mode .fsb-dot.dragging,
+.fullscreen-mode .fsb-dot.grabbed {
+  transform: scale(0.5);
+  transform-origin: 50% 100%;
+}
+
+/* "Playing" indicator: unmuted orbs in fullscreen pick up a soft glow.
+   Sized to match the keyboard dots' "lit" intensity — small, focused
+   halo rather than a wide bloom, so the orb reads as on without being
+   visually loud. */
+.fullscreen-mode .fsb-dot:not(.muted):not(.dragging):not(.grabbed) {
+  opacity: 1;
+  box-shadow: 0 0 10px var(--dot-color),
+              0 0 4px var(--dot-color);
+}
+
+/* Octave-activity bubble columns above each orb — same data-octave/data-state
+   system used for the main-screen number labels, just with the number text
+   itself hidden so only the bubble columns render. The label container
+   shrinks to bubble width when nothing's sounding, so it's invisible at
+   rest. The active-freq variant (drag/grab readout) still shows the freq. */
+.fullscreen-mode .fsb-dot-label:not(.active-freq) .fsb-label-text {
   display: none;
 }
 
@@ -128,17 +158,33 @@ p {
   bottom: max(16px, env(safe-area-inset-bottom));
   left: 16px;
   z-index: 350;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  width: 200px;
   padding: 8px 10px;
   background: rgba(0, 0, 0, 0.5);
   border-radius: 8px;
   backdrop-filter: blur(10px);
   pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The rows live inside a relative wrapper so their absolute `top` can
+   animate when frequencies cross each other. Wrapper height matches the
+   row count so the parent flex column reflows the footer correctly as
+   oscillators are added/removed. */
+.ff-rows {
+  --ff-row-stride: 24px;
+  position: relative;
+  width: 100%;
+  height: calc(var(--ff-row-count, 1) * var(--ff-row-stride));
 }
 
 .ff-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--ff-row-rank, 0) * var(--ff-row-stride));
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -151,7 +197,53 @@ p {
   cursor: pointer;
   border-radius: 4px;
   text-align: left;
-  transition: background 0.15s, opacity 0.15s;
+  transition: top 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+              background 0.15s,
+              opacity 0.15s;
+}
+
+/* Footer: Hold + Play/Pause buttons beneath the freq rows. Sits at the
+   bottom of the bottom-anchored container, so as oscillators are added
+   the rows grow upward and the footer stays glued to the viewport bottom. */
+.ff-footer {
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ff-footer-btn {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ff-footer-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.ff-footer-btn.on {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.ff-footer-btn.paused {
+  color: #ffd166;
+  border-color: rgba(255, 209, 102, 0.35);
 }
 
 .ff-row:hover {
@@ -441,7 +533,9 @@ kbd {
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(10px);
-  z-index: 250;
+  /* Above the dragging ghost-orb (z-index 1000) so the panel never gets
+     occluded by an orb being detuned mid-edit. */
+  z-index: 1100;
   overflow-y: auto;
   transform: translateX(calc(100% + 24px));
   opacity: 0;
@@ -511,6 +605,46 @@ kbd {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
+}
+
+/* Compact toggle pair inside a settings-section — same look-and-feel as
+   .kbd-tray-mapping-btn but sized for the settings-panel context. Used
+   by the color-theme picker (and ready for any future on/off pickers). */
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-toggle-btn {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  height: 22px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.2px;
+  text-transform: lowercase;
+}
+.settings-toggle-btn.on {
+  background: rgba(46, 204, 64, 0.18);
+  border-color: rgba(46, 204, 64, 0.6);
+  opacity: 1;
+}
+.settings-toggle-btn.off {
+  opacity: 0.65;
+}
+.settings-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.settings-toggle-btn.on:hover {
+  background: rgba(46, 204, 64, 0.28);
 }
 
 /* Sub-label for follow-up controls inside a settings-section that already
@@ -1186,7 +1320,7 @@ kbd {
 /* Bottom-row buttons keep their icon-only look — labels live OUTSIDE
    the button now, in the .bottom-cell-wrap below. */
 .bottom-kbd-toggle.on {
-  color: rgba(46, 204, 64, 0.95);
+  color: rgba(74, 158, 255, 0.95);
 }
 .bottom-kbd-toggle.off {
   opacity: 0.55;
@@ -1219,7 +1353,7 @@ kbd {
 /* Caption follows the kbd-toggle's "on" tint so the keyboard pair
    reads as a single unit. */
 .bottom-kbd-toggle.on + .bottom-cell-caption {
-  color: rgba(46, 204, 64, 0.8);
+  color: rgba(74, 158, 255, 0.8);
 }
 /* Don't double-dim a muted osc's caption — the muted button already
    reads quiet. Pull the caption fully so the routing label stays
@@ -2281,7 +2415,7 @@ kbd {
    default's lower brightness. */
 .fsb-dot.kbd-active:not(.dragging):not(.grabbed) {
   opacity: 1;
-  box-shadow: 0 0 28px var(--dot-color), 0 0 12px var(--dot-color);
+  box-shadow: 0 0 14px var(--dot-color), 0 0 6px var(--dot-color);
   z-index: 25;
 }
 .fsb-dot-label.kbd-active {
@@ -2593,24 +2727,31 @@ kbd {
   transition: border-color 0.06s linear;
 }
 
-/* Flat slate-gray whites (not actual white) and dark grays for blacks
-   — no gradients, no inset shadows, minimal skeumorphism. Activation
-   is signaled by the colored ::after overlay (drone slot color) plus
-   a brighter outline tint, both driven by --glow-alpha. */
+/* All keys are dark — flat, non-skeumorphic. Whites are slightly lighter
+   than blacks so the piano layout still reads at a glance, but neither
+   approaches actual white. Press activation fills the key with the slot
+   color (see ::after rule below). */
 .osk-white {
   width: calc(100% / var(--white-count));
   height: 100%;
-  background: #b8b8b8;
-  border: 1px solid rgba(0, 0, 0, 0.55);
+  /* Tray bg is rgba(15,15,15,0.92) ≈ #0f0f0f, so whites need enough gap
+     above that to read as visibly distinct surfaces. #404040 keeps the
+     dark theme but the keys clearly sit above the tray. */
+  background: #404040;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-bottom-color: rgba(255, 255, 255, 0.5);
   border-top: none;
   z-index: 1;
 }
 
 .osk-black {
   height: 62%;
-  background: #2a2a2a;
-  border: 1px solid rgba(0, 0, 0, 0.95);
+  /* Blacks should still be visibly darker than whites — picked so the
+     piano stripe pattern reads at a glance even in the dark theme. */
+  background: #0a0a0a;
+  border: 1px solid rgba(255, 255, 255, 0.35);
   border-top: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
   z-index: 2;
 }
 
@@ -2672,22 +2813,21 @@ kbd {
   background: rgba(46, 204, 64, 0.28);
 }
 
-/* Activation tint — driven by --glow-alpha (set per frame from each
-   voice's envelope amp). Whites DARKEN when played; blacks LIGHTEN.
-   Both effects are subtle (overlay opacity ~0.4 at full amp), so the
-   key still reads as itself rather than a different color. The dot
-   below this key handles the "which slot" affordance via its color. */
+/* Activation overlay — slot-color tint while a voice is sounding.
+   --glow-alpha is set per frame from the voice's envelope amp
+   (boosted in OnScreenKeyboard.jsx so sustain peaks at ~1). Caps at
+   ~0.6 alpha so the press reads as a clear colored fill but never a
+   fully saturated flash. */
 .osk-key::after {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  opacity: var(--glow-alpha, 0);
+  background: var(--key-color, #fff);
+  opacity: calc(0.6 * var(--glow-alpha, 0));
   transition: opacity 0.04s linear;
 }
-.osk-white::after { background: rgba(0, 0, 0, 0.4); }
-.osk-black::after { background: rgba(255, 255, 255, 0.45); }
 
 /* Color dot — small disk floating ABOVE each key, colored after the
    drone slot supplying that scale degree. Sits in the dot-row zone
@@ -2708,20 +2848,28 @@ kbd {
   transform: translateX(-50%);
   transform-origin: 50% 50%;
   background: transparent;
-  /* Three stacked shadows: a tight dark drop-shadow for definition,
-     a permanent soft halo in the dot's own color (visible at idle so
-     the dot always reads as "lit"), and a wider activation halo whose
-     radius scales with --glow-alpha. Keeping the idle halo means the
-     activation pop is additive on top of an already-glowing dot. */
+  /* Activation halos — bloom outward without changing the dot's own
+     size. Tight inner ring for definition, mid halo, wide bloom. */
   box-shadow:
     0 0 2px rgba(0, 0, 0, 0.55),
-    0 0 4px var(--key-color, transparent),
-    0 0 calc(6px + 8px * var(--glow-alpha, 0)) var(--key-color, transparent),
-    0 0 calc(16px * var(--glow-alpha, 0)) var(--key-color, transparent);
-  opacity: 0;
-  transition: opacity 0.15s ease, box-shadow 0.05s linear;
+    0 0 calc(4px + 14px * var(--glow-alpha, 0)) var(--key-color, transparent),
+    0 0 calc(40px * var(--glow-alpha, 0)) var(--key-color, transparent),
+    0 0 calc(72px * var(--glow-alpha, 0)) var(--key-color, transparent);
+  /* Idle = 0.45 (clearly visible marker), full play = 1.0. */
+  opacity: calc(0.45 + 0.55 * var(--glow-alpha, 0));
+  /* Brightness filter pushes the color toward white-hot at full amp so
+     the dot core reads as lit rather than just colored. */
+  filter: brightness(calc(1 + 1.4 * var(--glow-alpha, 0)));
+  transition: opacity 0.06s linear,
+              box-shadow 0.05s linear,
+              filter 0.06s linear;
   pointer-events: none;
   z-index: 3;
+}
+/* Silent keys (out-of-scale in jump mode, blacks in white-only mode):
+   no slot, no dot. */
+.osk-key.silent .key-dot {
+  opacity: 0;
 }
 
 /* Drone-octave dots — keys whose pitch IS one of the drone oscillators
@@ -2788,10 +2936,10 @@ kbd {
   font-family: inherit;
 }
 .osk-white .key-letter {
-  color: rgba(0, 0, 0, 0.85);
+  color: rgba(255, 255, 255, 0.7);
 }
 .osk-black .key-letter {
-  color: rgba(255, 255, 255, 0.95);
+  color: rgba(255, 255, 255, 0.7);
   bottom: 11px;
   font-size: 9px;
 }
@@ -2836,7 +2984,9 @@ kbd {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  z-index: 250;
+  /* Above the dragging ghost-orb (z-index 1000) so the panel never gets
+     occluded by an orb being detuned mid-edit. */
+  z-index: 1100;
   transform: translateX(calc(-100% - 24px));
   opacity: 0;
   pointer-events: none;

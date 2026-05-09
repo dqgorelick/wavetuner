@@ -234,8 +234,47 @@ const WTP_PATCH = {
   rootMidi: 39, // D♯1 — pitch-class anchor for future keyboard mapping
 };
 
+// Captured live state (2026-05): 7 oscillators clustered around A♯2 / D3 /
+// G3 with two upper-octave outliers. Long-attack drones + slow-decay
+// keyboard for "drift in, hold, fade out" pads. Stereo mode on both
+// pools, sub-3 Hz detune via Perlin curves so the L/R split sounds
+// natural rather than evenly chorused. Routing alternates L/R per slot.
+const STEREO_PAD_PATCH = {
+  schema: PATCH_SCHEMA,
+  id: 'builtin_stereo_pad',
+  name: 'Stereo pad',
+  author: 'Wavetuner',
+  description: 'Long-attack drones with stereo detune and a slow keyboard pad. Captured from live session.',
+  source: 'builtin',
+  createdAt: BUILTIN_TIMESTAMP,
+  updatedAt: BUILTIN_TIMESTAMP,
+  frequencies: [119.85, 149.80, 148.77, 159.80, 199.75, 361.26, 279.64],
+  snapshot: {
+    volumes: [0.55, 0.65, 0.30, 0.35, 0.50, 0.50, 0.45],
+    muted:   [false, false, false, false, false, false, false],
+    routing: { 0: [0], 1: [1], 2: [0], 3: [1], 4: [0], 5: [1], 6: [0] },
+    envelope: {
+      drone:    { attack: 0.300, decay: 0.200, sustain: 0.70, release: 0.500 },
+      keyboard: { attack: 0.463, decay: 1.310, sustain: 0.40, release: 1.510 },
+    },
+    stereo: {
+      drone: {
+        mode: 'stereo',
+        detuneHz: 2.1,
+        curve: [0.75, 0.30, 0.45, 0.43, 0.50, 0.22, 0.83],
+      },
+      keyboard: {
+        mode: 'stereo',
+        detuneHz: 1.1,
+        curve: [0.40, 0.45, 0.30, 0.22, 0.22, 0.15, 0.15],
+      },
+    },
+  },
+};
+
 export const BUILTIN_PATCHES = [
   DEFAULT_PATCH,
+  STEREO_PAD_PATCH,
   ET12_PATCH,
   PTOLEMY_PATCH,
   PYTHAGOREAN_PATCH,

@@ -6,6 +6,8 @@
 
 import audioEngine from '../audio/AudioEngine';
 import { PATCH_SCHEMA, genId, nowIso, patchFrequencies } from './schema.js';
+import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
+import { droneStereo, keyboardStereo } from '../audio/StereoMode';
 
 // Headroom cap for any drone the patch loader puts into a "playing"
 // state. Stacking 4-12 sine drones at full volume clips the master
@@ -86,6 +88,18 @@ export async function applyPatch(patch) {
 
   const snap = patch.snapshot;
   if (snap && audioEngine.isInitialized) {
+    // Envelope + stereo restore — pool-level singletons. Apply early so
+    // the volume / mute restores below see the new sustain levels and
+    // the drone-engine subscribers (which read live envelope/stereo
+    // values) react before any per-osc retargeting.
+    if (snap.envelope) {
+      applyEnvelope(droneEnvelope, snap.envelope.drone);
+      applyEnvelope(keyboardEnvelope, snap.envelope.keyboard);
+    }
+    if (snap.stereo) {
+      applyStereo(droneStereo, snap.stereo.drone, freqs.length);
+      applyStereo(keyboardStereo, snap.stereo.keyboard, freqs.length);
+    }
     if (Array.isArray(snap.volumes)) {
       // Clamp at PATCH_LOAD_VOL_CAP so a hot snapshot can't drop the
       // user into clipping the moment they pick a patch.
@@ -178,6 +192,57 @@ export async function applyPatchSmooth(patch) {
   return 'smooth';
 }
 
+// Read current ADSR off an Envelope singleton into a plain object the
+// patch JSON can carry. seconds / unit, no clamping — Envelope itself
+// re-clamps on apply.
+function snapshotEnvelope(env) {
+  return {
+    attack: env.attack,
+    decay: env.decay,
+    sustain: env.sustain,
+    release: env.release,
+  };
+}
+
+// Inverse: push the JSON ADSR back into the singleton. Each setter
+// notifies subscribers so AudioEngine retargets held drones, voices etc.
+function applyEnvelope(env, data) {
+  if (!data || typeof data !== 'object') return;
+  if (Number.isFinite(data.attack))  env.setAttack(data.attack);
+  if (Number.isFinite(data.decay))   env.setDecay(data.decay);
+  if (Number.isFinite(data.sustain)) env.setSustain(data.sustain);
+  if (Number.isFinite(data.release)) env.setRelease(data.release);
+}
+
+// Read mode + master + curve from a StereoMode singleton.
+function snapshotStereo(s) {
+  return {
+    mode: s.mode,
+    detuneHz: s.detuneHz,
+    curve: s.detuneCurve.slice(),
+  };
+}
+
+// Inverse: apply mode/detune/curve. Curve length is reconciled against
+// the live oscillator count — too short pads with 0, too long truncates
+// — so a snapshot saved with N oscillators still applies cleanly when
+// loaded after a count change.
+function applyStereo(s, data, expectedCount) {
+  if (!data || typeof data !== 'object') return;
+  if (data.mode === 'lr' || data.mode === 'stereo') s.setMode(data.mode);
+  if (Number.isFinite(data.detuneHz)) s.setDetuneHz(data.detuneHz);
+  if (Array.isArray(data.curve) && Number.isFinite(expectedCount)) {
+    const next = new Array(expectedCount).fill(0);
+    for (let i = 0; i < Math.min(data.curve.length, expectedCount); i++) {
+      const v = +data.curve[i];
+      next[i] = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+    }
+    // setDetuneCurve requires same length; pre-resize then assign.
+    s.resizeCurve(expectedCount);
+    s.setDetuneCurve(next);
+  }
+}
+
 // Snapshot current engine state. Returns a Patch with absolute frequencies
 // (no ratios) — captured patches are play-state, not tunings.
 export function capturePatch({ id, name, source = 'user', description } = {}) {
@@ -203,7 +268,19 @@ export function capturePatch({ id, name, source = 'user', description } = {}) {
     updatedAt: ts,
     description,
     frequencies,
-    snapshot: { volumes, muted, routing },
+    snapshot: {
+      volumes,
+      muted,
+      routing,
+      envelope: {
+        drone: snapshotEnvelope(droneEnvelope),
+        keyboard: snapshotEnvelope(keyboardEnvelope),
+      },
+      stereo: {
+        drone: snapshotStereo(droneStereo),
+        keyboard: snapshotStereo(keyboardStereo),
+      },
+    },
   };
 }
 
@@ -227,6 +304,18 @@ export function preInitApplyPatch(patch) {
       // preMuteVolumes mirrors volumeValues at boot — initialize() relies on it
       // having an entry per oscillator.
       audioEngine.preMuteVolumes = audioEngine.volumeValues.slice();
+    }
+    // Envelope + stereo restore at boot. The singletons accept writes
+    // before audio context exists (no audio params touched yet); when
+    // initialize() runs later, oscillators come up reading these values
+    // for sustain levels, partner gain, detune offsets, etc.
+    if (snap.envelope) {
+      applyEnvelope(droneEnvelope, snap.envelope.drone);
+      applyEnvelope(keyboardEnvelope, snap.envelope.keyboard);
+    }
+    if (snap.stereo) {
+      applyStereo(droneStereo, snap.stereo.drone, freqs.length);
+      applyStereo(keyboardStereo, snap.stereo.keyboard, freqs.length);
     }
   }
   // Routing applied post-initialize (needs the audio graph to exist).

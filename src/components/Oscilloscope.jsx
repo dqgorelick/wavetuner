@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
-import { stereoWidth } from '../audio/StereoWidth';
 import palette from '../theme/palette';
 
 // Synth-buffer length policy for the XY / Hilbert / face scopes.
@@ -473,6 +472,12 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
   const routingMap = audioEngine.getRoutingMap();
+  // Partner oscillator data — second osc per drone, audible on R only
+  // in 'stereo' mode. In 'lr' mode `audible` is false and the partner
+  // contributes nothing to the synth output.
+  const partners = audioEngine.getDronePartnerData
+    ? audioEngine.getDronePartnerData()
+    : [];
   // Per-pool effective gain: drones see master × droneBusGain (so they
   // fade with spacebar/pause), keyboard sees master × keyboardBusGain
   // (so they fade with the keyboard volume slider / on-off toggle).
@@ -485,37 +490,17 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   const R = new Float32Array(N);
   const TWO_PI = Math.PI * 2;
 
-  for (let k = 0; k < freqs.length; k++) {
-    const muted = audioEngine.isMuted(k);
-    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
-    if (amp <= 0) continue;
-    const f = freqs[k];
-    if (!(f > 0)) continue;
-
-    const channels = routingMap[k] || [];
-    const goesLeft = channels.includes(0);
-    const goesRight = channels.includes(1);
-    if (!goesLeft && !goesRight) continue;
-
-    // Sample s represents the signal at
-    //   currentTime − (N−1−s + sampleOffsetBackward) / sampleRate.
-    // With sampleOffsetBackward = 0 the buffer ends at currentTime;
-    // with sampleOffsetBackward = τ the whole buffer is τ samples in
-    // the past (used by mode 3's Takens phase-space embedding for a
-    // τ-delayed copy of the signal). phases[k] is the phase at
-    // currentTime, so the phase at output-sample s is
-    //   θ_s = phases[k] − (N−1−s + sampleOffsetBackward) · dθ.
-    // We advance sinθ/cosθ with a rotation recurrence instead of calling
-    // Math.sin N times per oscillator.
+  // Helper to render one running osc into L/R via the rotation recurrence.
+  // Avoids calling Math.sin per sample. goesLeft/Right control which
+  // channels accumulate.
+  const renderOsc = (f, phase, amp, goesLeft, goesRight) => {
     const dTheta = TWO_PI * f / sampleRate;
-    let theta = (phases[k] || 0) - (N - 1 + sampleOffsetBackward) * dTheta;
-    // Wrap to [-π, π) before starting to keep the recurrence accurate.
+    let theta = (phase || 0) - (N - 1 + sampleOffsetBackward) * dTheta;
     theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
     let sinT = Math.sin(theta);
     let cosT = Math.cos(theta);
     const sinD = Math.sin(dTheta);
     const cosD = Math.cos(dTheta);
-
     for (let s = 0; s < N; s++) {
       const v = amp * sinT;
       if (goesLeft) L[s] += v;
@@ -524,6 +509,33 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
       const newCos = cosT * cosD - sinT * sinD;
       sinT = newSin;
       cosT = newCos;
+    }
+  };
+
+  for (let k = 0; k < freqs.length; k++) {
+    const muted = audioEngine.isMuted(k);
+    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
+    if (amp <= 0) continue;
+    const f = freqs[k];
+    if (!(f > 0)) continue;
+
+    const partner = partners[k];
+    const stereoMode = partner && partner.audible;
+
+    if (stereoMode) {
+      // Each drone is two oscillators in stereo mode: primary goes L
+      // only, partner goes R only. Routing map is bypassed.
+      renderOsc(f, phases[k], amp, true, false);
+      if (partner.freq > 0) {
+        renderOsc(partner.freq, partner.phase, amp, false, true);
+      }
+    } else {
+      // L/R mode: primary follows routingMap; partner silent.
+      const channels = routingMap[k] || [];
+      const goesLeft = channels.includes(0);
+      const goesRight = channels.includes(1);
+      if (!goesLeft && !goesRight) continue;
+      renderOsc(f, phases[k], amp, goesLeft, goesRight);
     }
   }
 
@@ -553,107 +565,6 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
     for (let s = 0; s < N; s++) {
       L[s] += lAmp * sinT;
       R[s] += rAmp * sinT;
-      const newSin = sinT * cosD + cosT * sinD;
-      const newCos = cosT * cosD - sinT * sinD;
-      sinT = newSin;
-      cosT = newCos;
-    }
-  }
-
-  return { L, R };
-}
-
-// Round-robin variant of synthStereoData: distributes oscillators by
-// index parity (even→L, odd→R) regardless of actual routing or pan.
-// Used as a viz-only fallback when the audio is genuinely mono and the
-// real lissajous would degenerate to a diagonal line — the round-robin
-// distribution restores meaningful L≠R motion for the scope. Voices
-// inherit parity from their bound drone slot so a held note's color and
-// side stay stable across drone-count changes.
-function synthStereoDataRoundRobin(N, sampleRate, sampleOffsetBackward = 0) {
-  const freqs = audioEngine.getAllFrequencies();
-  const phases = audioEngine.getAllPhases();
-  const volumes = audioEngine.volumeValues || [];
-  // Drone count-scale (1/sqrt(count/2)) is normally applied by the
-  // droneCountScale audio node BEFORE the analyzer, so the analyzer
-  // already sees attenuated drones. The synth path doesn't go through
-  // that node — without folding the same factor in, the round-robin
-  // sums easily exceed [-1,+1] (e.g. 12 drones × vol=0.5 sums to 3.0
-  // per channel) and the lissajous clips off the scope edges.
-  const count = audioEngine.getOscillatorCount
-    ? audioEngine.getOscillatorCount() || 1
-    : 1;
-  const countScale = 1 / Math.sqrt(Math.max(1, count) / 2);
-  const droneScale = audioEngine.getDroneEffectiveGain() * countScale;
-  // Voices: equal-power center pan gives cos(π/4)=√½ to each channel.
-  // Round-robin routes 100% to one side, √2× louder than the audio's
-  // average per-channel amplitude — multiply by 1/√2 to fit [-1,+1].
-  const voiceEqualPower = 1 / Math.sqrt(2);
-  const keyboardScale = audioEngine.getKeyboardEffectiveGain() * voiceEqualPower;
-
-  const L = new Float32Array(N);
-  const R = new Float32Array(N);
-  const TWO_PI = Math.PI * 2;
-
-  // RANK parity, not slot/index parity: scan active drones in order
-  // and alternate L/R by their rank (1st active → L, 2nd → R, …).
-  // Slot parity breaks when several active items happen to share the
-  // same parity — e.g. drones at slots 1 and 3 (both odd) would both
-  // go to R, leaving L empty and the lissajous a horizontal line.
-  // Rank parity guarantees alternation regardless of which slots are
-  // muted or which scale degrees are pressed.
-  let droneRank = 0;
-  for (let k = 0; k < freqs.length; k++) {
-    const muted = audioEngine.isMuted(k);
-    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
-    if (amp <= 0) continue;
-    const f = freqs[k];
-    if (!(f > 0)) continue;
-
-    const toLeft = (droneRank % 2) === 0;
-    droneRank++;
-    const dTheta = TWO_PI * f / sampleRate;
-    let theta = (phases[k] || 0) - (N - 1 + sampleOffsetBackward) * dTheta;
-    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
-    let sinT = Math.sin(theta);
-    let cosT = Math.cos(theta);
-    const sinD = Math.sin(dTheta);
-    const cosD = Math.cos(dTheta);
-
-    for (let s = 0; s < N; s++) {
-      const v = amp * sinT;
-      if (toLeft) L[s] += v; else R[s] += v;
-      const newSin = sinT * cosD + cosT * sinD;
-      const newCos = cosT * cosD - sinT * sinD;
-      sinT = newSin;
-      cosT = newCos;
-    }
-  }
-
-  // Voices: sort active voices by frequency (stable, slot-independent)
-  // and apply rank parity. Two notes that happen to land on slots of
-  // the same parity (e.g. C major scale degrees 0 and 2 both even)
-  // would otherwise both go to one channel — the audio out is fine
-  // because each voice has its own random pan, but the round-robin
-  // viz used to collapse to a line. Sorting+ranking fixes that.
-  const voices = keyboardVoiceManager.getVoicesForSynth();
-  const active = voices.filter(v => v.freq > 0 && v.amp * keyboardScale > 0);
-  active.sort((a, b) => a.freq - b.freq);
-  for (let i = 0; i < active.length; i++) {
-    const v = active[i];
-    const amp = v.amp * keyboardScale;
-    const toLeft = (i % 2) === 0;
-    const dTheta = TWO_PI * v.freq / sampleRate;
-    let theta = v.phase - (N - 1 + sampleOffsetBackward) * dTheta;
-    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
-    let sinT = Math.sin(theta);
-    let cosT = Math.cos(theta);
-    const sinD = Math.sin(dTheta);
-    const cosD = Math.cos(dTheta);
-
-    for (let s = 0; s < N; s++) {
-      const samp = amp * sinT;
-      if (toLeft) L[s] += samp; else R[s] += samp;
       const newSin = sinT * cosD + cosT * sinD;
       const newCos = cosT * cosD - sinT * sinD;
       sinT = newSin;
@@ -843,7 +754,7 @@ export default function Oscilloscope({
   staticLineWidth = 1.0,
   staticOutlineThickness = 0,
   vizMode = 0,
-  vizCycles = 6,
+  vizCycles = 13,
 }) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -1023,14 +934,11 @@ export default function Oscilloscope({
       // stays consistent across sources.
       const getXY = (source) => {
         if (source === 'audio') {
-          // In voicepan mode the audio path is smeared by per-voice
-          // random pans, so the analyzer signal makes a busy lissajous
-          // — render the synth round-robin (rank-based L/R) instead so
-          // the scope shows a clean stereo figure. In lr mode the
-          // audio is already cleanly panned; read the analyzer directly.
-          if (stereoWidth.mode === 'voicepan') {
-            return synthStereoDataRoundRobin(synthN, sampleRate);
-          }
+          // Read the analyzer directly. In 'stereo' mode (drone or
+          // keyboard) the same signal goes to both channels, so the
+          // lissajous collapses to a diagonal — that's an accurate
+          // reading of what's playing. Detune still shows up as
+          // beating in either L or R individually.
           const L = audioEngine.getTimeDataLeft();
           const R = audioEngine.getTimeDataRight();
           if (!L || !R) return { L: new Float32Array(0), R: new Float32Array(0) };

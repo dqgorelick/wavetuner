@@ -8,7 +8,7 @@ import { droneEnvelope } from './Envelope';
 import { droneWave } from './Wave';
 import { droneFold, keyboardFold } from './Fold';
 import { reverb } from './Reverb';
-import { stereoWidth } from './StereoWidth';
+import { droneStereo, keyboardStereo } from './StereoMode';
 
 // Topology-change ramp for adding/removing drone slots via the count
 // control. Decoupled from droneEnvelope on purpose — see
@@ -27,6 +27,13 @@ class AudioEngine {
     this.audioContext = null;
     this.oscillators = [];
     this.gainNodes = [];         // Volume control per oscillator
+    // Partner oscillator + gain per drone slot. In 'stereo' mode the
+    // primary plays base+detune/2 → L, partner plays base-detune/2 → R,
+    // so each drone is two notes (one per ear) that beat against each
+    // other. In 'lr' mode the partner is silenced (gainR=0) and only
+    // the primary contributes audibly, routed per routingMap.
+    this.oscillatorsR = [];
+    this.gainNodesR = [];
     this.routingNodes = [];      // Routing control per oscillator (for channel assignment)
     this.masterGainNode = null;
     this.analyserNode1 = null;   // Left channel visualization
@@ -75,6 +82,12 @@ class AudioEngine {
     this.mutedStates = [false, false, true, true]; // 3rd and 4th muted by default
     this.preMuteVolumes = [0.5, 0.5, 0.5, 0.5];
 
+    // Per-oscillator detune offset in Hz, sampled from droneStereo's
+    // detuneHz on creation and re-rolled on slider drag. Added to
+    // frequencyValues[i] to produce the actual played frequency. Stays
+    // 0 when the user hasn't enabled detune.
+    this.droneDetuneOffsets = [0, 0, 0, 0];
+
     // Per-oscillator phase accumulators (radians, 0..2π) mirroring the
     // actual running Web Audio oscillators. Advanced by updatePhases()
     // from the visualizer each frame via an exponentially-smoothed
@@ -84,6 +97,13 @@ class AudioEngine {
     this.phases = [];
     this.smoothedFreqs = [];
     this._lastPhaseUpdate = [];
+    // Partner-osc phase state (right channel in 'stereo' mode). Empty
+    // arrays in 'lr' mode where the partner is muted; populated and
+    // advanced by updatePhases on every frame regardless of audibility
+    // so the synth visualizer's phase picks up immediately on mode flip.
+    this.phasesR = [];
+    this.smoothedFreqsR = [];
+    this._lastPhaseUpdateR = [];
     this._phaseSmoothTau = 0.016;
 
     // Per-channel joint-least-squares phase-recovery caches. Each holds
@@ -171,12 +191,22 @@ class AudioEngine {
     while (this.preMuteVolumes.length < this.oscillatorCount) {
       this.preMuteVolumes.push(0.5);
     }
+    while (this.droneDetuneOffsets.length < this.oscillatorCount) {
+      this.droneDetuneOffsets.push(0);
+    }
+    // Sync per-pool detune curves to the live drone count. Only grows
+    // them — values from URL state are preserved.
+    droneStereo.resizeCurve(this.oscillatorCount);
+    keyboardStereo.resizeCurve(this.oscillatorCount);
 
     // Pre-size phase arrays; per-osc values are finalized in
     // _createSingleOscillator once audioContext.currentTime is known.
     this.phases = new Array(this.oscillatorCount).fill(0);
     this.smoothedFreqs = this.frequencyValues.slice(0, this.oscillatorCount);
     this._lastPhaseUpdate = new Array(this.oscillatorCount).fill(null);
+    this.phasesR = new Array(this.oscillatorCount).fill(0);
+    this.smoothedFreqsR = this.frequencyValues.slice(0, this.oscillatorCount);
+    this._lastPhaseUpdateR = new Array(this.oscillatorCount).fill(null);
 
     this.audioContext = new this.AudioContextClass();
     
@@ -266,6 +296,7 @@ class AudioEngine {
     this.channelGains[0].connect(this.stereoMerger, 0, 0); // Left
     this.channelGains[1].connect(this.stereoMerger, 0, 1); // Right
 
+
     //                                              ┌→ droneFoldDry ─┐
     // stereoMerger → droneBusGain → droneCountScale ┤                ├→ masterGainNode
     //                                              └→ shaper → wet ─┘
@@ -299,43 +330,6 @@ class AudioEngine {
     this.analyserNode1.connect(finalMerger, 0, 0);
     this.analyserNode2.connect(finalMerger, 0, 1);
 
-    // Stereo-width crossfeed sits AFTER the analyzer so the XY scope
-    // shows the underlying L/R relationship and isn't muted to a line
-    // when the listener collapses to mono. At width=1 the four gains
-    // are {through:1, cross:0} (pass-through), at width=0 they're all
-    // 0.5 so each output channel carries (L+R)/2. Topology:
-    //
-    //   finalMerger → widthSplitter ┬→ leftThrough ─┬→ widthMerger.in0
-    //                               ├→ leftCross   ─┘
-    //                               ├→ rightCross  ─┬→ widthMerger.in1
-    //                               └→ rightThrough─┘
-    //
-    // The four gains are attached to `this` so the onChange callback
-    // outside initialize() can ramp them on width changes.
-    const widthSplitter = this.audioContext.createChannelSplitter(2);
-    const widthMerger = this.audioContext.createChannelMerger(2);
-    this.widthLeftThrough  = this.audioContext.createGain();
-    this.widthLeftCross    = this.audioContext.createGain();
-    this.widthRightThrough = this.audioContext.createGain();
-    this.widthRightCross   = this.audioContext.createGain();
-    {
-      const t = this.audioContext.currentTime;
-      const { through, cross } = stereoWidth.gains();
-      this.widthLeftThrough.gain.setValueAtTime(through, t);
-      this.widthRightThrough.gain.setValueAtTime(through, t);
-      this.widthLeftCross.gain.setValueAtTime(cross, t);
-      this.widthRightCross.gain.setValueAtTime(cross, t);
-    }
-    finalMerger.connect(widthSplitter);
-    widthSplitter.connect(this.widthLeftThrough,  0);
-    widthSplitter.connect(this.widthLeftCross,    0);
-    widthSplitter.connect(this.widthRightThrough, 1);
-    widthSplitter.connect(this.widthRightCross,   1);
-    this.widthLeftThrough.connect(widthMerger,  0, 0);
-    this.widthRightCross.connect(widthMerger,   0, 0);
-    this.widthRightThrough.connect(widthMerger, 0, 1);
-    this.widthLeftCross.connect(widthMerger,    0, 1);
-
     // Reverb sits at the tail. Wet/dry crossfade is equal-power so
     // perceived loudness stays flat across the slider. ConvolverNode IR
     // is rebuilt on room change.
@@ -348,11 +342,11 @@ class AudioEngine {
     this.reverbDryGain.gain.setValueAtTime(initGains.dry, this.audioContext.currentTime);
     this.reverbWetGain.gain.setValueAtTime(initGains.wet, this.audioContext.currentTime);
 
-    // widthMerger → dryGain ─┐
+    // finalMerger → dryGain ─┐
     //                        ├→ destination
-    // widthMerger → conv  → wetGain ─┘
-    widthMerger.connect(this.reverbDryGain);
-    widthMerger.connect(this.reverbConvolver);
+    // finalMerger → conv  → wetGain ─┘
+    finalMerger.connect(this.reverbDryGain);
+    finalMerger.connect(this.reverbConvolver);
     this.reverbConvolver.connect(this.reverbWetGain);
     this.reverbDryGain.connect(this.audioContext.destination);
     this.reverbWetGain.connect(this.audioContext.destination);
@@ -373,6 +367,15 @@ class AudioEngine {
 
     this.isInitialized = true;
     this.isPaused = false;
+
+    // Fire one frequency-change notification so the Tuning singleton
+    // (and any other addFrequencyListener subscriber) recomputes the
+    // scale from the LIVE oscillator count + freqs. Without this, the
+    // scale stays at whatever Tuning's constructor saw at module load
+    // (default 4) — so loading an autosave with 12 slots leaves the
+    // keyboard tracking only the first 4. Subscribers were attached
+    // before initialize() ran, so they receive the notification here.
+    this._notifyFrequencyChange();
 
     // Live-retarget held drones whenever the user changes the drone
     // envelope's sustain (or any param via _notify) — every un-muted
@@ -406,21 +409,32 @@ class AudioEngine {
         apply(keyboardFold, this.keyboardFoldShaper, this.keyboardFoldDry, this.keyboardFoldWet));
       this._foldUnsubscribe = () => { unsubA(); unsubB(); };
     }
-    // Reverb: rebuild IR on room change, ramp gains on wet change.
-    // Gain ramp uses setTargetAtTime (~50 ms tau) so dragging the wet
-    // slider feels like a smooth crossfade, not a step.
-    // Stereo-width: ramp the four crossfeed gains on slider change.
-    // 30 ms tau matches the fold crossfade — fast enough to feel
-    // responsive, slow enough to avoid zipper noise when dragging.
-    if (!this._widthUnsubscribe) {
-      this._widthUnsubscribe = stereoWidth.onChange(() => {
-        if (!this.audioContext || !this.widthLeftThrough) return;
-        const t = this.audioContext.currentTime;
-        const { through, cross } = stereoWidth.gains();
-        this.widthLeftThrough.gain.setTargetAtTime(through, t, 0.03);
-        this.widthRightThrough.gain.setTargetAtTime(through, t, 0.03);
-        this.widthLeftCross.gain.setTargetAtTime(cross, t, 0.03);
-        this.widthRightCross.gain.setTargetAtTime(cross, t, 0.03);
+    // Drone stereo mode + detune: on mode flip, re-route every drone to
+    // either single-channel (lr) or both channels (stereo). On detune
+    // change, re-roll every offset and ramp the oscillators to their
+    // new actual frequency so the user hears the change live. The
+    // visualizer's smoothedFreqs follows because updatePhases() reads
+    // _dronePrimaryFreq() / _dronePartnerFreq().
+    if (!this._droneStereoUnsubscribe) {
+      this._droneStereoUnsubscribe = droneStereo.onChange((_inst, info) => {
+        if (!this.audioContext) return;
+        if (!info) return;
+        if (info.kind === 'mode') {
+          // detuneHzAt() returns 0 in lr — recompute offsets first so
+          // the primary's freq goes back to nominal when leaving stereo
+          // and back to (offset/2) when entering. Then re-route and
+          // ramp partner gain in/out.
+          this._applyDroneDetuneCurve();
+          const t = this.audioContext.currentTime;
+          for (let i = 0; i < this.oscillatorCount; i++) {
+            this._connectDroneToChannels(i);
+            if (this.gainNodesR[i]) {
+              this.gainNodesR[i].gain.setTargetAtTime(this._dronePartnerTargetGain(i), t, 0.05);
+            }
+          }
+        } else if (info.kind === 'detune' || info.kind === 'curve') {
+          this._applyDroneDetuneCurve();
+        }
       });
     }
     if (!this._reverbUnsubscribe) {
@@ -444,8 +458,13 @@ class AudioEngine {
     for (let i = 0; i < this.oscillatorCount; i++) {
       if (this.mutedStates[i]) continue;
       const gainNode = this.gainNodes[i];
-      if (!gainNode) continue;
-      droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, this.volumeValues[i]);
+      const gainNodeR = this.gainNodesR[i];
+      const peak = this.volumeValues[i];
+      if (gainNode) droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, peak);
+      // Partner only retargets to peak in stereo mode; lr mode stays muted.
+      if (gainNodeR && droneStereo.mode === 'stereo') {
+        droneEnvelope.retargetSustain(gainNodeR.gain, this.audioContext, peak);
+      }
     }
   }
 
@@ -454,8 +473,8 @@ class AudioEngine {
     const wave = droneWave.getPeriodicWave(this.audioContext);
     if (!wave) return;
     for (let i = 0; i < this.oscillatorCount; i++) {
-      const osc = this.oscillators[i];
-      if (osc) osc.setPeriodicWave(wave);
+      if (this.oscillators[i]) this.oscillators[i].setPeriodicWave(wave);
+      if (this.oscillatorsR[i]) this.oscillatorsR[i].setPeriodicWave(wave);
     }
   }
   
@@ -597,49 +616,71 @@ class AudioEngine {
 
       const oscillator = this.audioContext.createOscillator();
       const gainNode = this.audioContext.createGain();
+      const oscillatorR = this.audioContext.createOscillator();
+      const gainNodeR = this.audioContext.createGain();
 
-      // Apply the drone pool's current waveform shape. Cached per
-      // quantized position so dragging the slider doesn't allocate.
+      // Apply the drone pool's current waveform shape to BOTH oscs.
+      // Cached per quantized position so dragging the slider doesn't allocate.
       const wave = droneWave.getPeriodicWave(this.audioContext);
-      if (wave) oscillator.setPeriodicWave(wave);
+      if (wave) {
+        oscillator.setPeriodicWave(wave);
+        oscillatorR.setPeriodicWave(wave);
+      }
 
       oscillator.connect(gainNode);
+      oscillatorR.connect(gainNodeR);
+      // Partner always feeds the right channel directly. Audibility is
+      // controlled by gainNodeR's value (0 in lr mode, full in stereo).
+      gainNodeR.connect(this.channelGains[1]);
 
-      // Default routing: odd indices → left (0), even indices → right (1)
-      const defaultChannel = index % 2;
-      this.routingMap[index] = [defaultChannel];
+      // Default routing: odd indices → left (0), even indices → right (1).
+      // Stash in routingMap; the actual node connect goes through
+      // _connectDroneToChannels so stereo mode is honored from the start.
+      if (!this.routingMap[index] || this.routingMap[index].length === 0) {
+        this.routingMap[index] = [index % 2];
+      }
+      this.oscillators[index] = oscillator;
+      this.gainNodes[index] = gainNode;
+      this.oscillatorsR[index] = oscillatorR;
+      this.gainNodesR[index] = gainNodeR;
+      this._connectDroneToChannels(index);
 
-      // Connect to the appropriate channel gain
-      gainNode.connect(this.channelGains[defaultChannel]);
-
-      // Set initial frequency. Volume target is volume × droneEnv.sustain
-      // for un-muted slots so steady-state matches setVolume's path.
-      const freq = this.frequencyValues[index] || 60;
-      const target = this.mutedStates[index]
-        ? 0
-        : (this.volumeValues[index] || 0.5) * droneEnvelope.sustain;
+      // Detune offset comes from the curve × master Hz. Always recompute
+      // on (re)create so the offset stays consistent with the curve
+      // even after a slot was restored from removedSlots with a stale
+      // value or never set.
+      this.droneDetuneOffsets[index] = droneStereo.detuneHzAt(index);
+      const primaryFreq = this._dronePrimaryFreq(index);
+      const partnerFreq = this._dronePartnerFreq(index);
+      const primaryTarget = this._droneTargetGain(index);
+      const partnerTarget = this._dronePartnerTargetGain(index);
       const t = this.audioContext.currentTime;
 
-      oscillator.frequency.setValueAtTime(freq, t);
-      if (withFade && target > 0) {
+      oscillator.frequency.setValueAtTime(primaryFreq, t);
+      oscillatorR.frequency.setValueAtTime(partnerFreq, t);
+
+      if (withFade) {
         gainNode.gain.setValueAtTime(0, t);
-        gainNode.gain.linearRampToValueAtTime(target, t + FIXED_SLOT_FADE);
+        gainNodeR.gain.setValueAtTime(0, t);
+        if (primaryTarget > 0) gainNode.gain.linearRampToValueAtTime(primaryTarget, t + FIXED_SLOT_FADE);
+        if (partnerTarget > 0) gainNodeR.gain.linearRampToValueAtTime(partnerTarget, t + FIXED_SLOT_FADE);
       } else {
-        gainNode.gain.setValueAtTime(target, t);
+        gainNode.gain.setValueAtTime(primaryTarget, t);
+        gainNodeR.gain.setValueAtTime(partnerTarget, t);
       }
 
       oscillator.start();
+      oscillatorR.start();
 
-      this.oscillators[index] = oscillator;
-      this.gainNodes[index] = gainNode;
-
-      // Seed phase accumulator to 0 at the moment start() takes effect.
-      // Web Audio oscillators begin at phase 0 relative to their start
-      // time, so pinning _lastPhaseUpdate here keeps the next
-      // updatePhases() aligned to the real audio.
+      // Seed both phase accumulators. Both oscs start at phase 0 from
+      // their start() time; updatePhases advances each independently
+      // since their freqs may differ in stereo mode.
       this.phases[index] = 0;
-      this.smoothedFreqs[index] = freq;
-      this._lastPhaseUpdate[index] = this.audioContext.currentTime;
+      this.smoothedFreqs[index] = primaryFreq;
+      this._lastPhaseUpdate[index] = t;
+      this.phasesR[index] = 0;
+      this.smoothedFreqsR[index] = partnerFreq;
+      this._lastPhaseUpdateR[index] = t;
     } catch (err) {
       console.error('AudioEngine: Failed to create oscillator', index, err);
     }
@@ -651,6 +692,113 @@ class AudioEngine {
   _setupDefaultRouting() {
     for (let i = 0; i < this.oscillatorCount; i++) {
       this.routingMap[i] = [i % 2]; // 0=left, 1=right as array
+    }
+  }
+
+  /**
+   * Primary oscillator's played freq.
+   * - 'lr' mode:     base + offset[i]   (single osc, full random shift)
+   * - 'stereo' mode: base + offset[i]/2 (half-spread; partner takes -half)
+   */
+  _dronePrimaryFreq(i) {
+    const nominal = this.frequencyValues[i] || 0;
+    const offset = this.droneDetuneOffsets[i] || 0;
+    const shift = droneStereo.mode === 'stereo' ? offset / 2 : offset;
+    return Math.max(0.001, Math.min(20000, nominal + shift));
+  }
+
+  /**
+   * Partner oscillator's played freq. Always base - offset/2 — only
+   * audible in 'stereo' mode, but kept current so a mode flip doesn't
+   * have to retune the partner before fading it in.
+   */
+  _dronePartnerFreq(i) {
+    const nominal = this.frequencyValues[i] || 0;
+    const offset = this.droneDetuneOffsets[i] || 0;
+    return Math.max(0.001, Math.min(20000, nominal - offset / 2));
+  }
+
+  /**
+   * Steady-state gain target for the primary oscillator: 0 if muted,
+   * otherwise volume × droneEnvelope.sustain. Used by setVolume,
+   * sustain retargets, and the create path.
+   */
+  _droneTargetGain(i) {
+    if (this.mutedStates[i]) return 0;
+    return (this.volumeValues[i] || 0.5) * droneEnvelope.sustain;
+  }
+
+  /**
+   * Steady-state gain target for the partner oscillator: same as the
+   * primary in 'stereo' mode, 0 in 'lr' mode (silent partner).
+   */
+  _dronePartnerTargetGain(i) {
+    if (droneStereo.mode !== 'stereo') return 0;
+    return this._droneTargetGain(i);
+  }
+
+  /**
+   * Re-route both the primary and partner oscillators for drone slot
+   * `i` per the current mode. Topology:
+   *
+   *   'lr' mode:
+   *     primary → routingMap[i] channels (single channel by default)
+   *     partner → channelGains[1]   (silent — gain=0 in this mode)
+   *
+   *   'stereo' mode:
+   *     primary → channelGains[0]                            (L only)
+   *     partner → channelGains[1]   (or droneStereoDelay → channelGains[1]
+   *                                   when phaseOffsetMs > 0, for an
+   *                                   extra delay-based phase shift)
+   *
+   * Called from _createSingleOscillator, addRouting, removeRouting,
+   * and the droneStereo mode/phase change subscription. disconnect()
+   * only severs OUTGOING edges, so the osc → gain incoming edge
+   * survives across the swap.
+   */
+  _connectDroneToChannels(i) {
+    const gainNode = this.gainNodes[i];
+    const gainNodeR = this.gainNodesR[i];
+    if (!this.channelGains.length) return;
+
+    if (gainNode) {
+      try { gainNode.disconnect(); } catch { /* ignore */ }
+      if (droneStereo.mode === 'stereo') {
+        if (this.channelGains[0]) gainNode.connect(this.channelGains[0]);
+      } else {
+        const channels = this.routingMap[i] || [];
+        for (const ch of channels) {
+          if (ch >= 0 && ch < this.channelGains.length) {
+            gainNode.connect(this.channelGains[ch]);
+          }
+        }
+      }
+    }
+
+    if (gainNodeR) {
+      try { gainNodeR.disconnect(); } catch { /* ignore */ }
+      const right = this.channelGains[1];
+      if (right) gainNodeR.connect(right);
+    }
+  }
+
+  /**
+   * Recompute every drone's detune offset from droneStereo.detuneCurve
+   * × droneStereo.detuneHz and ramp each oscillator to its new
+   * frequency. Called when either the master Hz scale or the curve
+   * shape changes. Deterministic — no randomness.
+   */
+  _applyDroneDetuneCurve() {
+    if (!this.audioContext) return;
+    const t = this.audioContext.currentTime;
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      this.droneDetuneOffsets[i] = droneStereo.detuneHzAt(i);
+      if (this.oscillators[i]) {
+        this.oscillators[i].frequency.setTargetAtTime(this._dronePrimaryFreq(i), t, 0.016);
+      }
+      if (this.oscillatorsR[i]) {
+        this.oscillatorsR[i].frequency.setTargetAtTime(this._dronePartnerFreq(i), t, 0.016);
+      }
     }
   }
   
@@ -673,6 +821,10 @@ class AudioEngine {
       if (newCount > oldCount) {
         // Add oscillators - update count first so arrays are in sync
         this.oscillatorCount = newCount;
+        // Grow the per-pool curves to match. New slots default to 0,
+        // so adding a drone doesn't surprise-detune anything.
+        droneStereo.resizeCurve(newCount);
+        keyboardStereo.resizeCurve(newCount);
 
         for (let i = oldCount; i < newCount; i++) {
           // Restore the most-recently-removed slot if available; otherwise
@@ -692,7 +844,6 @@ class AudioEngine {
             this.mutedStates[i] = false;
             this.preMuteVolumes[i] = 0.5;
           }
-
           this._createSingleOscillator(i, true /* withFade */);
         }
       } else {
@@ -714,40 +865,57 @@ class AudioEngine {
 
           const osc = this.oscillators[i];
           const gainNode = this.gainNodes[i];
+          const oscR = this.oscillatorsR[i];
+          const gainNodeR = this.gainNodesR[i];
 
           try {
-            if (gainNode) {
-              const cur = gainNode.gain.value;
-              gainNode.gain.cancelScheduledValues(t);
-              gainNode.gain.setValueAtTime(cur, t);
-              gainNode.gain.linearRampToValueAtTime(0, t + FIXED_SLOT_FADE);
-            }
-            if (osc) {
-              osc.onended = () => {
-                try { osc.disconnect(); } catch { /* ignore */ }
-                try { gainNode && gainNode.disconnect(); } catch { /* ignore */ }
+            const fadePair = (g) => {
+              if (!g) return;
+              const cur = g.gain.value;
+              g.gain.cancelScheduledValues(t);
+              g.gain.setValueAtTime(cur, t);
+              g.gain.linearRampToValueAtTime(0, t + FIXED_SLOT_FADE);
+            };
+            fadePair(gainNode);
+            fadePair(gainNodeR);
+            const stopPair = (o, g) => {
+              if (!o) return;
+              o.onended = () => {
+                try { o.disconnect(); } catch { /* ignore */ }
+                try { g && g.disconnect(); } catch { /* ignore */ }
               };
-              osc.stop(t + FIXED_SLOT_FADE + 0.05);
-            }
+              o.stop(t + FIXED_SLOT_FADE + 0.05);
+            };
+            stopPair(osc, gainNode);
+            stopPair(oscR, gainNodeR);
           } catch (e) {
             console.warn('Error stopping oscillator', i, e);
           }
 
           this.oscillators.splice(i, 1);
           this.gainNodes.splice(i, 1);
+          this.oscillatorsR.splice(i, 1);
+          this.gainNodesR.splice(i, 1);
           this.frequencyValues.splice(i, 1);
           this.volumeValues.splice(i, 1);
           this.mutedStates.splice(i, 1);
           this.preMuteVolumes.splice(i, 1);
+          this.droneDetuneOffsets.splice(i, 1);
           this.phases.splice(i, 1);
           this.smoothedFreqs.splice(i, 1);
           this._lastPhaseUpdate.splice(i, 1);
+          this.phasesR.splice(i, 1);
+          this.smoothedFreqsR.splice(i, 1);
+          this._lastPhaseUpdateR.splice(i, 1);
           delete this.routingMap[i];
         }
 
         this.oscillatorCount = newCount;
+        // Truncate the curves to match the new slot count.
+        droneStereo.resizeCurve(newCount);
+        keyboardStereo.resizeCurve(newCount);
       }
-      
+
       // Update master gain scaling to prevent clipping
       this._updateMasterGainScaling();
 
@@ -784,12 +952,13 @@ class AudioEngine {
     if (channels.includes(newChannel)) return;
     
     try {
-      // Connect to new channel (don't disconnect existing connections)
-      this.gainNodes[oscIndex].connect(this.channelGains[newChannel]);
-      
-      // Update routing map
+      // Update routing map first; the helper consults it (and also
+      // checks droneStereo.mode — in 'stereo' the audio stays on L+R
+      // regardless and the routingMap update only takes effect when
+      // mode flips back to 'lr').
       this.routingMap[oscIndex] = [...channels, newChannel];
-      
+      this._connectDroneToChannels(oscIndex);
+
       // Notify listeners
       if (this.onRoutingChange) {
         this.onRoutingChange(oscIndex, this.routingMap[oscIndex]);
@@ -815,20 +984,16 @@ class AudioEngine {
     if (channelIndex === -1) return;
     
     try {
-      // Disconnect from all channels and reconnect to remaining ones
-      this.gainNodes[oscIndex].disconnect();
-      
       // Update routing map - just remove the channel, don't reassign
       const newChannels = channels.filter(ch => ch !== outputChannel);
       this.routingMap[oscIndex] = newChannels;
-      
-      // Reconnect to remaining channels (if any)
-      for (const ch of newChannels) {
-        this.gainNodes[oscIndex].connect(this.channelGains[ch]);
-      }
-      
-      // If no channels left, oscillator is disconnected (silent) - that's okay
-      
+      // Helper handles the disconnect + reconnect per current mode.
+      // In 'stereo' mode the audio stays on L+R; the map change only
+      // takes effect when mode flips back to 'lr'.
+      this._connectDroneToChannels(oscIndex);
+
+      // If no channels left in lr mode, oscillator is disconnected (silent) - that's okay
+
       // Notify listeners
       if (this.onRoutingChange) {
         this.onRoutingChange(oscIndex, this.routingMap[oscIndex]);
@@ -918,11 +1083,10 @@ class AudioEngine {
     // Disconnect all oscillator gain nodes from current channel gains
     for (let i = 0; i < this.gainNodes.length; i++) {
       if (this.gainNodes[i]) {
-        try {
-          this.gainNodes[i].disconnect();
-        } catch (e) {
-          // Ignore disconnect errors
-        }
+        try { this.gainNodes[i].disconnect(); } catch { /* ignore */ }
+      }
+      if (this.gainNodesR[i]) {
+        try { this.gainNodesR[i].disconnect(); } catch { /* ignore */ }
       }
     }
     
@@ -971,16 +1135,14 @@ class AudioEngine {
     // Re-setup default routing for current oscillators
     this._setupDefaultRouting();
     
-    // Reconnect all oscillator gain nodes to their channel gains
+    // Reconnect all oscillator gain nodes to their channel gains via the
+    // mode-aware helper so 'stereo' mode survives a device change.
     for (let i = 0; i < this.gainNodes.length; i++) {
-      if (this.gainNodes[i]) {
-        const channels = this.routingMap[i] || [i % numChannels];
-        for (const ch of channels) {
-          if (ch < this.channelGains.length) {
-            this.gainNodes[i].connect(this.channelGains[ch]);
-          }
-        }
+      if (!this.gainNodes[i]) continue;
+      if (!this.routingMap[i] || this.routingMap[i].length === 0) {
+        this.routingMap[i] = [i % numChannels];
       }
+      this._connectDroneToChannels(i);
     }
     
     console.log('Channel routing rebuilt for', numChannels, 'channels');
@@ -1011,16 +1173,16 @@ class AudioEngine {
     if (Math.abs(clampedFreq - this.frequencyValues[index]) < 0.01) return;
     
     this.frequencyValues[index] = clampedFreq;
-    
+
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume();
     }
-    
-    this.oscillators[index].frequency.setTargetAtTime(
-      clampedFreq,
-      this.audioContext.currentTime,
-      0.016
-    );
+
+    const t = this.audioContext.currentTime;
+    this.oscillators[index].frequency.setTargetAtTime(this._dronePrimaryFreq(index), t, 0.016);
+    if (this.oscillatorsR[index]) {
+      this.oscillatorsR[index].frequency.setTargetAtTime(this._dronePartnerFreq(index), t, 0.016);
+    }
 
     this._notifyFrequencyChange();
   }
@@ -1050,11 +1212,13 @@ class AudioEngine {
       this.audioContext.resume();
     }
 
-    this.gainNodes[index].gain.setTargetAtTime(
-      clampedVol * droneEnvelope.sustain,
-      this.audioContext.currentTime,
-      0.016
-    );
+    const t = this.audioContext.currentTime;
+    const target = clampedVol * droneEnvelope.sustain;
+    this.gainNodes[index].gain.setTargetAtTime(target, t, 0.016);
+    if (this.gainNodesR[index]) {
+      const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
+      this.gainNodesR[index].gain.setTargetAtTime(partnerTarget, t, 0.016);
+    }
   }
   
   /**
@@ -1075,7 +1239,10 @@ class AudioEngine {
       const clampedFreq = Math.max(0.001, Math.min(20000, frequencies[i]));
       if (Math.abs(clampedFreq - this.frequencyValues[i]) < 0.01) continue;
       this.frequencyValues[i] = clampedFreq;
-      this.oscillators[i].frequency.setTargetAtTime(clampedFreq, t, 0.016);
+      this.oscillators[i].frequency.setTargetAtTime(this._dronePrimaryFreq(i), t, 0.016);
+      if (this.oscillatorsR[i]) {
+        this.oscillatorsR[i].frequency.setTargetAtTime(this._dronePartnerFreq(i), t, 0.016);
+      }
       changed = true;
     }
     if (changed) this._notifyFrequencyChange();
@@ -1103,7 +1270,12 @@ class AudioEngine {
         this.preMuteVolumes[i] = clampedVol;
         continue;
       }
-      this.gainNodes[i].gain.setTargetAtTime(clampedVol * sustain, t, 0.016);
+      const target = clampedVol * sustain;
+      this.gainNodes[i].gain.setTargetAtTime(target, t, 0.016);
+      if (this.gainNodesR[i]) {
+        const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
+        this.gainNodesR[i].gain.setTargetAtTime(partnerTarget, t, 0.016);
+      }
     }
   }
 
@@ -1381,6 +1553,11 @@ class AudioEngine {
     this.preMuteVolumes[index] = this.volumeValues[index];
 
     droneEnvelope.applyNoteOff(this.gainNodes[index].gain, this.audioContext);
+    // Partner runs the same release tail when stereo mode has it audible;
+    // skip in lr mode where it's already at 0.
+    if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
+      droneEnvelope.applyNoteOff(this.gainNodesR[index].gain, this.audioContext);
+    }
   }
 
   /**
@@ -1396,6 +1573,10 @@ class AudioEngine {
     this.mutedStates[index] = false;
     const peak = this.volumeValues[index];
     droneEnvelope.applyNoteOn(this.gainNodes[index].gain, this.audioContext, peak);
+    // Partner mirrors the unmute when stereo mode has it audible.
+    if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
+      droneEnvelope.applyNoteOn(this.gainNodesR[index].gain, this.audioContext, peak);
+    }
   }
   
   /**
@@ -1515,14 +1696,40 @@ class AudioEngine {
       if (dt <= 0) continue;
       this._lastPhaseUpdate[i] = now;
       const alpha = 1 - Math.exp(-dt / tau);
-      const target = this.frequencyValues[i] || 0;
+      // Track each osc's ACTUAL played freq so the synth visualizer
+      // stays in sync with the audio. Primary uses _dronePrimaryFreq
+      // (full or half detune depending on mode); partner uses
+      // _dronePartnerFreq (always base − offset/2).
+      const targetP = this._dronePrimaryFreq(i);
       if (this.smoothedFreqs[i] === undefined) {
-        this.smoothedFreqs[i] = target;
+        this.smoothedFreqs[i] = targetP;
       } else {
-        this.smoothedFreqs[i] += (target - this.smoothedFreqs[i]) * alpha;
+        this.smoothedFreqs[i] += (targetP - this.smoothedFreqs[i]) * alpha;
       }
       this.phases[i] =
         ((this.phases[i] || 0) + TWO_PI * this.smoothedFreqs[i] * dt) % TWO_PI;
+
+      // Partner phase tracking. _lastPhaseUpdateR is seeded at create
+      // time; advancing every frame keeps it ready for a mode flip
+      // even when the partner is silent in lr mode.
+      const lastR = this._lastPhaseUpdateR[i];
+      if (lastR === null || lastR === undefined) {
+        this._lastPhaseUpdateR[i] = now;
+      } else {
+        const dtR = now - lastR;
+        if (dtR > 0) {
+          this._lastPhaseUpdateR[i] = now;
+          const alphaR = 1 - Math.exp(-dtR / tau);
+          const targetR = this._dronePartnerFreq(i);
+          if (this.smoothedFreqsR[i] === undefined) {
+            this.smoothedFreqsR[i] = targetR;
+          } else {
+            this.smoothedFreqsR[i] += (targetR - this.smoothedFreqsR[i]) * alphaR;
+          }
+          this.phasesR[i] =
+            ((this.phasesR[i] || 0) + TWO_PI * this.smoothedFreqsR[i] * dtR) % TWO_PI;
+        }
+      }
     }
   }
 
@@ -1538,6 +1745,26 @@ class AudioEngine {
    */
   getAllPhases() {
     return [...this.phases];
+  }
+
+  /**
+   * Per-drone partner-osc data for the synth visualizer. Returns a
+   * parallel-indexed array of { freq, phase, audible } where `audible`
+   * is true only in 'stereo' mode (lr keeps the partner gain at 0). The
+   * synth path uses this to render the second osc on the right channel
+   * so the visualized lissajous matches the analyzer's L/R split.
+   */
+  getDronePartnerData() {
+    const out = [];
+    const audible = droneStereo.mode === 'stereo';
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      out.push({
+        freq: this.smoothedFreqsR[i] || this._dronePartnerFreq(i),
+        phase: this.phasesR[i] || 0,
+        audible,
+      });
+    }
+    return out;
   }
 
   /**

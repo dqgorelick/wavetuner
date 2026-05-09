@@ -751,6 +751,96 @@ kbd {
   accent-color: rgba(240, 244, 255, 0.85);
 }
 
+.curve-editor {
+  margin-top: 10px;
+}
+.curve-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.curve-editor-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.curve-editor-ceiling {
+  font-family: monospace;
+  text-transform: none;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0;
+}
+.curve-editor-random {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.curve-editor-random:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+}
+.curve-editor-random:active {
+  background: rgba(255, 255, 255, 0.18);
+}
+.curve-editor-svg {
+  display: block;
+  width: 100%;
+  height: 90px;
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  touch-action: none;
+}
+.curve-editor-frame {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.curve-editor-mid {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+.curve-editor-vgrid {
+  stroke: rgba(255, 255, 255, 0.05);
+  vector-effect: non-scaling-stroke;
+}
+.curve-editor-area {
+  fill: rgba(240, 244, 255, 0.12);
+  stroke: none;
+}
+.curve-editor-line {
+  fill: none;
+  stroke: rgba(240, 244, 255, 0.85);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.curve-editor-node {
+  fill: rgba(240, 244, 255, 0.95);
+  stroke: rgba(0, 0, 0, 0.4);
+  stroke-width: 1;
+  cursor: ns-resize;
+}
+.curve-editor-node:hover {
+  fill: #fff;
+  r: 5;
+}
+
 .envelope-section .envelope-graph {
   display: block;
   width: 100%;

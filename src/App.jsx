@@ -6,7 +6,7 @@ import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
 import { droneWave, keyboardWave } from './audio/Wave';
 import { droneFold, keyboardFold } from './audio/Fold';
 import { reverb, ROOM_NAMES } from './audio/Reverb';
-import { stereoWidth } from './audio/StereoWidth';
+import { droneStereo, keyboardStereo } from './audio/StereoMode';
 import midiInput from './audio/MidiInput';
 import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
@@ -66,9 +66,22 @@ function getInitialStateFromURL() {
   const revRaw = (params.get('rev') || '').toLowerCase();
   const reverbRoom = ROOM_NAMES.includes(revRaw) ? revRaw : null;
   const reverbWet = parseFloatInRange(params.get('wet'), 0, 1);
-  const width = parseFloatInRange(params.get('width'), 0, 1);
-  const panRaw = (params.get('pan') || '').toLowerCase();
-  const panMode = panRaw === 'lr' || panRaw === 'voicepan' ? panRaw : null;
+  // Per-pool stereo mode + detune. Both pools share the same param
+  // shapes: dPan/dDet for drones, kPan/kDet for keyboard.
+  const dPanRaw = (params.get('dPan') || '').toLowerCase();
+  const droneStereoMode = dPanRaw === 'lr' || dPanRaw === 'stereo' ? dPanRaw : null;
+  const droneDetuneHz = parseFloatInRange(params.get('dDet'), 0, 10);
+  const parseCurve = (raw) => {
+    if (!raw) return null;
+    const parts = raw.split(',').map(Number);
+    if (parts.some(n => Number.isNaN(n))) return null;
+    return parts.map(n => Math.max(0, Math.min(1, n)));
+  };
+  const droneCurve = parseCurve(params.get('dCurve'));
+  const kPanRaw = (params.get('kPan') || '').toLowerCase();
+  const kbdStereoMode = kPanRaw === 'lr' || kPanRaw === 'stereo' ? kPanRaw : null;
+  const kbdDetuneHz = parseFloatInRange(params.get('kDet'), 0, 10);
+  const kbdCurve = parseCurve(params.get('kCurve'));
   const tRaw = (params.get('t') || '').toLowerCase();
   const theme = tRaw === 'classic' || tRaw === 'duo' ? tRaw : null;
 
@@ -100,7 +113,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, reverbRoom, reverbWet, width, panMode, theme };
+  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, reverbRoom, reverbWet, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme };
 }
 
 // Compute once at module load
@@ -134,10 +147,23 @@ if (INITIAL_URL_STATE.kFold !== null) keyboardFold.setAmount(INITIAL_URL_STATE.k
 // ConvolverNode's first IR is already the user's saved room.
 if (INITIAL_URL_STATE.reverbRoom !== null) reverb.setRoom(INITIAL_URL_STATE.reverbRoom);
 if (INITIAL_URL_STATE.reverbWet !== null) reverb.setWet(INITIAL_URL_STATE.reverbWet);
-// Stereo width — pre-init keeps the first frame of audio at the saved
-// width rather than briefly snapping from the default.
-if (INITIAL_URL_STATE.width !== null) stereoWidth.setWidth(INITIAL_URL_STATE.width);
-if (INITIAL_URL_STATE.panMode !== null) stereoWidth.setMode(INITIAL_URL_STATE.panMode);
+// Per-pool stereo mode + detune — pushed pre-init so the first
+// frame of audio uses the saved values rather than snapping from default.
+if (INITIAL_URL_STATE.droneStereoMode !== null) droneStereo.setMode(INITIAL_URL_STATE.droneStereoMode);
+if (INITIAL_URL_STATE.droneDetuneHz !== null) droneStereo.setDetuneHz(INITIAL_URL_STATE.droneDetuneHz);
+// URL-provided curves are pushed in pre-init; the random default is
+// applied AFTER audioEngine.initialize() so it sees the real
+// oscillator count (autosave can load 12 slots, but INITIAL_URL_STATE
+// .count would still be the URL/4-default — pre-seeding to that count
+// would leave the higher slots flat).
+if (INITIAL_URL_STATE.droneCurve) {
+  droneStereo.detuneCurve = INITIAL_URL_STATE.droneCurve.slice();
+}
+if (INITIAL_URL_STATE.kbdStereoMode !== null) keyboardStereo.setMode(INITIAL_URL_STATE.kbdStereoMode);
+if (INITIAL_URL_STATE.kbdDetuneHz !== null) keyboardStereo.setDetuneHz(INITIAL_URL_STATE.kbdDetuneHz);
+if (INITIAL_URL_STATE.kbdCurve) {
+  keyboardStereo.detuneCurve = INITIAL_URL_STATE.kbdCurve.slice();
+}
 // Color theme — pushed pre-mount so the very first paint already uses
 // the user's saved palette rather than flashing the default.
 if (INITIAL_URL_STATE.theme) palette.setTheme(INITIAL_URL_STATE.theme);
@@ -226,7 +252,7 @@ function App() {
   // highest-active-freq, clamped to [128, 2048]. Higher = more cycles
   // / richer drift; lower = crisper figures (especially at high freqs).
   // Default 6 reads as "a few clean cycles" across the audible range.
-  const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? 6);
+  const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? 13);
   // Visualizer source is now hardcoded per mode in Oscilloscope.jsx
   // (Circle + Face → audio, Hilbert + Standing-line → synth) — no
   // user-facing toggle.
@@ -427,6 +453,23 @@ function App() {
 
     audioEngine.initialize(frequencies, volumes); // volumes already in 0-100 format
 
+    // Seed the smooth-random detune curves at the real oscillator count.
+    // engine.initialize() resizes the curves to the live oscillatorCount
+    // and pads new positions with zeros. randomizeCurve overwrites with
+    // a fresh smooth-random pattern. Skipped when:
+    //   - URL provided an explicit curve (user shared a session), OR
+    //   - autosave provided one (preInitApplyPatch restored it above).
+    // Without that skip, every reload after saving would erase the user's
+    // curve in favor of fresh random.
+    const autoDroneCurve = pendingAutosave?.snapshot?.stereo?.drone?.curve;
+    const autoKbdCurve = pendingAutosave?.snapshot?.stereo?.keyboard?.curve;
+    if (!INITIAL_URL_STATE.droneCurve && !Array.isArray(autoDroneCurve)) {
+      droneStereo.randomizeCurve();
+    }
+    if (!INITIAL_URL_STATE.kbdCurve && !Array.isArray(autoKbdCurve)) {
+      keyboardStereo.randomizeCurve();
+    }
+
     // Kick off Web MIDI from the user gesture. requestMIDIAccess on
     // Chrome/Edge with sysex:false typically doesn't prompt, but doing
     // it from the click is safe regardless. Status / devices are
@@ -500,10 +543,18 @@ function App() {
       queryParts.push(`rev=${reverb.room}`);
       queryParts.push(`wet=${reverb.wet.toFixed(2)}`);
     }
-    // Pan mode + width — only encode each when non-default to keep
-    // URLs short.
-    if (stereoWidth.width < 1) queryParts.push(`width=${stereoWidth.width.toFixed(2)}`);
-    if (stereoWidth.mode !== 'lr') queryParts.push(`pan=${stereoWidth.mode}`);
+    // Per-pool stereo mode + detune — only encode when non-default
+    // (mode='lr', detune=0) to keep URLs short.
+    if (droneStereo.mode !== 'lr')      queryParts.push(`dPan=${droneStereo.mode}`);
+    if (droneStereo.detuneHz > 0)       queryParts.push(`dDet=${droneStereo.detuneHz.toFixed(1)}`);
+    if (droneStereo.detuneCurve.some(v => v > 0)) {
+      queryParts.push(`dCurve=${droneStereo.detuneCurve.map(v => v.toFixed(2)).join(',')}`);
+    }
+    if (keyboardStereo.mode !== 'lr')   queryParts.push(`kPan=${keyboardStereo.mode}`);
+    if (keyboardStereo.detuneHz > 0)    queryParts.push(`kDet=${keyboardStereo.detuneHz.toFixed(1)}`);
+    if (keyboardStereo.detuneCurve.some(v => v > 0)) {
+      queryParts.push(`kCurve=${keyboardStereo.detuneCurve.map(v => v.toFixed(2)).join(',')}`);
+    }
     // Theme — only encode when not the default ('duo') to keep URLs short.
     if (palette.theme !== 'duo') queryParts.push(`t=${palette.theme}`);
 

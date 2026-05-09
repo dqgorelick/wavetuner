@@ -26,7 +26,7 @@ import audioEngine from './AudioEngine';
 import tuning from './Tuning';
 import { keyboardEnvelope } from './Envelope';
 import { keyboardWave } from './Wave';
-import { stereoWidth } from './StereoWidth';
+import { keyboardStereo } from './StereoMode';
 
 const MAX_VOICES = 32;
 const RETUNE_TAU = 0.016; // matches drone's setTargetAtTime tau
@@ -81,31 +81,73 @@ class KeyboardVoiceManager {
     this._waveUnsubscribe = keyboardWave.onChange(() => this._reapplyVoiceWave());
   }
 
-  // Width / mode subscription. Repans every live voice on either:
-  //   - mode flip (lr ↔ voicepan): voices switch from per-degree L/R
-  //     to random spread (or back), so held notes follow without
-  //     waiting for the next note-on
-  //   - width drag in voicepan mode: re-randomizes positions live
-  //   - width drag in lr mode: bus crossfeed handles the narrowing,
-  //     but we still re-trigger _repanAllVoices to keep the panner
-  //     values consistent (cheap, no-op effect on hard-panned voices)
+  // Mode + curve subscription:
+  //   - mode flip (lr ↔ stereo): voices glide to their new pan target
+  //     AND retune to honor the curve (detune is 0 in lr).
+  //   - detune master / curve change: voices retune to the new
+  //     curve[slot] × detuneHz. Live editing of the curve propagates
+  //     to held voices so the user hears the shape immediately.
   _ensureWidthSubscribed() {
     if (this._widthUnsubscribe) return;
-    this._widthUnsubscribe = stereoWidth.onChange(() => this._repanAllVoices());
+    this._widthUnsubscribe = keyboardStereo.onChange((_inst, info) => {
+      if (!info) return;
+      if (info.kind === 'mode') {
+        this._repanAllVoices();
+        this._reapplyVoiceDetune();
+      } else if (info.kind === 'detune' || info.kind === 'curve') {
+        this._reapplyVoiceDetune();
+      }
+    });
   }
 
   /**
-   * Glide every live voice's pan to its current target — random in
-   * [-width,+width] for voicepan, per-degree L/R for lr. Tau is 50 ms
-   * so a slider drag feels live but doesn't zip.
+   * Recompute every held voice's detune from keyboardStereo.detuneHzAt
+   * (slot) and ramp its oscillator to the new played freq. Tau matches
+   * the noteOn retune tau.
+   */
+  _reapplyVoiceDetune() {
+    const ctx = audioEngine.audioContext;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    for (const voice of this.voices) {
+      const newDetune = keyboardStereo.detuneHzAt(voice.slot);
+      voice.detuneHz = newDetune;
+      const raw = tuning.pitchForSlotAndOctave(voice.slot, voice.octave);
+      if (raw === null) continue;
+      if (voice._isStereo) {
+        const half = newDetune / 2;
+        const fL = Math.max(0.001, Math.min(20000, raw + half));
+        const fR = Math.max(0.001, Math.min(20000, raw - half));
+        voice.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
+        voice.targetFreq = fL;
+        if (voice.oscR) {
+          voice.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
+          voice.targetFreqR = fR;
+        }
+      } else {
+        const newFreq = Math.max(0.001, Math.min(20000, raw + newDetune));
+        voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
+        voice.targetFreq = newFreq;
+      }
+    }
+  }
+
+  /**
+   * Glide every live voice's pan to its current target — 0 (centered,
+   * equal L+R) in 'stereo' mode, per-degree hard pan in 'lr'. Tau is
+   * 50 ms so a mode flip feels live but doesn't zip.
    */
   _repanAllVoices() {
     const ctx = audioEngine.audioContext;
     if (!ctx) return;
     const t = ctx.currentTime;
     for (const v of this.voices) {
-      const target = stereoWidth.mode === 'voicepan'
-        ? stereoWidth.randomPan()
+      // Stereo voices use a ChannelMerger and have no panner — their
+      // L/R split is baked into the topology. Only single-osc (lr)
+      // voices have a panner to retarget.
+      if (!v.panner) continue;
+      const target = keyboardStereo.mode === 'stereo'
+        ? 0
         : this._panForDegree(v.degree);
       v.panner.pan.setTargetAtTime(target, t, PAN_RAMP_TAU);
     }
@@ -124,6 +166,7 @@ class KeyboardVoiceManager {
     if (!wave) return;
     for (const v of this.voices) {
       v.osc.setPeriodicWave(wave);
+      if (v._isStereo && v.oscR) v.oscR.setPeriodicWave(wave);
     }
   }
 
@@ -139,6 +182,9 @@ class KeyboardVoiceManager {
     for (const v of this.voices) {
       if (v.released) continue;
       keyboardEnvelope.retargetSustain(v.gain.gain, ctx, v.peak);
+      if (v._isStereo && v.gainR) {
+        keyboardEnvelope.retargetSustain(v.gainR.gain, ctx, v.peak);
+      }
     }
   }
 
@@ -157,9 +203,22 @@ class KeyboardVoiceManager {
     for (const voice of this.voices) {
       const raw = tuning.pitchForSlotAndOctave(voice.slot, voice.octave);
       if (raw === null) continue;
-      const newFreq = Math.max(0.001, Math.min(20000, raw));
-      voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
-      voice.targetFreq = newFreq;
+      const detune = voice.detuneHz || 0;
+      if (voice._isStereo) {
+        const half = detune / 2;
+        const fL = Math.max(0.001, Math.min(20000, raw + half));
+        const fR = Math.max(0.001, Math.min(20000, raw - half));
+        voice.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
+        voice.targetFreq = fL;
+        if (voice.oscR) {
+          voice.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
+          voice.targetFreqR = fR;
+        }
+      } else {
+        const newFreq = Math.max(0.001, Math.min(20000, raw + detune));
+        voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
+        voice.targetFreq = newFreq;
+      }
     }
   }
 
@@ -250,66 +309,100 @@ class KeyboardVoiceManager {
       this._stealVoice();
     }
 
-    // Pan mode dictates note-on pan:
-    //   - 'voicepan': fresh random in [-width, +width] (Oberheim-style)
-    //   - 'lr': inherit the drone slot's L/R routing (legacy hard pan)
-    const pan = stereoWidth.mode === 'voicepan'
-      ? stereoWidth.randomPan()
-      : this._panForDegree(degree);
+    // Detune from keyboardStereo's curve — deterministic per slot. In
+    // stereo mode this becomes the L↑/R↓ spread (each side ±detune/2).
+    // In lr mode the curve returns 0, so the voice plays clean tuning.
+    const detuneHz = keyboardStereo.detuneHzAt(slot);
+    const isStereo = keyboardStereo.mode === 'stereo';
 
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const panner = ctx.createStereoPanner();
-
-    // Apply the keyboard pool's current waveform shape before start so
-    // the voice's first sample is already in the right shape.
-    const wave = keyboardWave.getPeriodicWave(ctx);
-    if (wave) osc.setPeriodicWave(wave);
-
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
-    panner.pan.setValueAtTime(pan, ctx.currentTime);
-
-    osc.connect(gain);
-    gain.connect(panner);
-    panner.connect(dest);
-
-    // Velocity → envelope peak via the active curve preset. `peak` is
-    // captured on the voice so a later sustain change can retarget held
-    // notes to peak·newSustain.
+    // Velocity → envelope peak. Captured on the voice so a later
+    // sustain change can retarget held notes to peak·newSustain.
     const peak = this._applyVelocityCurve(velocity);
     const t0 = ctx.currentTime;
-    keyboardEnvelope.applyNoteOn(gain.gain, ctx, peak);
+    const wave = keyboardWave.getPeriodicWave(ctx);
 
-    osc.start();
+    let voice;
 
-    const voice = {
-      id: this._nextVoiceId++,
-      midiNote,
-      degree,
-      // Slot is the load-bearing identity for retunes. Degree is kept
-      // alongside it for visualizers / debug — don't use it to look up
-      // freq once the voice is alive.
-      slot,
-      octave,
-      osc,
-      gain,
-      panner,
-      peak,
-      startTime: t0,
-      released: false,
-      _latched: this._hold,
-      // Phase tracking — mirrors AudioEngine.updatePhases. `targetFreq`
-      // is what we last asked the audio thread to ramp toward;
-      // `smoothedFreq` is the same exponential approximation the audio
-      // thread is doing internally (tau = RETUNE_TAU). The visualizer
-      // integrates `smoothedFreq` so its phase tracks the actual
-      // running oscillator across retunes.
-      targetFreq: freq,
-      smoothedFreq: freq,
-      phase: 0,
-      _lastPhaseUpdate: t0,
-    };
-    osc.onended = () => this._cleanupVoice(voice);
+    if (isStereo) {
+      // Dual-osc topology: primary plays freq + detune/2 → L only,
+      // partner plays freq - detune/2 → R only. ChannelMerger routes
+      // each gain output to its dedicated channel (no panner needed).
+      const oscL = ctx.createOscillator();
+      const gainL = ctx.createGain();
+      const oscR = ctx.createOscillator();
+      const gainR = ctx.createGain();
+      const merger = ctx.createChannelMerger(2);
+      if (wave) {
+        oscL.setPeriodicWave(wave);
+        oscR.setPeriodicWave(wave);
+      }
+      const halfDetune = detuneHz / 2;
+      const freqL = Math.max(0.001, Math.min(20000, freq + halfDetune));
+      const freqR = Math.max(0.001, Math.min(20000, freq - halfDetune));
+      oscL.frequency.setValueAtTime(freqL, t0);
+      oscR.frequency.setValueAtTime(freqR, t0);
+      oscL.connect(gainL);
+      oscR.connect(gainR);
+      gainL.connect(merger, 0, 0); // L only
+      gainR.connect(merger, 0, 1); // R only
+      merger.connect(dest);
+      // Both gains get the same envelope ramp — they share peak/sustain
+      // values but are separate AudioParams since they're on different
+      // GainNodes. applyNoteOn with the same params on both produces
+      // matching ramps.
+      keyboardEnvelope.applyNoteOn(gainL.gain, ctx, peak);
+      keyboardEnvelope.applyNoteOn(gainR.gain, ctx, peak);
+      oscL.start();
+      oscR.start();
+
+      voice = {
+        id: this._nextVoiceId++,
+        midiNote, degree, slot, octave, peak,
+        startTime: t0, released: false, _latched: this._hold,
+        detuneHz,
+        _isStereo: true,
+        osc: oscL, gain: gainL,           // primary (L)
+        oscR, gainR,                       // partner (R)
+        merger, panner: null,              // merger replaces panner
+        // Phase tracking for both oscs. The synth visualizer reads
+        // both via getVoicesForSynth so the lissajous shows the L≠R
+        // beating between the two.
+        targetFreq: freqL, smoothedFreq: freqL, phase: 0, _lastPhaseUpdate: t0,
+        targetFreqR: freqR, smoothedFreqR: freqR, phaseR: 0, _lastPhaseUpdateR: t0,
+      };
+      // Either osc completing (release tail end) is the trigger to clean
+      // up the whole voice — we stop both at the same scheduled time so
+      // the second onended is harmless.
+      oscL.onended = () => this._cleanupVoice(voice);
+    } else {
+      // Single-osc topology (lr mode): osc → gain → panner → dest.
+      // Inherits the drone slot's L/R routing for the hard pan position.
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const panner = ctx.createStereoPanner();
+      if (wave) osc.setPeriodicWave(wave);
+      const playedFreq = Math.max(0.001, Math.min(20000, freq + detuneHz));
+      osc.frequency.setValueAtTime(playedFreq, t0);
+      panner.pan.setValueAtTime(this._panForDegree(degree), t0);
+      osc.connect(gain);
+      gain.connect(panner);
+      panner.connect(dest);
+      keyboardEnvelope.applyNoteOn(gain.gain, ctx, peak);
+      osc.start();
+
+      voice = {
+        id: this._nextVoiceId++,
+        midiNote, degree, slot, octave, peak,
+        startTime: t0, released: false, _latched: this._hold,
+        detuneHz,
+        _isStereo: false,
+        osc, gain, panner,
+        oscR: null, gainR: null, merger: null,
+        targetFreq: playedFreq, smoothedFreq: playedFreq, phase: 0, _lastPhaseUpdate: t0,
+      };
+      osc.onended = () => this._cleanupVoice(voice);
+    }
+
     this.voices.push(voice);
     return voice.id;
   }
@@ -349,12 +442,18 @@ class KeyboardVoiceManager {
     voice.released = true;
     const ctx = audioEngine.audioContext;
     // applyNoteOff captures the live gain value so a release mid-attack
-    // doesn't jump to the sustain level before falling to 0. Returns the
-    // absolute time the ramp lands so we can schedule osc.stop after a
-    // 50 ms safety pad.
+    // doesn't jump to the sustain level. Returns the absolute time the
+    // ramp lands; osc.stop scheduled with a 50 ms safety pad.
     const releaseEnd = keyboardEnvelope.applyNoteOff(voice.gain.gain, ctx);
     voice.osc.stop(releaseEnd + 0.05);
-    // osc.onended will fire _cleanupVoice.
+    if (voice._isStereo && voice.oscR) {
+      // Both gains share the same envelope state, so applyNoteOff on
+      // gainR returns the same releaseEnd. Stop the partner osc at the
+      // same time so the voice goes silent simultaneously on L and R.
+      keyboardEnvelope.applyNoteOff(voice.gainR.gain, ctx);
+      voice.oscR.stop(releaseEnd + 0.05);
+    }
+    // osc.onended (primary) will fire _cleanupVoice for the whole voice.
   }
 
   _stealVoice() {
@@ -363,6 +462,9 @@ class KeyboardVoiceManager {
     if (releasedVoice) {
       // Force-stop fast; cleanup runs via onended.
       try { releasedVoice.osc.stop(); } catch { /* already stopped */ }
+      if (releasedVoice._isStereo && releasedVoice.oscR) {
+        try { releasedVoice.oscR.stop(); } catch { /* already stopped */ }
+      }
       return;
     }
     if (this.voices.length === 0) return;
@@ -371,17 +473,31 @@ class KeyboardVoiceManager {
     const ctx = audioEngine.audioContext;
     const t = ctx.currentTime;
     oldest.released = true;
-    const cur = oldest.gain.gain.value;
-    oldest.gain.gain.cancelScheduledValues(t);
-    oldest.gain.gain.setValueAtTime(cur, t);
-    oldest.gain.gain.linearRampToValueAtTime(0, t + STEAL_FADE);
+    const fadeGain = (g) => {
+      const cur = g.gain.value;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(cur, t);
+      g.gain.linearRampToValueAtTime(0, t + STEAL_FADE);
+    };
+    fadeGain(oldest.gain);
     oldest.osc.stop(t + STEAL_FADE + 0.005);
+    if (oldest._isStereo && oldest.oscR) {
+      fadeGain(oldest.gainR);
+      oldest.oscR.stop(t + STEAL_FADE + 0.005);
+    }
   }
 
   _cleanupVoice(voice) {
     try { voice.osc.disconnect(); } catch { /* ignore */ }
     try { voice.gain.disconnect(); } catch { /* ignore */ }
-    try { voice.panner.disconnect(); } catch { /* ignore */ }
+    if (voice.panner) {
+      try { voice.panner.disconnect(); } catch { /* ignore */ }
+    }
+    if (voice._isStereo) {
+      try { voice.oscR && voice.oscR.disconnect(); } catch { /* ignore */ }
+      try { voice.gainR && voice.gainR.disconnect(); } catch { /* ignore */ }
+      try { voice.merger && voice.merger.disconnect(); } catch { /* ignore */ }
+    }
     const idx = this.voices.indexOf(voice);
     if (idx >= 0) this.voices.splice(idx, 1);
     this.pendingReleases.delete(voice.id);
@@ -436,11 +552,21 @@ class KeyboardVoiceManager {
     const now = ctx.currentTime;
     for (const v of this.voices) {
       const dt = now - v._lastPhaseUpdate;
-      if (dt <= 0) continue;
-      v._lastPhaseUpdate = now;
-      const alpha = 1 - Math.exp(-dt / RETUNE_TAU);
-      v.smoothedFreq += (v.targetFreq - v.smoothedFreq) * alpha;
-      v.phase = (v.phase + TWO_PI * v.smoothedFreq * dt) % TWO_PI;
+      if (dt > 0) {
+        v._lastPhaseUpdate = now;
+        const alpha = 1 - Math.exp(-dt / RETUNE_TAU);
+        v.smoothedFreq += (v.targetFreq - v.smoothedFreq) * alpha;
+        v.phase = (v.phase + TWO_PI * v.smoothedFreq * dt) % TWO_PI;
+      }
+      if (v._isStereo) {
+        const dtR = now - v._lastPhaseUpdateR;
+        if (dtR > 0) {
+          v._lastPhaseUpdateR = now;
+          const alphaR = 1 - Math.exp(-dtR / RETUNE_TAU);
+          v.smoothedFreqR += (v.targetFreqR - v.smoothedFreqR) * alphaR;
+          v.phaseR = (v.phaseR + TWO_PI * v.smoothedFreqR * dtR) % TWO_PI;
+        }
+      }
     }
   }
 
@@ -453,19 +579,32 @@ class KeyboardVoiceManager {
     const out = [];
     for (const v of this.voices) {
       const amp = v.gain.gain.value;
-      if (amp <= 0) continue;
-      out.push({
-        freq: v.smoothedFreq,
-        phase: v.phase,
-        amp,
-        pan: v.panner.pan.value,
-        // Voice is bound to a drone slot at noteOn — visualizers color
-        // the voice's trace from the slot's palette entry so the trace
-        // matches the orb being held. Slot-bound (not degree) so the
-        // color stays put when a mid-drag reorder shuffles degrees.
-        slot: v.slot,
-        degree: v.degree,
-      });
+      if (amp > 0) {
+        out.push({
+          freq: v.smoothedFreq,
+          phase: v.phase,
+          amp,
+          // Stereo voices have no panner — primary signal is hard
+          // L (channel-merger routes gainL to channel 0). lr voices
+          // read from the panner.
+          pan: v._isStereo ? -1 : v.panner.pan.value,
+          slot: v.slot,
+          degree: v.degree,
+        });
+      }
+      if (v._isStereo && v.gainR) {
+        const ampR = v.gainR.gain.value;
+        if (ampR > 0) {
+          out.push({
+            freq: v.smoothedFreqR,
+            phase: v.phaseR,
+            amp: ampR,
+            pan: 1,        // partner is hard R
+            slot: v.slot,
+            degree: v.degree,
+          });
+        }
+      }
     }
     return out;
   }

@@ -4,10 +4,11 @@ import midiInput from '../audio/MidiInput';
 import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
 import { droneWave, keyboardWave } from '../audio/Wave';
 import { droneFold, keyboardFold } from '../audio/Fold';
+import { droneStereo, keyboardStereo } from '../audio/StereoMode';
 import EnvelopeControls from './EnvelopeControls';
 import WaveControls from './WaveControls';
 import ReverbControls from './ReverbControls';
-import WidthControls from './WidthControls';
+import StereoModeControls from './StereoModeControls';
 import RoutingPatchBay from './RoutingPatchBay';
 
 /**
@@ -205,6 +206,9 @@ export default function SettingsPanel({
         <span className="settings-info">{maxChannels} channels available</span>
       </div>
 
+      <StereoModeControls title="Drone stereo" stereoMode={droneStereo} slotCount={oscillatorCount} />
+      <StereoModeControls title="Keyboard stereo" stereoMode={keyboardStereo} slotCount={oscillatorCount} />
+
       <div className="settings-section tune-section">
         <label className="settings-label">Tune</label>
         <div className="tune-slider-row">
@@ -241,8 +245,6 @@ export default function SettingsPanel({
 
       <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
       <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
-
-      <WidthControls />
 
       <ReverbControls />
 

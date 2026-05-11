@@ -12,8 +12,8 @@ import { droneStereo, keyboardStereo } from '../audio/StereoMode';
 // Headroom cap for any drone the patch loader puts into a "playing"
 // state. Stacking 4-12 sine drones at full volume clips the master
 // summing bus on transient material; 0.65 leaves enough room for the
-// keyboard pool and reverb tail to ride on top without the limiter
-// dipping. Applies to BOTH snapshot-driven volume sets and the
+// keyboard pool to ride on top without the limiter dipping. Applies
+// to BOTH snapshot-driven volume sets and the
 // tuning-only path's restored-from-mute volumes.
 const PATCH_LOAD_VOL_CAP = 0.65;
 const clampLoadedVol = (v) => Math.max(0, Math.min(PATCH_LOAD_VOL_CAP, +v || 0));

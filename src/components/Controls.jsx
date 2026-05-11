@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { isEditableTarget } from '../hooks/keyboardUtils';
 
 /**
  * Controls - Settings and Save buttons (icon-based)
@@ -7,6 +8,7 @@ export default function Controls({ onShare, onSettingsToggle, isSettingsOpen }) 
   // Keyboard handler for share/save
   useEffect(() => {
     const handleKeyDown = (event) => {
+      if (isEditableTarget(event.target)) return;
       if (event.key.toLowerCase() === 's' && !event.metaKey && !event.ctrlKey) {
         onShare?.();
       }

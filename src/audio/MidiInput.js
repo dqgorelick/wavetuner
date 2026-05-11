@@ -36,6 +36,11 @@ class MidiInput {
     // 'idle' | 'connecting' | 'connected' | 'unsupported' | 'denied' | 'error'
     this._status = 'idle';
     this._error = null;
+    // MIDI input gate. When false, incoming NOTE_ON / NOTE_OFF / CC are
+    // dropped at the source so MIDI input goes silent — but the keyboard
+    // bus stays live, so computer-keyboard and on-screen input keep
+    // working. Defaults true; toggled from the Settings panel.
+    this._enabled = true;
     this._listeners = new Set();
 
     MidiInput.instance = this;
@@ -45,6 +50,14 @@ class MidiInput {
   get devices() { return this._devices.slice(); }
   get activeInputId() { return this._activeInputId; }
   get error() { return this._error; }
+  get enabled() { return this._enabled; }
+
+  setEnabled(on) {
+    const next = !!on;
+    if (next === this._enabled) return;
+    this._enabled = next;
+    this._fire();
+  }
 
   onChange(fn) {
     this._listeners.add(fn);
@@ -119,6 +132,7 @@ class MidiInput {
   }
 
   _handleMessage(event, inputId) {
+    if (!this._enabled) return;
     if (this._activeInputId !== 'all' && inputId !== this._activeInputId) return;
 
     const data = event.data;

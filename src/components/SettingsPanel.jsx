@@ -7,19 +7,23 @@ import { droneFold, keyboardFold } from '../audio/Fold';
 import { droneStereo, keyboardStereo } from '../audio/StereoMode';
 import EnvelopeControls from './EnvelopeControls';
 import WaveControls from './WaveControls';
-import ReverbControls from './ReverbControls';
 import StereoModeControls from './StereoModeControls';
 import RoutingPatchBay from './RoutingPatchBay';
 
 /**
- * SettingsPanel - Expandable settings panel from bottom-right
- * Contains audio device selection, oscillator count controls, and routing patch bay
+ * SettingsPanel - Expandable settings panel from bottom-right.
+ *
+ * Section order (top → bottom):
+ *   audio output → midi input
+ *   → drone stereo → keyboard stereo → drone env → keyboard env
+ *   → drone wave (with shape preview) → keyboard wave (with preview)
+ *   → keyboard (keys/octaves/velocity) → tune button behavior
+ *   → channel routing → color theme
  */
 export default function SettingsPanel({
   isOpen,
   onClose,
   oscillatorCount,
-  onOscillatorCountChange,
   routingMap,
   onRoutingChange,
   onDeviceChange,
@@ -27,12 +31,16 @@ export default function SettingsPanel({
   onTuneVarianceChange,
   tuneGlideSec,
   onTuneGlideChange,
-  vizCycles,
-  onVizCyclesChange,
   velocityCurve,
   onVelocityCurveChange,
   theme,
   onThemeChange,
+  kbdKeyMode,
+  onKbdKeyModeChange,
+  kbdFillMode,
+  onKbdFillModeChange,
+  midiEnabled,
+  onMidiEnabledToggle,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -69,19 +77,19 @@ export default function SettingsPanel({
           return;
         }
       }
-      
+
       // Enumerate devices
       const devices = await navigator.mediaDevices.enumerateDevices();
       const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-      
+
       console.log('Audio outputs:', audioOutputs);
-      
+
       // Check if we have meaningful labels (not just empty strings or generic names)
       const hasLabels = audioOutputs.some(d => d.label && d.label.length > 0 && !d.label.startsWith('Output'));
       setNeedsPermission(!hasLabels && audioOutputs.length > 0);
-      
+
       setAudioDevices(audioOutputs);
-      
+
       // Set default device if not already set
       if (!selectedDevice && audioOutputs.length > 0) {
         setSelectedDevice(audioOutputs[0].deviceId);
@@ -118,25 +126,13 @@ export default function SettingsPanel({
     const deviceId = e.target.value;
     setSelectedDevice(deviceId);
     await onDeviceChange(deviceId);
-    
+
     // Update max channels after device change (with small delay for setSinkId to complete)
     setTimeout(() => {
       const channels = audioEngine.getMaxOutputChannels();
       console.log('Updated max channels:', channels);
       setMaxChannels(channels);
     }, 100);
-  };
-
-  const handleIncrement = () => {
-    if (oscillatorCount < 10) {
-      onOscillatorCountChange(oscillatorCount + 1);
-    }
-  };
-
-  const handleDecrement = () => {
-    if (oscillatorCount > 2) {
-      onOscillatorCountChange(oscillatorCount - 1);
-    }
   };
 
   return (
@@ -154,32 +150,8 @@ export default function SettingsPanel({
       </div>
 
       <div className="settings-section">
-        <label className="settings-label">Color theme</label>
-        <div className="settings-toggle-row">
-          <button
-            type="button"
-            className={`settings-toggle-btn ${theme === 'duo' ? 'on' : 'off'}`}
-            onClick={() => onThemeChange?.('duo')}
-            aria-pressed={theme === 'duo'}
-            title="Sparse two-accent palette (blue + orange + white)"
-          >
-            duo
-          </button>
-          <button
-            type="button"
-            className={`settings-toggle-btn ${theme === 'classic' ? 'on' : 'off'}`}
-            onClick={() => onThemeChange?.('classic')}
-            aria-pressed={theme === 'classic'}
-            title="Original 12-color rainbow palette"
-          >
-            classic
-          </button>
-        </div>
-      </div>
-
-      <div className="settings-section">
         <label className="settings-label">Audio Output</label>
-        <select 
+        <select
           className="settings-select"
           value={selectedDevice}
           onChange={handleDeviceSelect}
@@ -195,7 +167,7 @@ export default function SettingsPanel({
           )}
         </select>
         {needsPermission && (
-          <button 
+          <button
             type="button"
             className="permission-button"
             onClick={handleRequestPermission}
@@ -206,11 +178,146 @@ export default function SettingsPanel({
         <span className="settings-info">{maxChannels} channels available</span>
       </div>
 
+      <div className="settings-section">
+        {/* Inline "MIDI: [on / off]" row — gates MIDI input only
+            (computer-keyboard and on-screen input keep working when
+            this is off). The fader on the OscillatorControls strip
+            stays enabled regardless, so volume can be adjusted while
+            MIDI is muted. */}
+        <div className="settings-inline-row settings-inline-row-spaced">
+          <label className="settings-inline-label">MIDI:</label>
+          <div className="settings-inline-toggle">
+            <button
+              type="button"
+              className={`settings-toggle-btn ${midiEnabled ? 'on' : 'off'}`}
+              onClick={() => { if (!midiEnabled) onMidiEnabledToggle?.(); }}
+              aria-pressed={!!midiEnabled}
+              title="Enable MIDI input"
+            >
+              on
+            </button>
+            <button
+              type="button"
+              className={`settings-toggle-btn ${!midiEnabled ? 'on' : 'off'}`}
+              onClick={() => { if (midiEnabled) onMidiEnabledToggle?.(); }}
+              aria-pressed={!midiEnabled}
+              title="Mute MIDI input (keyboard/mouse still play)"
+            >
+              off
+            </button>
+          </div>
+        </div>
+        {midiStatus === 'unsupported' && (
+          <span className="settings-info">
+            This browser doesn't support Web MIDI (try Chrome or Edge).
+          </span>
+        )}
+        {(midiStatus === 'idle' || midiStatus === 'denied' || midiStatus === 'error') && (
+          <>
+            {midiStatus === 'denied' && (
+              <span className="settings-info">MIDI access denied.</span>
+            )}
+            {midiStatus === 'error' && (
+              <span className="settings-info">MIDI couldn't connect.</span>
+            )}
+            <button
+              type="button"
+              className="permission-button"
+              onClick={() => midiInput.connect()}
+            >
+              {midiStatus === 'idle' ? 'Connect MIDI' : 'Try again'}
+            </button>
+          </>
+        )}
+        {midiStatus === 'connecting' && (
+          <span className="settings-info">Connecting…</span>
+        )}
+        {midiStatus === 'connected' && midiDevices.length > 0 && (
+          <select
+            className="settings-select"
+            value={activeMidiInput}
+            onChange={(e) => midiInput.setActiveInput(e.target.value)}
+          >
+            <option value="all">All inputs</option>
+            {midiDevices.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+                {d.manufacturer ? ` (${d.manufacturer})` : ''}
+                {d.state === 'disconnected' ? ' — offline' : ''}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
       <StereoModeControls title="Drone stereo" stereoMode={droneStereo} slotCount={oscillatorCount} />
       <StereoModeControls title="Keyboard stereo" stereoMode={keyboardStereo} slotCount={oscillatorCount} />
 
+      <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
+      <EnvelopeControls title="Keyboard envelope" envelope={keyboardEnvelope} />
+
+      <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
+      <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
+
+      <div className="settings-section">
+        <label className="settings-label">Keyboard</label>
+        <label className="settings-sublabel">Octaves</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${kbdFillMode === 'jump' ? 'on' : 'off'}`}
+            onClick={() => onKbdFillModeChange?.('jump')}
+            aria-pressed={kbdFillMode === 'jump'}
+            title="Octaves jump cleanly between drone notes"
+          >
+            jump
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${kbdFillMode === 'fill' ? 'on' : 'off'}`}
+            onClick={() => onKbdFillModeChange?.('fill')}
+            aria-pressed={kbdFillMode === 'fill'}
+            title="Every key has a drone — fill octaves"
+          >
+            fill
+          </button>
+        </div>
+        <label className="settings-sublabel">Keys</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${kbdKeyMode === 'chromatic' ? 'on' : 'off'}`}
+            onClick={() => onKbdKeyModeChange?.('chromatic')}
+            aria-pressed={kbdKeyMode === 'chromatic'}
+            title="Every key plays — black + white"
+          >
+            all
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${kbdKeyMode === 'white-only' ? 'on' : 'off'}`}
+            onClick={() => onKbdKeyModeChange?.('white-only')}
+            aria-pressed={kbdKeyMode === 'white-only'}
+            title="Only white keys play"
+          >
+            white
+          </button>
+        </div>
+        <label className="settings-sublabel">Velocity curve</label>
+        <select
+          className="settings-select"
+          value={velocityCurve || 'linear'}
+          onChange={(e) => onVelocityCurveChange?.(e.target.value)}
+        >
+          <option value="linear">Linear (default)</option>
+          <option value="soft">Soft — quieter touches feel quieter</option>
+          <option value="hard">Hard — flatten dynamics</option>
+          <option value="fixed">Fixed — ignore velocity</option>
+        </select>
+      </div>
+
       <div className="settings-section tune-section">
-        <label className="settings-label">Tune</label>
+        <label className="settings-label">Tune button behavior</label>
         <div className="tune-slider-row">
           <span className="tune-slider-label">Detune</span>
           <input
@@ -240,126 +347,6 @@ export default function SettingsPanel({
         </div>
       </div>
 
-      <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
-      <EnvelopeControls title="Keyboard envelope" envelope={keyboardEnvelope} />
-
-      <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
-      <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
-
-      <ReverbControls />
-
-      <div className="settings-section">
-        <label className="settings-label">MIDI input</label>
-        {midiStatus === 'unsupported' && (
-          <span className="settings-info">
-            This browser doesn't support Web MIDI (try Chrome or Edge).
-          </span>
-        )}
-        {(midiStatus === 'idle' || midiStatus === 'denied' || midiStatus === 'error') && (
-          <>
-            {midiStatus === 'denied' && (
-              <span className="settings-info">MIDI access denied.</span>
-            )}
-            {midiStatus === 'error' && (
-              <span className="settings-info">MIDI couldn't connect.</span>
-            )}
-            <button
-              type="button"
-              className="permission-button"
-              onClick={() => midiInput.connect()}
-            >
-              {midiStatus === 'idle' ? 'Connect MIDI' : 'Try again'}
-            </button>
-          </>
-        )}
-        {midiStatus === 'connecting' && (
-          <span className="settings-info">Connecting…</span>
-        )}
-        {midiStatus === 'connected' && (
-          <>
-            {midiDevices.length === 0 ? (
-              <span className="settings-info">
-                Connected — plug in a MIDI controller.
-              </span>
-            ) : (
-              <>
-                <select
-                  className="settings-select"
-                  value={activeMidiInput}
-                  onChange={(e) => midiInput.setActiveInput(e.target.value)}
-                >
-                  <option value="all">All inputs</option>
-                  {midiDevices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                      {d.manufacturer ? ` (${d.manufacturer})` : ''}
-                      {d.state === 'disconnected' ? ' — offline' : ''}
-                    </option>
-                  ))}
-                </select>
-                <span className="settings-info">
-                  {midiDevices.length} device{midiDevices.length === 1 ? '' : 's'} connected
-                </span>
-              </>
-            )}
-          </>
-        )}
-        <label className="settings-sublabel">Velocity curve</label>
-        <select
-          className="settings-select"
-          value={velocityCurve || 'linear'}
-          onChange={(e) => onVelocityCurveChange?.(e.target.value)}
-        >
-          <option value="linear">Linear (default)</option>
-          <option value="soft">Soft — quieter touches feel quieter</option>
-          <option value="hard">Hard — flatten dynamics</option>
-          <option value="fixed">Fixed — ignore velocity</option>
-        </select>
-      </div>
-
-      <div className="settings-section">
-        <label className="settings-label">Oscillators</label>
-        <div className="oscillator-count-controls">
-          <button
-            className="count-button"
-            onClick={handleDecrement}
-            disabled={oscillatorCount <= 2}
-          >
-            −
-          </button>
-          <span className="count-display">{oscillatorCount}</span>
-          <button
-            className="count-button"
-            onClick={handleIncrement}
-            disabled={oscillatorCount >= 10}
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      <div className="settings-section">
-        <label className="settings-label">Visualizer</label>
-        <div className="tune-slider-row">
-          <span
-            className="tune-slider-label"
-            title="How many cycles of the lowest sounding frequency fit in the synth buffer per frame. Lower = crisper figures at high frequencies; higher = more drift / playhead feel at low frequencies."
-          >
-            Cycles
-          </span>
-          <input
-            type="range"
-            min="1"
-            max="16"
-            step="1"
-            value={vizCycles}
-            onChange={(e) => onVizCyclesChange(parseInt(e.target.value, 10))}
-            className="tune-slider"
-          />
-          <span className="tune-slider-value">{vizCycles}</span>
-        </div>
-      </div>
-
       <div className="settings-section routing-section">
         <label className="settings-label">Channel Routing</label>
         <RoutingPatchBay
@@ -368,6 +355,30 @@ export default function SettingsPanel({
           routingMap={routingMap}
           onRoutingChange={onRoutingChange}
         />
+      </div>
+
+      <div className="settings-section">
+        <label className="settings-label">Color theme</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${theme === 'duo' ? 'on' : 'off'}`}
+            onClick={() => onThemeChange?.('duo')}
+            aria-pressed={theme === 'duo'}
+            title="Sparse two-accent palette (blue + orange + white)"
+          >
+            duo
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${theme === 'classic' ? 'on' : 'off'}`}
+            onClick={() => onThemeChange?.('classic')}
+            aria-pressed={theme === 'classic'}
+            title="Original 12-color rainbow palette"
+          >
+            classic
+          </button>
+        </div>
       </div>
     </div>
   );

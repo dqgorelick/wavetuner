@@ -272,8 +272,38 @@ const STEREO_PAD_PATCH = {
   },
 };
 
+// Pluck-style keyboard envelope (fast attack, medium decay, low
+// sustain, medium release) over a quiet stereo drone bed. Four
+// oscillators spanning ~C2–G3 — wide enough that the keyboard scale
+// gives a usable two-octave-ish playable range. Captured live.
+const PLUCKS_PATCH = {
+  schema: PATCH_SCHEMA,
+  id: 'builtin_plucks',
+  name: 'Plucks',
+  author: 'Wavetuner',
+  description: 'Pluck keyboard envelope over a soft drone bed. Fast attack, medium decay.',
+  source: 'builtin',
+  createdAt: BUILTIN_TIMESTAMP,
+  updatedAt: BUILTIN_TIMESTAMP,
+  frequencies: [67.27, 134.74, 201.23, 100.38],
+  snapshot: {
+    volumes: [0.40, 0.80, 0.25, 0.55],
+    muted:   [false, false, false, false],
+    routing: { 0: [0], 1: [1], 2: [0], 3: [1] },
+    envelope: {
+      drone:    { attack: 0.300, decay: 0.200, sustain: 0.70, release: 0.500 },
+      keyboard: { attack: 0.023, decay: 0.489, sustain: 0.40, release: 0.373 },
+    },
+    stereo: {
+      drone:    { mode: 'lr',     detuneHz: 0.5 },
+      keyboard: { mode: 'stereo', detuneHz: 3 },
+    },
+  },
+};
+
 export const BUILTIN_PATCHES = [
   DEFAULT_PATCH,
+  PLUCKS_PATCH,
   STEREO_PAD_PATCH,
   ET12_PATCH,
   PTOLEMY_PATCH,

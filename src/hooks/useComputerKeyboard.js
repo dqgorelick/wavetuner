@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
+import { isEditableTarget } from './keyboardUtils';
 
 /**
  * Ableton-style computer-keyboard input.
@@ -39,12 +40,6 @@ export const OFFSET_TO_LETTER = (() => {
   return out;
 })();
 
-const isEditable = (el) => {
-  if (!el) return false;
-  const tag = el.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
-};
-
 export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboardOctave }) {
   // Refs let the keydown closure see latest values without us having
   // to re-attach listeners on every render.
@@ -74,7 +69,7 @@ export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboa
     const handleKeyDown = (e) => {
       if (e.repeat) return;
       if (!enabledRef.current) return;
-      if (isEditable(e.target)) return;
+      if (isEditableTarget(e.target)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const key = e.key.toLowerCase();

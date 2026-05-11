@@ -22,8 +22,6 @@ function formatFreq(freq) {
 
 function FullscreenFreqList({
   oscillatorCount,
-  kbdHoldOn = false,
-  onKbdHoldToggle,
   isPaused = false,
   onPausedChange,
 }) {
@@ -105,15 +103,6 @@ function FullscreenFreqList({
       </div>
 
       <div className="ff-footer">
-        <button
-          type="button"
-          className={`ff-footer-btn ${kbdHoldOn ? 'on' : ''}`}
-          onClick={onKbdHoldToggle}
-          aria-pressed={kbdHoldOn}
-          title="Hold notes — each key press toggles its note on/off"
-        >
-          hold
-        </button>
         <button
           type="button"
           className={`ff-footer-btn ${isPaused ? 'paused' : ''}`}

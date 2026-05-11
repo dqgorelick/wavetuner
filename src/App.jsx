@@ -5,7 +5,6 @@ import keyboardVoiceManager from './audio/KeyboardVoiceManager';
 import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
 import { droneWave, keyboardWave } from './audio/Wave';
 import { droneFold, keyboardFold } from './audio/Fold';
-import { reverb, ROOM_NAMES } from './audio/Reverb';
 import { droneStereo, keyboardStereo } from './audio/StereoMode';
 import midiInput from './audio/MidiInput';
 import palette from './theme/palette';
@@ -17,6 +16,10 @@ import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
 import PatchesPanel from './components/PatchesPanel';
+import HydraPanel from './components/HydraPanel';
+import HydraOverlay from './components/HydraOverlay';
+import { startHydra, stopHydra, evalHydra } from './visuals/Hydra';
+import { BUILTIN_SKETCHES, DEFAULT_SKETCH_ID } from './visuals/hydraSketches';
 import { getAutosave, setAutosave } from './patches/storage';
 import { applyPatch, applyPatchSmooth, preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
@@ -63,9 +66,6 @@ function getInitialStateFromURL() {
   const kWave = parseFloatInRange(params.get('kWave'), 0, 3);
   const dFold = parseFloatInRange(params.get('dFold'), 0, 1);
   const kFold = parseFloatInRange(params.get('kFold'), 0, 1);
-  const revRaw = (params.get('rev') || '').toLowerCase();
-  const reverbRoom = ROOM_NAMES.includes(revRaw) ? revRaw : null;
-  const reverbWet = parseFloatInRange(params.get('wet'), 0, 1);
   // Per-pool stereo mode + detune. Both pools share the same param
   // shapes: dPan/dDet for drones, kPan/kDet for keyboard.
   const dPanRaw = (params.get('dPan') || '').toLowerCase();
@@ -113,7 +113,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, reverbRoom, reverbWet, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme };
+  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme };
 }
 
 // Compute once at module load
@@ -143,10 +143,6 @@ if (INITIAL_URL_STATE.dWave !== null) droneWave.setPosition(INITIAL_URL_STATE.dW
 if (INITIAL_URL_STATE.kWave !== null) keyboardWave.setPosition(INITIAL_URL_STATE.kWave);
 if (INITIAL_URL_STATE.dFold !== null) droneFold.setAmount(INITIAL_URL_STATE.dFold);
 if (INITIAL_URL_STATE.kFold !== null) keyboardFold.setAmount(INITIAL_URL_STATE.kFold);
-// Reverb runs at the master tail — pushing pre-init means the
-// ConvolverNode's first IR is already the user's saved room.
-if (INITIAL_URL_STATE.reverbRoom !== null) reverb.setRoom(INITIAL_URL_STATE.reverbRoom);
-if (INITIAL_URL_STATE.reverbWet !== null) reverb.setWet(INITIAL_URL_STATE.reverbWet);
 // Per-pool stereo mode + detune — pushed pre-init so the first
 // frame of audio uses the saved values rather than snapping from default.
 if (INITIAL_URL_STATE.droneStereoMode !== null) droneStereo.setMode(INITIAL_URL_STATE.droneStereoMode);
@@ -211,6 +207,50 @@ function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPatchesOpen, setIsPatchesOpen] = useState(false);
+  // Hydra mode: when on, the hydra-synth canvas overlays the
+  // oscilloscope and the scope canvas is hidden (per user preference —
+  // cleaner output when running a sketch). Defaults ON so a fresh
+  // session boots straight into the chromatic sketch — the
+  // oscilloscope still draws into its (hidden) canvas as Hydra's s0
+  // source. Panel toggle is independent from the enable state so the
+  // editor can be opened/closed without disrupting playback.
+  const [isHydraEnabled, setIsHydraEnabled] = useState(true);
+  const [isHydraPanelOpen, setIsHydraPanelOpen] = useState(false);
+  const hydraCanvasRef = useRef(null);
+
+  // Boot/teardown Hydra when the enable toggle flips. Source the
+  // oscilloscope's canvas via its known id (stable, no ref plumbing)
+  // and run the default passthrough sketch so the user sees output
+  // immediately. The wrapping setTimeout gives the overlay canvas a
+  // tick to size to its parent before Hydra reads its dimensions.
+  useEffect(() => {
+    if (!isHydraEnabled) {
+      stopHydra();
+      return undefined;
+    }
+    let cancelled = false;
+    const id = setTimeout(() => {
+      if (cancelled) return;
+      const overlayCanvas = hydraCanvasRef.current;
+      const sourceCanvas = document.getElementById('scope');
+      if (!overlayCanvas || !sourceCanvas) return;
+      startHydra({ canvas: overlayCanvas, sourceCanvas });
+      const defaultSketch = BUILTIN_SKETCHES.find(s => s.id === DEFAULT_SKETCH_ID);
+      if (defaultSketch) evalHydra(defaultSketch.code);
+    }, 50);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [isHydraEnabled]);
+
+  // Hydra panel and patches panel share screen real estate — opening one
+  // closes the other so they don't overlap.
+  const openHydraPanel = useCallback(() => {
+    setIsPatchesOpen(false);
+    setIsHydraPanelOpen(true);
+  }, []);
+  const toggleHydraPanel = useCallback(() => {
+    if (isHydraPanelOpen) setIsHydraPanelOpen(false);
+    else openHydraPanel();
+  }, [isHydraPanelOpen, openHydraPanel]);
   // Most recently loaded patch — drives the "return" button beneath the
   // align button so the user can snap state back to whatever patch they
   // last opened. Cleared when no patch has been loaded this session.
@@ -231,6 +271,15 @@ function App() {
   // white core).
   const [staticLineWidth, setStaticLineWidth] = useState(2.0);
   const [staticOutlineThickness, setStaticOutlineThickness] = useState(2.5);
+  // Lissajous-only multipliers (vizMode 0). Surfaced via the Hydra
+  // panel's Visualizer section. Defaults of 1 keep the look identical
+  // to pre-slider rendering — drag up/down to taste.
+  const [vizScale, setVizScale] = useState(1.0);
+  const [vizLineWidth, setVizLineWidth] = useState(1.0);
+  const [vizOutline, setVizOutline] = useState(1.0);
+  // Lissajous rotation: 0 = square (default), +1 = diamond (+45°),
+  // −1 = mirror diamond (−45°). Opt-in via the Hydra panel.
+  const [vizRotation, setVizRotation] = useState(0);
   // Visualizer mode: 0 circle (XY), 1 line (standing wave), 2 face, 3 hilbert.
   const [vizMode, setVizMode] = useState(0);
   // Visualizer-mode dropdown: the trigger button (active mode's symbol)
@@ -304,6 +353,16 @@ function App() {
   // sources (MIDI, computer kbd, on-screen) get the toggle behavior.
   const [kbdHoldOn, setKbdHoldOn] = useState(false);
   useEffect(() => { keyboardVoiceManager.setHold(kbdHoldOn); }, [kbdHoldOn]);
+  // MIDI-input gate — when off, incoming MIDI messages are dropped at
+  // the source (MidiInput._handleMessage). Computer-keyboard and
+  // on-screen play paths are unaffected. The keyboard *bus* itself
+  // stays live so its volume fader is always interactive.
+  const [midiEnabled, setMidiEnabled] = useState(() => midiInput.enabled);
+  const handleMidiEnabledToggle = useCallback(() => {
+    const next = !midiInput.enabled;
+    midiInput.setEnabled(next);
+    setMidiEnabled(next);
+  }, []);
   // MIDI velocity curve: 'linear' | 'soft' | 'hard' | 'fixed'.
   // Pushed into the voice manager on change; default 'linear' = identity,
   // matches pre-existing behavior.
@@ -539,10 +598,6 @@ function App() {
     if (keyboardWave.position > 0) queryParts.push(`kWave=${keyboardWave.position.toFixed(2)}`);
     if (droneFold.amount > 0)      queryParts.push(`dFold=${droneFold.amount.toFixed(2)}`);
     if (keyboardFold.amount > 0)   queryParts.push(`kFold=${keyboardFold.amount.toFixed(2)}`);
-    if (reverb.wet > 0) {
-      queryParts.push(`rev=${reverb.room}`);
-      queryParts.push(`wet=${reverb.wet.toFixed(2)}`);
-    }
     // Per-pool stereo mode + detune — only encode when non-default
     // (mode='lr', detune=0) to keep URLs short.
     if (droneStereo.mode !== 'lr')      queryParts.push(`dPan=${droneStereo.mode}`);
@@ -727,7 +782,7 @@ function App() {
   // computer-key input. Fullscreen still toggles via the on-screen button.)
 
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode${isKbdTrayOpen ? ' kbd-tray-open' : ''}`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -742,7 +797,12 @@ function App() {
         staticOutlineThickness={staticOutlineThickness}
         vizMode={vizMode}
         vizCycles={vizCycles}
+        vizScale={vizScale}
+        vizLineWidth={vizLineWidth}
+        vizOutline={vizOutline}
+        vizRotation={vizRotation}
       />
+      <HydraOverlay ref={hydraCanvasRef} visible={isHydraEnabled} />
 
       {isStarted && (
         <>
@@ -757,8 +817,6 @@ function App() {
           {uiMode === 'fullscreen' && (
             <FullscreenFreqList
               oscillatorCount={oscillatorCount}
-              kbdHoldOn={kbdHoldOn}
-              onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
               isPaused={isPaused}
               onPausedChange={setIsPaused}
             />
@@ -813,6 +871,34 @@ function App() {
             isOpen={isPatchesOpen}
             onClose={() => setIsPatchesOpen(false)}
             onAfterLoad={handlePatchLoaded}
+          />
+          <button
+            className={`hydra-toggle${isHydraPanelOpen ? ' active' : ''}${isHydraEnabled ? ' hydra-on' : ''}`}
+            onClick={toggleHydraPanel}
+            title={isHydraEnabled ? 'Hydra (running) — open editor' : 'Hydra editor'}
+            aria-label="Hydra editor"
+            aria-expanded={isHydraPanelOpen}
+          >
+            <svg viewBox="0 0 24 24" className="button-icon" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 5v3M12 16v3M5 12h3M16 12h3M7 7l2 2M15 15l2 2M17 7l-2 2M9 15l-2 2" />
+            </svg>
+          </button>
+          <HydraPanel
+            isOpen={isHydraPanelOpen}
+            onClose={() => setIsHydraPanelOpen(false)}
+            isRunning={isHydraEnabled}
+            onEnabledChange={setIsHydraEnabled}
+            vizScale={vizScale}
+            onVizScaleChange={setVizScale}
+            vizOutline={vizOutline}
+            onVizOutlineChange={setVizOutline}
+            vizLineWidth={vizLineWidth}
+            onVizLineWidthChange={setVizLineWidth}
+            vizCycles={vizCycles}
+            onVizCyclesChange={setVizCycles}
+            vizRotation={vizRotation}
+            onVizRotationChange={setVizRotation}
           />
           {(() => {
             const activeViz = VIZ_MODES.find((m) => m.id === vizMode) || VIZ_MODES[0];
@@ -900,7 +986,6 @@ function App() {
             isOpen={isSettingsOpen}
             onClose={handleSettingsToggle}
             oscillatorCount={oscillatorCount}
-            onOscillatorCountChange={handleOscillatorCountChange}
             routingMap={routingMap}
             onRoutingChange={handleRoutingChange}
             onDeviceChange={handleDeviceChange}
@@ -908,20 +993,22 @@ function App() {
             onTuneVarianceChange={setTuneVarianceHz}
             tuneGlideSec={tuneGlideSec}
             onTuneGlideChange={setTuneGlideSec}
-            vizCycles={vizCycles}
-            onVizCyclesChange={setVizCycles}
             velocityCurve={velocityCurve}
             onVelocityCurveChange={setVelocityCurve}
             theme={theme}
             onThemeChange={handleThemeChange}
-          />
-          <KeyboardTray
-            isOpen={isKbdTrayOpen}
-            onOpenChange={setIsKbdTrayOpen}
             kbdKeyMode={kbdKeyMode}
             onKbdKeyModeChange={setKbdKeyMode}
             kbdFillMode={kbdFillMode}
             onKbdFillModeChange={setKbdFillMode}
+            midiEnabled={midiEnabled}
+            onMidiEnabledToggle={handleMidiEnabledToggle}
+          />
+          <KeyboardTray
+            isOpen={isKbdTrayOpen}
+            onOpenChange={setIsKbdTrayOpen}
+            kbdHoldOn={kbdHoldOn}
+            onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
           />
         </>
       )}

@@ -41,7 +41,7 @@ function midiToDegreeOctave(midi) {
  * per-frame DOM update (no React state on the hot path — same pattern
  * the existing oscilloscope uses).
  */
-export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, labelsOn = false }) {
+export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2 }) {
   const containerRef = useRef(null);
   const keyRefs = useRef(new Map()); // midi → element
   const leftArrowRef = useRef(null);
@@ -54,9 +54,14 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
   // Build the static key layout: list of every key in the visible range,
   // tagged with whether it's black + where it should be positioned.
   // Standard MIDI convention: C(n) = MIDI 12·(n+1), so octave 4 → C4 = 60.
-  // The computer-key hook uses the same formula so letter keys always
-  // line up with whatever the on-screen keyboard is showing.
-  const startMidi = (keyboardOctave + 1) * 12;
+  //
+  // The on-screen keyboard's VISUAL start sits one octave BELOW the
+  // computer-key mapping so the mouse can reach an octave lower than
+  // QWERTY can. The computer-key hook still uses (keyboardOctave + 1)
+  // * 12 as its base, so the labeled keys appear in the second octave
+  // from the left.
+  const letterStartMidi = (keyboardOctave + 1) * 12;
+  const startMidi = letterStartMidi - 12;
   const totalWhites = octaveCount * WHITE_OFFSETS.length;
 
   const { whites, blacks } = useMemo(() => {
@@ -247,7 +252,9 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
         style={{ '--white-count': totalWhites }}
       >
       {whites.map((w) => {
-        const letter = labelsOn ? OFFSET_TO_LETTER[w.midi - startMidi] : null;
+        // Always show the computer-keyboard letter overlay. The CSS
+        // tones it down so it sits quietly under the active glow.
+        const letter = OFFSET_TO_LETTER[w.midi - letterStartMidi];
         return (
           <div
             key={w.midi}
@@ -263,7 +270,7 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2, 
         );
       })}
       {blacks.map((b) => {
-        const letter = labelsOn ? OFFSET_TO_LETTER[b.midi - startMidi] : null;
+        const letter = OFFSET_TO_LETTER[b.midi - letterStartMidi];
         return (
           <div
             key={b.midi}

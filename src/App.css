@@ -167,6 +167,7 @@ p {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* The rows live inside a relative wrapper so their absolute `top` can
@@ -220,7 +221,7 @@ p {
   height: 24px;
   padding: 0 8px;
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: none;
   border-radius: 4px;
   color: rgba(255, 255, 255, 0.7);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -232,18 +233,15 @@ p {
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .ff-footer-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.14);
   color: #fff;
-  border-color: rgba(255, 255, 255, 0.2);
 }
 .ff-footer-btn.on {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.20);
   color: #fff;
 }
 .ff-footer-btn.paused {
   color: #ffd166;
-  border-color: rgba(255, 209, 102, 0.35);
 }
 
 .ff-row:hover {
@@ -540,7 +538,10 @@ kbd {
   transform: translateX(calc(100% + 24px));
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+  transition:
+    transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.18s ease,
+    bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .settings-panel.open {
   transform: translateX(0);
@@ -607,9 +608,10 @@ kbd {
   margin-bottom: 8px;
 }
 
-/* Compact toggle pair inside a settings-section — same look-and-feel as
-   .kbd-tray-mapping-btn but sized for the settings-panel context. Used
-   by the color-theme picker (and ready for any future on/off pickers). */
+/* Compact toggle pair inside a settings-section. Neutral gray on/off —
+   "on" is a lighter fill, "off" sits flat against the panel bg. No
+   border outline (kept the keyboard keys, but every other button in
+   the app dropped the 1 px stroke per the redesign). */
 .settings-toggle-row {
   display: flex;
   align-items: center;
@@ -617,8 +619,8 @@ kbd {
 }
 .settings-toggle-btn {
   background: rgba(255, 255, 255, 0.04);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.7);
+  border: none;
   border-radius: 4px;
   font-family: inherit;
   font-size: 11px;
@@ -632,19 +634,42 @@ kbd {
   text-transform: lowercase;
 }
 .settings-toggle-btn.on {
-  background: rgba(46, 204, 64, 0.18);
-  border-color: rgba(46, 204, 64, 0.6);
-  opacity: 1;
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.98);
 }
 .settings-toggle-btn.off {
-  opacity: 0.65;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
 }
 .settings-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.14);
 }
 .settings-toggle-btn.on:hover {
-  background: rgba(46, 204, 64, 0.28);
+  background: rgba(255, 255, 255, 0.30);
+}
+
+/* Inline label + toggle pair — "MIDI:  [on] [off]" / "Keys:  [all] [white]"
+   etc. The label sits on the same baseline as the buttons. */
+.settings-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-inline-row-spaced {
+  margin-bottom: 14px;
+}
+.settings-inline-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  min-width: 44px;
+}
+.settings-inline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Sub-label for follow-up controls inside a settings-section that already
@@ -687,6 +712,33 @@ kbd {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.4);
   margin-top: 6px;
+}
+
+/* Wave-shape preview — static SVG of the morphed Shape+Fold position,
+   sits above each WaveControls section's sliders. preserveAspectRatio
+   is 'none' on the SVG so the trace stretches to whatever width the
+   settings panel gives us. */
+.wave-preview {
+  display: block;
+  width: 100%;
+  height: 56px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  margin: 0 0 4px;
+}
+.wave-preview-axis {
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.wave-preview-trace {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.75);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  stroke-linecap: round;
 }
 
 /* Tune section — detune/glide sliders in settings menu. The trigger button
@@ -870,7 +922,7 @@ kbd {
   margin-top: 8px;
   padding: 8px 12px;
   background: rgba(74, 144, 217, 0.2);
-  border: 1px solid rgba(74, 144, 217, 0.5);
+  border: none;
   border-radius: 6px;
   color: #4a90d9;
   font-size: 12px;
@@ -880,7 +932,6 @@ kbd {
 
 .permission-button:hover {
   background: rgba(74, 144, 217, 0.3);
-  border-color: rgba(74, 144, 217, 0.7);
 }
 
 /* Range toggle button */
@@ -889,7 +940,7 @@ kbd {
   width: 100%;
   padding: 10px 14px;
   background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: none;
   border-radius: 8px;
   color: rgba(255, 255, 255, 0.8);
   font-size: 13px;
@@ -901,12 +952,10 @@ kbd {
 
 .range-toggle-button:hover {
   background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .range-toggle-button.active {
   background: rgba(74, 144, 217, 0.2);
-  border-color: rgba(74, 144, 217, 0.5);
   color: #4a90d9;
 }
 
@@ -925,7 +974,7 @@ kbd {
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: none;
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
   font-size: 20px;
@@ -939,7 +988,6 @@ kbd {
 
 .count-button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.3);
 }
 
 .count-button:disabled {
@@ -1056,6 +1104,9 @@ kbd {
   transform: translateX(-50%);
   max-width: calc(100vw - 40px);
   z-index: 100;
+  /* Slide in step with the keyboard tray when it opens/closes. The
+     freq-spectrum-bar carries the same easing so they rise together. */
+  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Fullscreen toggle — always-visible top-right corner button.
@@ -1063,6 +1114,7 @@ kbd {
 .fullscreen-toggle,
 .help-toggle,
 .patches-toggle,
+.hydra-toggle,
 .settings-toggle,
 .share-toggle,
 .scope-mode-btn {
@@ -1084,6 +1136,7 @@ kbd {
 .fullscreen-toggle,
 .help-toggle,
 .patches-toggle,
+.hydra-toggle,
 .settings-toggle,
 .share-toggle {
   position: fixed;
@@ -1095,12 +1148,40 @@ kbd {
 .settings-toggle  { right: 58px; }
 .share-toggle    { right: 100px; }
 .patches-toggle { left: 58px; }
+.hydra-toggle   { left: 100px; }
 .patches-toggle:hover,
 .settings-toggle:hover,
-.share-toggle:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.share-toggle:hover,
+.hydra-toggle:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
 .patches-toggle.active,
-.settings-toggle.active { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.settings-toggle.active,
+.hydra-toggle.active { background: rgba(255, 255, 255, 0.22); color: #fff; }
+/* Hydra-on indicator: subtle neutral lift when the synth is running,
+   even if the panel is closed — same gray-on/gray-off treatment as
+   the MIDI and Hold buttons inside the tray. */
+.hydra-toggle.hydra-on {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
 .help-toggle { left: 16px; }
+
+/* The on/off toggle inside the Hydra panel header. Same neutral gray
+   on/off treatment as the keyboard tray's MIDI button — lighter when
+   the synth is running, dimmer when it's stopped. */
+.hydra-enable-btn.on {
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.98);
+}
+.hydra-enable-btn.on:hover {
+  background: rgba(255, 255, 255, 0.30);
+}
+.hydra-enable-btn.off {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+}
+.hydra-enable-btn.off:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
 
 /* Visualizer-mode dropdown. The container itself is just the trigger
    slot (single 34 px button); when open, `.scope-mode-dropdown` is an
@@ -1408,12 +1489,15 @@ kbd {
   opacity: 0.45;
 }
 /* Bottom-row buttons keep their icon-only look — labels live OUTSIDE
-   the button now, in the .bottom-cell-wrap below. */
-.bottom-kbd-toggle.on {
+   the button now, in the .bottom-cell-wrap below. The keyboard cell is
+   now a tray-toggle (piano icon) instead of a play/stop button; the
+   play/stop lives inside the tray's left rail next to the keys. */
+.bottom-kbd-tray.on {
   color: rgba(74, 158, 255, 0.95);
+  background: rgba(74, 158, 255, 0.16);
 }
-.bottom-kbd-toggle.off {
-  opacity: 0.55;
+.bottom-kbd-tray.off {
+  opacity: 0.75;
 }
 
 /* Bottom-cell wrapper: stacks the existing <button> on top of a small
@@ -1440,9 +1524,9 @@ kbd {
      wrapper height — keeps every cell's button vertically aligned. */
   min-height: 9px;
 }
-/* Caption follows the kbd-toggle's "on" tint so the keyboard pair
-   reads as a single unit. */
-.bottom-kbd-toggle.on + .bottom-cell-caption {
+/* Caption follows the tray-toggle's "on" tint so the keyboard pair
+   reads as a single unit when the tray is open. */
+.bottom-kbd-tray.on + .bottom-cell-caption {
   color: rgba(74, 158, 255, 0.8);
 }
 /* Don't double-dim a muted osc's caption — the muted button already
@@ -1485,43 +1569,6 @@ kbd {
   background: rgba(46, 204, 64, 0.22);
   border-color: rgba(46, 204, 64, 0.65);
   color: rgba(220, 255, 220, 1);
-}
-
-/* Keys tray-toggle button — sits in the octave row at osc-kbd-col so
-   its top edge aligns flush with the top of the ×2 octave button next
-   to it. Caption ("more" / "less") sits beneath. The cell overrides
-   the .octave-cell flex-column gap (which was sized for two stacked
-   ×2 / /2 buttons) so a single button + caption packs to the top. */
-.osc-kbd-tray-cell {
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 2px;
-}
-.osc-kbd-tray-arrow {
-  width: 100%;
-  padding: 4px 0;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.85);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, transform 0.2s;
-}
-.osc-kbd-tray-arrow:hover {
-  background: rgba(255, 255, 255, 0.18);
-}
-.osc-kbd-tray-arrow .button-icon {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-  transition: transform 0.2s;
-}
-.osc-kbd-tray-arrow.open .button-icon {
-  transform: rotate(180deg);
 }
 
 /* Paused drone state — when the user presses spacebar / the play
@@ -2620,7 +2667,16 @@ kbd {
    ─────────────────────────────────────────────────────────────────── */
 
 #wrapper {
-  --kbd-tray-h: 64px;
+  /* Closed state contributes no height to the bottom layout — every
+     `kbd-tray-open` override below reads --kbd-tray-h, so when closed
+     the spectrum bar / oscillator controls sit at their normal offsets
+     and slide up by --kbd-tray-h when the tray opens. */
+  --kbd-tray-h: 0px;
+}
+#wrapper.kbd-tray-open {
+  /* Taller than the previous ~50 px strip so the full key column is
+     comfortably visible without cropping the labels at the top. */
+  --kbd-tray-h: 96px;
 }
 
 .kbd-tray-handle {
@@ -2651,10 +2707,14 @@ kbd {
   left: 0;
   right: 0;
   bottom: 0;
-  height: var(--kbd-tray-h);
+  /* Fixed visible height so we can slide via translateY rather than
+     animating `height` (height transitions don't compose well with the
+     grid layout inside). Match the open-state --kbd-tray-h above so the
+     spectrum bar lifts exactly to the top of the tray. */
+  height: 96px;
   z-index: 600;
   display: grid;
-  grid-template-columns: 130px 1fr 175px;
+  grid-template-columns: 130px 1fr;
   align-items: stretch;
   background: rgba(15, 15, 15, 0.92);
   border-top: 1px solid rgba(255, 255, 255, 0.15);
@@ -2663,33 +2723,92 @@ kbd {
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
+  /* Closed by default; the `.open` class pulls it onto the screen.
+     Translating by 100% hides the strip completely under the viewport
+     edge. The wrapper's `kbd-tray-open` class drives the same shift on
+     every other bottom-anchored element via --kbd-tray-h. */
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.kbd-tray.open {
+  transform: translateY(0);
 }
 
-.kbd-tray-left,
-.kbd-tray-right {
-  display: flex;
-  padding: 0 10px;
-  color: #fff;
-  font-size: 12px;
-}
 .kbd-tray-left {
+  display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: stretch;
   gap: 3px;
+  padding: 0 10px;
+  color: #fff;
+  font-size: 12px;
 }
+
+/* Right rail of the keyboard tray:
+       MIDI:
+       [ ON ]
+   Caption sits above the button so the toggle reads as a labeled
+   control rather than a self-contained widget. Same kbdEnabled flag
+   as before — the label is purely cosmetic. */
 .kbd-tray-right {
+  display: flex;
   flex-direction: column;
   justify-content: center;
-  align-items: stretch;
+  align-items: center;
   gap: 4px;
-  padding: 0 26px 0 12px;
+  padding: 0 14px 0 8px;
+  color: #fff;
+  font-size: 12px;
+}
+.kbd-midi-caption {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+.kbd-midi-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  cursor: pointer;
+  width: 64px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+/* Neutral gray on/off — no stoplight semantics. "On" is a lighter
+   gray (clearly raised against the tray bg), "off" is a darker gray
+   (sits flat / muted). Borders and text scale with the same axis so
+   either state still reads at a glance. */
+.kbd-midi-btn.on {
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.98);
+}
+.kbd-midi-btn.on:hover {
+  background: rgba(255, 255, 255, 0.30);
+}
+.kbd-midi-btn.off {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+}
+.kbd-midi-btn.off:hover {
+  background: rgba(255, 255, 255, 0.10);
 }
 .kbd-tray-octave-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  justify-content: center;
+  justify-content: flex-end;
 }
 
 .kbd-octave-btn {
@@ -2698,7 +2817,7 @@ kbd {
   padding: 0 6px;
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: none;
   border-radius: 4px;
   font-family: inherit;
   font-size: 13px;
@@ -2711,56 +2830,100 @@ kbd {
   letter-spacing: 0.4px;
 }
 .kbd-octave-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Octave shift buttons stack the arrow over a small key-letter caption
+   ("Z" under ↓, "X" under ↑) — surfaces the computer-keyboard binding
+   without a separate labels toggle. */
+.kbd-octave-shift {
+  flex-direction: column;
+  min-width: 30px;
+  height: 36px;
+  padding: 2px 6px;
+  gap: 1px;
+}
+.kbd-octave-shift .kbd-octave-arrow {
+  font-size: 13px;
+  line-height: 1;
+}
+.kbd-octave-shift .kbd-octave-key {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1;
 }
 
 .kbd-octave-label {
+  /* Match .kbd-hold-caption so the two left-rail rows read as the same
+     class of label — only the numeric value (oct 4) differs in case. */
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  opacity: 0.95;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
   min-width: 44px;
   text-align: center;
 }
 
-.kbd-labels-toggle {
+/* Hold latch — sits below the octave row, formatted to mirror the right
+   rail's "MIDI: [ON/OFF]": caption + on/off button on the same line.
+   Neutral gray on/off (no green) so it reads as a flat state indicator
+   rather than a stoplight. */
+.kbd-hold-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+.kbd-hold-caption {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+.kbd-hold-btn {
   background: rgba(255, 255, 255, 0.04);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.55);
+  border: none;
   border-radius: 4px;
   font-family: inherit;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
   cursor: pointer;
-  height: 20px;
-  padding: 0 6px;
+  /* Matches the combined width of the two octave-shift buttons
+     (30 px min-width × 2 + 4 px gap) so the hold row visually lines
+     up with the octave row above it. */
+  width: 64px;
+  height: 24px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  letter-spacing: 0.2px;
+  transition: background 0.12s, color 0.12s;
 }
-.kbd-labels-toggle.on {
-  background: rgba(46, 204, 64, 0.18);
-  border-color: rgba(46, 204, 64, 0.6);
-  opacity: 1;
+.kbd-hold-btn:hover {
+  background: rgba(255, 255, 255, 0.10);
 }
-.kbd-labels-toggle.off {
-  opacity: 0.65;
+.kbd-hold-btn.on {
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.98);
 }
-.kbd-labels-toggle:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.4);
-}
-.kbd-labels-toggle.on:hover {
-  background: rgba(46, 204, 64, 0.28);
+.kbd-hold-btn.on:hover {
+  background: rgba(255, 255, 255, 0.30);
 }
 
 .kbd-input-toggle,
 .kbd-tray-close {
   background: rgba(255, 255, 255, 0.06);
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: none;
   border-radius: 4px;
   font-family: inherit;
   font-size: 11px;
@@ -2772,12 +2935,10 @@ kbd {
   justify-content: center;
 }
 .kbd-input-toggle.on {
-  background: rgba(46, 204, 64, 0.18);
-  border-color: rgba(46, 204, 64, 0.6);
+  background: rgba(255, 255, 255, 0.22);
 }
 .kbd-input-toggle.off {
   background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.15);
   opacity: 0.7;
 }
 .kbd-tray-close {
@@ -2787,7 +2948,6 @@ kbd {
 .kbd-input-toggle:hover,
 .kbd-tray-close:hover {
   background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.45);
 }
 
 /* Keys area — relative parent for the absolute-positioned key elements
@@ -2798,7 +2958,11 @@ kbd {
 .kbd-tray-keys {
   position: relative;
   height: 100%;
-  padding: 14px 22px 2px 22px;
+  /* Top padding has to clear the color-dot row — `.key-dot` is parked
+     at top: -10px relative to each key, so anything less than ~14 px
+     here clips the dots into the tray edge. Right-side gutter trimmed
+     now that the mapping pickers moved out of the tray. */
+  padding: 16px 12px 6px 12px;
   box-sizing: border-box;
 }
 
@@ -2825,11 +2989,12 @@ kbd {
   width: calc(100% / var(--white-count));
   height: 100%;
   /* Tray bg is rgba(15,15,15,0.92) ≈ #0f0f0f, so whites need enough gap
-     above that to read as visibly distinct surfaces. #404040 keeps the
-     dark theme but the keys clearly sit above the tray. */
-  background: #404040;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-bottom-color: rgba(255, 255, 255, 0.5);
+     above that to read as visibly distinct surfaces. #5a5a5a keeps the
+     dark theme but the keys clearly sit above the tray and the QWERTY
+     labels on top stay legible. */
+  background: #5a5a5a;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-bottom-color: rgba(255, 255, 255, 0.55);
   border-top: none;
   z-index: 1;
 }
@@ -2854,53 +3019,6 @@ kbd {
 }
 .osk-key.silent::after {
   display: none;
-}
-
-/* Right side of keyboard tray: compact mapping picker. Two stacked
-   rows ("keys: all/white" and "octaves: jump/fill") sized to fit the
-   ~64 px tray height. Toggle buttons reuse the on/off treatment from
-   .kbd-labels-toggle (green when active, dim when inactive). */
-.kbd-tray-mapping-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-}
-.kbd-tray-mapping-label {
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 10px;
-  letter-spacing: 0.3px;
-  min-width: 44px;
-}
-.kbd-tray-mapping-btn {
-  background: rgba(255, 255, 255, 0.04);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
-  font-family: inherit;
-  font-size: 10px;
-  cursor: pointer;
-  height: 18px;
-  padding: 0 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  letter-spacing: 0.2px;
-}
-.kbd-tray-mapping-btn.on {
-  background: rgba(46, 204, 64, 0.18);
-  border-color: rgba(46, 204, 64, 0.6);
-  opacity: 1;
-}
-.kbd-tray-mapping-btn.off {
-  opacity: 0.65;
-}
-.kbd-tray-mapping-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.4);
-}
-.kbd-tray-mapping-btn.on:hover {
-  background: rgba(46, 204, 64, 0.28);
 }
 
 /* Activation overlay — slot-color tint while a voice is sounding.
@@ -2945,8 +3063,8 @@ kbd {
     0 0 calc(4px + 14px * var(--glow-alpha, 0)) var(--key-color, transparent),
     0 0 calc(40px * var(--glow-alpha, 0)) var(--key-color, transparent),
     0 0 calc(72px * var(--glow-alpha, 0)) var(--key-color, transparent);
-  /* Idle = 0.45 (clearly visible marker), full play = 1.0. */
-  opacity: calc(0.45 + 0.55 * var(--glow-alpha, 0));
+  /* Idle = 0.65 (clearly visible marker even at rest), full play = 1.0. */
+  opacity: calc(0.65 + 0.35 * var(--glow-alpha, 0));
   /* Brightness filter pushes the color toward white-hot at full amp so
      the dot core reads as lit rather than just colored. */
   filter: brightness(calc(1 + 1.4 * var(--glow-alpha, 0)));
@@ -3020,16 +3138,18 @@ kbd {
   bottom: 13px;
   transform: translateX(-50%);
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.5px;
   pointer-events: none;
   font-family: inherit;
 }
 .osk-white .key-letter {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.55);
 }
 .osk-black .key-letter {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.65);
   bottom: 11px;
   font-size: 9px;
 }
@@ -3051,11 +3171,216 @@ kbd {
   bottom: calc(8px + var(--kbd-tray-h));
 }
 #wrapper.kbd-tray-open .settings-panel,
-#wrapper.kbd-tray-open .patches-panel {
+#wrapper.kbd-tray-open .patches-panel,
+#wrapper.kbd-tray-open .hydra-panel {
   bottom: calc(16px + var(--kbd-tray-h));
 }
 #wrapper.kbd-tray-open .fullscreen-freq-list {
   bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
+}
+
+/* ─── Hydra ─────────────────────────────────────────────────────────── */
+
+/* The Hydra overlay canvas. Matches the oscilloscope's positioning so
+   it occupies the same viewport area; HydraOverlay's resize observer
+   keeps the backing-store size synced to its parent (DPR applied). */
+.hydra-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Hide the oscilloscope while Hydra is rendering. visibility (not
+   display:none) preserves layout + lets Oscilloscope's JS keep
+   drawing into its canvas — Hydra reads pixels from it via s0. */
+#wrapper.hydra-mode #scope { visibility: hidden; }
+
+.hydra-panel {
+  position: fixed;
+  top: 64px;
+  left: 16px;
+  bottom: 16px;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  background: rgba(20, 20, 25, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 1100;
+  transform: translateX(calc(-100% - 24px));
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.18s ease,
+    bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.hydra-panel.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.hydra-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+.hydra-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.hydra-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hydra-action-btn {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.hydra-action-btn:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.hydra-close {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+}
+.hydra-close:hover { color: #fff; }
+
+.hydra-editor-wrap {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex: 0 0 auto;
+}
+/* CodeMirror's own theme handles the editor chrome — we just set
+   the surrounding container's background so the seam to the panel
+   is invisible. */
+.hydra-editor-wrap .cm-editor { background: rgba(0, 0, 0, 0.3); }
+.hydra-editor-wrap .cm-scroller { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }
+
+.hydra-status {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, monospace;
+  color: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hydra-status-error { color: #ff8a80; }
+.hydra-status-ok { color: #6ddc7a; }
+
+.hydra-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-y: auto;
+}
+.hydra-section:last-child {
+  border-bottom: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.hydra-section-title {
+  margin: 0 0 8px 0;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.hydra-sketch-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.hydra-sketch-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.hydra-sketch-card.user {
+  flex-direction: row;
+  align-items: center;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.03);
+}
+.hydra-sketch-load {
+  flex: 1 1 auto;
+  text-align: left;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+.hydra-sketch-delete {
+  padding: 4px 10px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 16px;
+  cursor: pointer;
+}
+.hydra-sketch-delete:hover { color: #ff8a80; }
+.hydra-sketch-name {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.hydra-sketch-desc {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 2px;
+}
+.hydra-empty {
+  margin: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* The Shape toggle row inside the Visualizer section. Reuses the
+   tune-slider-row grid (52/1fr/72) but the middle column hosts a
+   button pair instead of a slider; the trailing 72px is empty for
+   alignment with the slider rows above. */
+.hydra-shape-row .hydra-shape-toggle {
+  margin: 0;
+  grid-column: 2;
+  display: flex;
+  gap: 4px;
+}
+.hydra-shape-row .hydra-shape-toggle .settings-toggle-btn {
+  flex: 1;
 }
 
 /* ─── Patches panel ─────────────────────────────────────────────────── */
@@ -3080,7 +3405,10 @@ kbd {
   transform: translateX(calc(-100% - 24px));
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+  transition:
+    transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.18s ease,
+    bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .patches-panel.open {
   transform: translateX(0);

@@ -670,7 +670,24 @@ function drawXY(
   // applied to a folded signal it averages adjacent samples 90% and
   // erases the fold's harmonics. Audio mode uses fixed minimal
   // smoothing so the fold/shape detail survives the render.
-  const { source = 'synth' } = options;
+  // lineWidthScale / outlineScale: user multipliers from the Hydra
+  // panel — 1.0 leaves the figure looking like the original.
+  // rotation: 0 = square (L on X, R on Y), +1 = diamond rotated +45°,
+  // −1 = diamond rotated −45° (mirror diamond). Both diamond modes
+  // scale by 1/√2 so the rotated unit square fits the same scopeSize;
+  // the sign flips which direction L=R maps to. Mono content (L=R)
+  // draws vertically in either diamond direction, but asymmetric
+  // lissajous figures mirror across the vertical axis between the two.
+  const {
+    source = 'synth',
+    lineWidthScale = 1,
+    outlineScale = 1,
+    rotation = 0,
+  } = options;
+  const cx = scopeOffsetX + scopeSize / 2;
+  const cy = scopeOffsetY + scopeSize / 2;
+  const rotated = rotation === 1 || rotation === -1;
+  const rotSign = rotation === -1 ? -1 : 1;
   const dataLen = timeData1.length;
   // Render the entire incoming buffer. The synth helpers now produce
   // exactly the desired length per frame (adaptive on freq via
@@ -710,6 +727,12 @@ function drawXY(
     whiteWidth = (5 + complexity * 3) * lineScale;
     smoothingFactor = 0.6 + complexity * 0.3;
   }
+  // Apply the user multipliers from the Hydra panel. lineWidthScale
+  // affects the white core stroke; outlineScale affects the colored
+  // outer/glow stroke. Both default to 1 so the look matches pre-
+  // slider rendering.
+  whiteWidth *= lineWidthScale;
+  colorWidth *= outlineScale;
 
   const strokePath = (color, lw, blur, glowColor) => {
     ctx.beginPath();
@@ -724,6 +747,17 @@ function drawXY(
     for (let i = renderStart; i < dataLen; i += sampleStep) {
       let x1 = ((timeData1[i] + 1) / 2) * scopeSize + scopeOffsetX;
       let y1 = ((timeData2[i] + 1) / 2) * scopeSize + scopeOffsetY;
+      if (rotated) {
+        // Rotate ±45° around (cx, cy) and scale 1/√2 in one matrix:
+        //   (dx', dy') = ((dx - s·dy)/2, (s·dx + dy)/2)
+        // s = +1 rotates one way, s = −1 the other. Done in screen
+        // coords so stroke widths and shadow blur stay isotropic
+        // (ctx.rotate + ctx.scale would shrink them by 1/√2 too).
+        const dx = x1 - cx;
+        const dy = y1 - cy;
+        x1 = cx + (dx - rotSign * dy) / 2;
+        y1 = cy + (rotSign * dx + dy) / 2;
+      }
       if (prevX !== null && prevY !== null) {
         x1 = prevX * smoothingFactor + x1 * (1 - smoothingFactor);
         y1 = prevY * smoothingFactor + y1 * (1 - smoothingFactor);
@@ -755,6 +789,16 @@ export default function Oscilloscope({
   staticOutlineThickness = 0,
   vizMode = 0,
   vizCycles = 13,
+  // Lissajous-specific multipliers (vizMode 0). Sliders in the Hydra
+  // panel drive these; defaults of 1 preserve the look from before
+  // those sliders existed.
+  vizScale = 1,
+  vizLineWidth = 1,
+  vizOutline = 1,
+  // Lissajous rotation: 0 = square (axis-aligned L/R), +1 = diamond
+  // (+45°), −1 = mirror diamond (−45°). Diamond modes scale by 1/√2
+  // so the figure stays within the original scope bounds.
+  vizRotation = 0,
 }) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -780,6 +824,14 @@ export default function Oscilloscope({
   useEffect(() => {
     staticOutlineRef.current = staticOutlineThickness;
   }, [staticOutlineThickness]);
+  const vizScaleRef = useRef(vizScale);
+  useEffect(() => { vizScaleRef.current = vizScale; }, [vizScale]);
+  const vizLineWidthRef = useRef(vizLineWidth);
+  useEffect(() => { vizLineWidthRef.current = vizLineWidth; }, [vizLineWidth]);
+  const vizOutlineRef = useRef(vizOutline);
+  useEffect(() => { vizOutlineRef.current = vizOutline; }, [vizOutline]);
+  const vizRotationRef = useRef(vizRotation);
+  useEffect(() => { vizRotationRef.current = vizRotation; }, [vizRotation]);
 
   // Visualizer mode (controlled by parent via prop):
   //   0 — single centered synthesized XY scope (circle)
@@ -970,11 +1022,18 @@ export default function Oscilloscope({
         // ── MODE 0: single centered XY scope ──────────────────────────
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(0, 0, width, usableHeight);
-        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95);
+        // vizScale is the user's overall-zoom multiplier on the figure.
+        // 1 = legacy 95%-fit; 0.5 = half size; 1.5 = pushes to fill.
+        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * vizScaleRef.current);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
         const { L, R } = getXY('audio');
-        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, L, R, { source: 'audio' });
+        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, L, R, {
+          source: 'audio',
+          lineWidthScale: vizLineWidthRef.current,
+          outlineScale: vizOutlineRef.current,
+          rotation: vizRotationRef.current,
+        });
 
       } else if (vizMode === 1) {
         // ── MODE 1: tall standing wave filling the scope region ──────
@@ -1052,8 +1111,14 @@ export default function Oscilloscope({
         // right. Source switches between synth (clean sines) and audio
         // (post-master analyzer buffer) per the Visualizer setting.
         const { L, R } = getXY('audio');
-        drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R, { source: 'audio' });
-        drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R, { source: 'audio' });
+        const xyOpts = {
+          source: 'audio',
+          lineWidthScale: vizLineWidthRef.current,
+          outlineScale: vizOutlineRef.current,
+          rotation: vizRotationRef.current,
+        };
+        drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R, xyOpts);
+        drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R, xyOpts);
 
         // Mouth: white-line static wave, constrained to the eye span
         // so it can never be wider than the eyes above it.
@@ -1081,11 +1146,16 @@ export default function Oscilloscope({
         // fill more of the [-1, 1] box than the L/R-stereo modes do.
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(0, 0, width, usableHeight);
-        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * 0.6);
+        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * 0.6 * vizScaleRef.current);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
         const { X, Y } = getHilbertXY('synth');
-        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y, { source: 'synth' });
+        drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y, {
+          source: 'synth',
+          lineWidthScale: vizLineWidthRef.current,
+          outlineScale: vizOutlineRef.current,
+          rotation: vizRotationRef.current,
+        });
       }
     };
 

@@ -131,4 +131,28 @@ export const keyboardWave = new Wave({ position: 0 });
 // Anchor names for UI labels — index matches the 0..3 position range.
 export const WAVE_ANCHOR_NAMES = ['sine', 'triangle', 'saw', 'square'];
 
+/**
+ * Sample one period of the morphed waveform at `position` into N
+ * time-domain samples in [-1, 1] (peak-normalized). Used by the
+ * settings-panel preview so the drawn shape matches what the user
+ * hears, without needing an AudioContext.
+ */
+export function sampleWaveform(position, N) {
+  const coeffs = shapeCoeffs(position);
+  const out = new Float32Array(N);
+  let peak = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    let s = 0;
+    for (let n = 1; n <= HARMONICS; n++) {
+      s += coeffs[n] * Math.sin(2 * Math.PI * n * t);
+    }
+    out[i] = s;
+    const a = Math.abs(s);
+    if (a > peak) peak = a;
+  }
+  if (peak > 0) for (let i = 0; i < N; i++) out[i] /= peak;
+  return out;
+}
+
 export default Wave;

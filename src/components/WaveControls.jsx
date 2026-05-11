@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { WAVE_ANCHOR_NAMES } from '../audio/Wave';
+import WaveShapePreview from './WaveShapePreview';
 
 /**
  * WaveControls - per-pool waveform shape + wavefolder controls.
@@ -35,6 +36,8 @@ export default function WaveControls({ title, wave, fold }) {
   return (
     <div className="settings-section">
       <label className="settings-label">{title}</label>
+
+      <WaveShapePreview wave={wave} fold={fold} />
 
       <div className="tune-slider-row">
         <span className="tune-slider-label">Shape</span>

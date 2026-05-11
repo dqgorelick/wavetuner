@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import audioEngine from '../audio/AudioEngine';
 import palette, { useTheme } from '../theme/palette';
+import { isEditableTarget } from '../hooks/keyboardUtils';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -584,7 +585,6 @@ function OscillatorControls({
   const [volumes, setVolumes] = useState(() => createInitialArray(50, oscillatorCount));
   const [masterVolume, setMasterVolume] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
   const [kbdVolume, setKbdVolume] = useState(() => audioEngine.getKeyboardVolume?.() ?? 1);
-  const [kbdEnabled, setKbdEnabled] = useState(() => audioEngine.getKeyboardEnabled?.() ?? true);
   // Pause state is owned by the parent (App.jsx) so the wrapper can pick
   // up `.paused` and dim the global UI in step. The togglePlayPause
   // sites below call onPausedChange directly to keep parent + engine
@@ -679,8 +679,6 @@ function OscillatorControls({
           setMasterVolume((prev) => (prev === mv ? prev : mv));
           const kv = audioEngine.getKeyboardVolume?.() ?? 1;
           setKbdVolume((prev) => (prev === kv ? prev : kv));
-          const ke = audioEngine.getKeyboardEnabled?.() ?? true;
-          setKbdEnabled((prev) => (prev === ke ? prev : ke));
           const nr = audioEngine.getRoutingMap?.() ?? {};
           setRoutingMap((prev) => (routingMapsEqual(prev, nr) ? prev : nr));
           const nc = audioEngine.getMaxOutputChannels?.() ?? 2;
@@ -701,13 +699,6 @@ function OscillatorControls({
     onPausedChange?.(audioEngine.paused);
   };
 
-  const handleKbdToggle = () => {
-    if (!audioEngine.initialized) return;
-    const next = !audioEngine.getKeyboardEnabled();
-    audioEngine.setKeyboardEnabled(next);
-    setKbdEnabled(next);
-  };
-
   const shiftAllOctaves = (factor) => {
     for (let i = 0; i < oscillatorCount; i++) {
       const cur = audioEngine.getFrequency(i);
@@ -718,6 +709,7 @@ function OscillatorControls({
 
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (isEditableTarget(e.target)) return;
       if (e.key === ' ') {
         e.preventDefault();
         if (!audioEngine.initialized) return;
@@ -751,19 +743,11 @@ function OscillatorControls({
         {/* Collapsible upper rows — smoothly transition between 0fr and 1fr */}
         <div className={`expanded-collapsible ${isExpanded ? 'open' : ''}`}>
           <div className="expanded-inner">
-            {/* Readout row: freq + note (per-osc only; ALL holds detune orb, MORE empty) */}
+            {/* Readout row: freq + note (per-osc only; ALL holds detune orb, MORE empty).
+                The hold button moved into the keyboard tray's bottom-left so
+                it lives next to the keys it actually affects. */}
             <div className="osc-grid-row readout-row">
-              <div className="grid-cell osc-kbd-col osc-kbd-hold-cell">
-                <button
-                  type="button"
-                  className={`osc-kbd-hold-btn ${kbdHoldOn ? 'on' : ''}`}
-                  onClick={onKbdHoldToggle}
-                  aria-pressed={kbdHoldOn}
-                  title="Hold notes — each key press toggles its note on/off"
-                >
-                  hold
-                </button>
-              </div>
+              <div className="grid-cell osc-kbd-col" />
               {/* The keys tray-toggle moved to the octave row below so its
                   top edge aligns with the ×2 button next to it. */}
               <div className="grid-cell grid-empty osc-all-col">
@@ -791,23 +775,9 @@ function OscillatorControls({
               <div className="grid-cell osc-more-col" />
             </div>
 
-            {/* Octave row: kbd tray-toggle | ALL ×2 / /2 | per-osc ×2 / /2 | MORE + / − */}
+            {/* Octave row: empty kbd col | ALL ×2 / /2 | per-osc ×2 / /2 | MORE + / − */}
             <div className="osc-grid-row octave-row">
-              <div className="grid-cell octave-cell osc-kbd-col osc-kbd-tray-cell">
-                <button
-                  type="button"
-                  className={`osc-kbd-tray-arrow ${isKbdTrayOpen ? 'open' : ''}`}
-                  onClick={onKbdTrayToggle}
-                  aria-pressed={isKbdTrayOpen}
-                  title={isKbdTrayOpen ? 'Hide keyboard panel' : 'Show keyboard panel'}
-                >
-                  <svg viewBox="0 0 24 24" className="button-icon">
-                    {/* up-chevron — flipped via CSS when the tray is open */}
-                    <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
-                  </svg>
-                </button>
-                <span className="bottom-cell-caption">{isKbdTrayOpen ? 'less' : 'more'}</span>
-              </div>
+              <div className="grid-cell octave-cell osc-kbd-col" />
               <div className="grid-cell octave-cell osc-all-col">
                 <button className="osc-octave-btn" onClick={() => shiftAllOctaves(2)} title="All ×2" aria-label="All ×2">×2</button>
                 <button className="osc-octave-btn" onClick={() => shiftAllOctaves(0.5)} title="All /2" aria-label="All /2">/2</button>
@@ -843,7 +813,7 @@ function OscillatorControls({
             {/* Fader row: kbd | master | per-osc | MORE icon stack (settings/save) */}
             <div className="osc-grid-row fader-row">
               <div className="grid-cell fader-cell osc-kbd-col">
-                <KeyboardVolumeFader volume={kbdVolume} disabled={!kbdEnabled} />
+                <KeyboardVolumeFader volume={kbdVolume} />
               </div>
               <div className="grid-cell fader-cell osc-all-col">
                 <MasterVolumeFader volume={masterVolume} />
@@ -910,23 +880,26 @@ function OscillatorControls({
         <div className="osc-grid-row bottom-row">
           <div className="grid-cell bottom-cell-wrap osc-kbd-col">
             <button
-              className={`bottom-cell bottom-kbd-toggle ${kbdEnabled ? 'on' : 'off'}`}
-              onClick={handleKbdToggle}
-              title={kbdEnabled ? 'Stop keyboard' : 'Start keyboard'}
-              aria-label={kbdEnabled ? 'Stop keyboard' : 'Start keyboard'}
-              aria-pressed={kbdEnabled}
+              type="button"
+              className={`bottom-cell bottom-kbd-tray ${isKbdTrayOpen ? 'on' : 'off'}`}
+              onClick={onKbdTrayToggle}
+              aria-pressed={isKbdTrayOpen}
+              title={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
+              aria-label={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
             >
-              {kbdEnabled ? (
-                /* stop icon — keyboard is on, click to stop */
-                <svg viewBox="0 0 24 24" className="button-icon">
-                  <path d="M6 6h12v12H6z" />
-                </svg>
-              ) : (
-                /* play icon — keyboard is off, click to start */
-                <svg viewBox="0 0 24 24" className="button-icon">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
+              {/* Piano icon — three white keys with two black keys on top.
+                  Scaled +20% (content runs x=1.2..22.8, y=3.6..20.4 in a
+                  24×24 viewBox) and blacks now straddle the white-key
+                  boundaries at x=8.4 and x=15.6 so the icon reads as a
+                  proper piano cross-section. */}
+              <svg viewBox="0 0 24 24" className="button-icon piano-icon">
+                <rect x="1.2" y="3.6" width="21.6" height="16.8" rx="1.4" fill="#f2f2f2" />
+                <line x1="8.4" y1="3.6" x2="8.4" y2="20.4" stroke="#222" strokeWidth="1.2" />
+                <line x1="15.6" y1="3.6" x2="15.6" y2="20.4" stroke="#222" strokeWidth="1.2" />
+                <rect x="1.2" y="3.6" width="21.6" height="16.8" rx="1.4" fill="none" stroke="#222" strokeWidth="1.4" />
+                <rect x="6.85" y="3.6" width="3.1" height="8.4" fill="#1a1a1a" />
+                <rect x="14.05" y="3.6" width="3.1" height="8.4" fill="#1a1a1a" />
+              </svg>
             </button>
             <span className="bottom-cell-caption">keyboard</span>
           </div>

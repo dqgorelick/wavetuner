@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import palette, { useTheme } from '../theme/palette';
+import { isEditableTarget } from '../hooks/keyboardUtils';
 
 const FREQ_MIN = 0.1;
 const FREQ_MAX = 20000;
@@ -792,6 +793,7 @@ function FrequencySpectrumBar({
   // Keyboard: 1-9/0 toggle grab; shift+digit (or shifted symbol) mutes; Esc releases.
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (isEditableTarget(e.target)) return;
       if (e.key === 'Shift') {
         setShiftHeld(true);
         return;

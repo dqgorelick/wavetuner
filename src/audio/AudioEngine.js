@@ -7,7 +7,6 @@
 import { droneEnvelope } from './Envelope';
 import { droneWave } from './Wave';
 import { droneFold, keyboardFold } from './Fold';
-import { reverb } from './Reverb';
 import { droneStereo, keyboardStereo } from './StereoMode';
 
 // Topology-change ramp for adding/removing drone slots via the count
@@ -318,9 +317,8 @@ class AudioEngine {
     this.keyboardFoldWet.connect(this.masterGainNode);
     
     // Create splitter for visualization (directly off masterGainNode).
-    // Width and reverb both sit AFTER this split-off, so the analyzer —
-    // and therefore every visualizer — always sees the full-width, dry
-    // signal regardless of what the listener hears.
+    // The analyzer sits AFTER this split-off, so every visualizer always
+    // sees the full-width signal regardless of what the listener hears.
     const splitter = this.audioContext.createChannelSplitter(2);
     const finalMerger = this.audioContext.createChannelMerger(2);
 
@@ -330,26 +328,7 @@ class AudioEngine {
     this.analyserNode1.connect(finalMerger, 0, 0);
     this.analyserNode2.connect(finalMerger, 0, 1);
 
-    // Reverb sits at the tail. Wet/dry crossfade is equal-power so
-    // perceived loudness stays flat across the slider. ConvolverNode IR
-    // is rebuilt on room change.
-    this.reverbConvolver = this.audioContext.createConvolver();
-    this.reverbConvolver.normalize = false;  // we RMS-normalize the IR ourselves
-    this.reverbConvolver.buffer = reverb.buildIR(this.audioContext);
-    this.reverbDryGain = this.audioContext.createGain();
-    this.reverbWetGain = this.audioContext.createGain();
-    const initGains = reverb.gains();
-    this.reverbDryGain.gain.setValueAtTime(initGains.dry, this.audioContext.currentTime);
-    this.reverbWetGain.gain.setValueAtTime(initGains.wet, this.audioContext.currentTime);
-
-    // finalMerger → dryGain ─┐
-    //                        ├→ destination
-    // finalMerger → conv  → wetGain ─┘
-    finalMerger.connect(this.reverbDryGain);
-    finalMerger.connect(this.reverbConvolver);
-    this.reverbConvolver.connect(this.reverbWetGain);
-    this.reverbDryGain.connect(this.audioContext.destination);
-    this.reverbWetGain.connect(this.audioContext.destination);
+    finalMerger.connect(this.audioContext.destination);
     
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;
@@ -434,20 +413,6 @@ class AudioEngine {
           }
         } else if (info.kind === 'detune' || info.kind === 'curve') {
           this._applyDroneDetuneCurve();
-        }
-      });
-    }
-    if (!this._reverbUnsubscribe) {
-      this._reverbUnsubscribe = reverb.onChange((_inst, info) => {
-        if (!this.audioContext) return;
-        if (info && info.kind === 'room' && this.reverbConvolver) {
-          this.reverbConvolver.buffer = reverb.buildIR(this.audioContext);
-        }
-        if (this.reverbDryGain && this.reverbWetGain) {
-          const t = this.audioContext.currentTime;
-          const g = reverb.gains();
-          this.reverbDryGain.gain.setTargetAtTime(g.dry, t, 0.05);
-          this.reverbWetGain.gain.setTargetAtTime(g.wet, t, 0.05);
         }
       });
     }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import { isEditableTarget } from '../hooks/keyboardUtils';
 
 /**
  * OscillatorDisplay - Shows oscillator info and handles interaction
@@ -120,8 +121,9 @@ export default function OscillatorDisplay({ onValuesChange }) {
   // Keyboard handlers
   useEffect(() => {
     const handleKeyDown = (event) => {
+      if (isEditableTarget(event.target)) return;
       const key = event.key.toLowerCase();
-      
+
       if (key === 'shift') {
         isFineTuningRef.current = true;
       } else if (key >= '1' && key <= '4') {
@@ -129,8 +131,9 @@ export default function OscillatorDisplay({ onValuesChange }) {
         toggleOscillator(index);
       }
     };
-    
+
     const handleKeyUp = (event) => {
+      if (isEditableTarget(event.target)) return;
       if (event.key.toLowerCase() === 'shift') {
         isFineTuningRef.current = false;
       }

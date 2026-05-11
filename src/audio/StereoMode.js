@@ -153,11 +153,12 @@ class StereoMode {
 
 // Defaults:
 //   - Drone stays in 'lr' (preserves the legacy hard-pan look that users
-//     expect on first load).
+//     expect on first load). Master detune 0.5 Hz — subtle warmth on the
+//     held bed without obvious beating.
 //   - Keyboard starts in 'stereo' so pressing a key gives the dual-osc
 //     L≠R width by default — that's the more interesting voice setup.
-//   - Both pools default to 3 Hz master detune so the smooth-random
-//     curve seeded in App.jsx is audible without dragging the slider.
-export const droneStereo = new StereoMode({ detuneHz: 3 });
-export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 3 });
+//     Master detune 1 Hz — keyboard voices are transient so the spread
+//     reads clearly even at gentle widths.
+export const droneStereo = new StereoMode({ detuneHz: 0.5 });
+export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 1 });
 export default StereoMode;

@@ -374,6 +374,23 @@ function App() {
   const [tuneVarianceHz, setTuneVarianceHz] = useState(0);
   const [tuneGlideSec, setTuneGlideSec] = useState(1.0);
 
+  // Master-bus soft limiter / saturator. Curve is a string key matching
+  // SATURATION_CURVES in AudioEngine ('off' | 'tanh' | 'cubic' | 'sine' | 'hard').
+  // Drive is the pre-saturation gain into the curve (1.0 = neutral).
+  // Applied via setSaturationCurve / setSaturationDrive on the engine,
+  // which propagates to the worklet (or stashes the value until the
+  // worklet finishes loading inside initialize()).
+  const [saturationCurve, setSaturationCurve] = useState('tanh');
+  const [saturationDrive, setSaturationDrive] = useState(1.0);
+  const handleSaturationCurveChange = useCallback((curve) => {
+    setSaturationCurve(curve);
+    audioEngine.setSaturationCurve(curve);
+  }, []);
+  const handleSaturationDriveChange = useCallback((drive) => {
+    setSaturationDrive(drive);
+    audioEngine.setSaturationDrive(drive);
+  }, []);
+
   // Color theme — mirrors the palette singleton so SettingsPanel can render
   // the picker. Singleton was already populated from the URL above (and
   // listeners on the singleton drive non-React redraws), so this state is
@@ -499,7 +516,7 @@ function App() {
     };
   }, [isStarted]);
 
-  const handleStart = () => {
+  const handleStart = async () => {
     // Precedence: URL params > autosave > engine random defaults. URL is
     // explicit (the user pasted a share link); autosave is the rolling
     // last-state save so refresh restores work.
@@ -510,7 +527,13 @@ function App() {
       if (pendingAutosave) preInitApplyPatch(pendingAutosave);
     }
 
-    audioEngine.initialize(frequencies, volumes); // volumes already in 0-100 format
+    // Push saturation settings before initialize so the worklet picks
+    // them up the moment it loads — avoids a brief default-curve window
+    // on first start.
+    audioEngine.setSaturationCurve(saturationCurve);
+    audioEngine.setSaturationDrive(saturationDrive);
+
+    await audioEngine.initialize(frequencies, volumes); // volumes already in 0-100 format
 
     // Seed the smooth-random detune curves at the real oscillator count.
     // engine.initialize() resizes the curves to the live oscillatorCount
@@ -1003,6 +1026,10 @@ function App() {
             onKbdFillModeChange={setKbdFillMode}
             midiEnabled={midiEnabled}
             onMidiEnabledToggle={handleMidiEnabledToggle}
+            saturationCurve={saturationCurve}
+            onSaturationCurveChange={handleSaturationCurveChange}
+            saturationDrive={saturationDrive}
+            onSaturationDriveChange={handleSaturationDriveChange}
           />
           <KeyboardTray
             isOpen={isKbdTrayOpen}

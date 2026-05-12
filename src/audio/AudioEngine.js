@@ -16,6 +16,16 @@ import { droneStereo, keyboardStereo } from './StereoMode';
 // needle for both.
 const FIXED_SLOT_FADE = 0.3;
 
+// Master-bus soft limiter / saturator curves. Integers match the values
+// the worklet expects via port.postMessage({ curve }).
+export const SATURATION_CURVES = {
+  off: 0,
+  tanh: 1,
+  cubic: 2,
+  sine: 3,
+  hard: 4,
+};
+
 class AudioEngine {
   constructor() {
     if (AudioEngine.instance) {
@@ -56,6 +66,18 @@ class AudioEngine {
     // value for the audio node.
     this._kbdVolume = 0.75;
     this._kbdEnabled = true;
+
+    // Master-bus soft limiter / saturator. Inserted between
+    // masterGainNode and the visualizer splitter so peaks past unity
+    // (e.g. unison-phase constructive interference on close-tuned
+    // drones) are soft-clipped instead of hard-clipped at the
+    // destination. droneCountScale upstream still serves the WaveShaper
+    // input clamp — those two attenuators are independent.
+    this.saturationNode = null;
+    this.saturationCurve = SATURATION_CURVES.tanh;
+    this.saturationDrive = 1.0;
+    this.saturationReady = false;
+    this.saturationLoadFailed = false;
 
     // Stack of per-osc state captured when an oscillator is removed via
     // setOscillatorCount. Re-adding pops the most-recently-removed state so
@@ -163,9 +185,12 @@ class AudioEngine {
   
   /**
    * Initialize the audio context and create all nodes
-   * Must be called from a user gesture (click/touch)
+   * Must be called from a user gesture (click/touch).
+   * Async because we await the soft-limiter worklet module before
+   * inserting it into the post-master chain — wiring it in while
+   * masterGainNode is still ramping up from 0 avoids a click.
    */
-  initialize(initialFrequencies = null, initialVolumes = null) {
+  async initialize(initialFrequencies = null, initialVolumes = null) {
     if (this.isInitialized) return;
     
     // Apply initial values if provided (e.g., from URL)
@@ -316,13 +341,24 @@ class AudioEngine {
     this.keyboardFoldDry.connect(this.masterGainNode);
     this.keyboardFoldWet.connect(this.masterGainNode);
     
-    // Create splitter for visualization (directly off masterGainNode).
-    // The analyzer sits AFTER this split-off, so every visualizer always
-    // sees the full-width signal regardless of what the listener hears.
+    // Load the soft-limiter worklet before wiring the post-master chain
+    // so the saturator is in place from frame zero — no click from
+    // inserting it later. Falls back to direct masterGainNode → splitter
+    // on load failure (saturationReady stays false).
+    await this._loadSaturationNode();
+
+    // Create splitter for visualization (off the post-master tap — after
+    // saturation if loaded, else directly off masterGainNode). Analyzers
+    // sit on the split-off, so every visualizer sees the full-width
+    // signal the listener hears (including saturation character).
     const splitter = this.audioContext.createChannelSplitter(2);
     const finalMerger = this.audioContext.createChannelMerger(2);
 
-    this.masterGainNode.connect(splitter);
+    const postMaster = this.saturationNode || this.masterGainNode;
+    if (this.saturationNode) {
+      this.masterGainNode.connect(this.saturationNode);
+    }
+    postMaster.connect(splitter);
     splitter.connect(this.analyserNode1, 0);
     splitter.connect(this.analyserNode2, 1);
     this.analyserNode1.connect(finalMerger, 0, 0);
@@ -460,6 +496,76 @@ class AudioEngine {
    */
   _getDroneCountScale() {
     return 1.0 / Math.sqrt(this.oscillatorCount / 2);
+  }
+
+  /**
+   * Load the soft-limiter worklet module and instantiate the node.
+   * Safe to call once per initialize(); on failure saturationReady stays
+   * false and the chain falls back to direct masterGain → splitter.
+   */
+  async _loadSaturationNode() {
+    try {
+      // /public is served verbatim by Vite with the configured base
+      // path prepended (BASE_URL = '/wavetuner/' in prod, '/' in dev).
+      const workletUrl = `${import.meta.env.BASE_URL}soft-limiter-worklet.js`;
+      await this.audioContext.audioWorklet.addModule(workletUrl);
+      this.saturationNode = new AudioWorkletNode(this.audioContext, 'soft-limiter', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+      });
+      // Apply settings that may have been set before initialize().
+      this.saturationNode.port.postMessage({ curve: this.saturationCurve });
+      const driveParam = this.saturationNode.parameters.get('drive');
+      if (driveParam) {
+        driveParam.setValueAtTime(this.saturationDrive, this.audioContext.currentTime);
+      }
+      this.saturationReady = true;
+    } catch (err) {
+      console.warn('AudioEngine: soft-limiter worklet failed to load — running without master saturation', err);
+      this.saturationNode = null;
+      this.saturationReady = false;
+      this.saturationLoadFailed = true;
+    }
+  }
+
+  /**
+   * Set the saturation curve. Accepts a string key from SATURATION_CURVES
+   * ('off' | 'tanh' | 'cubic' | 'sine' | 'hard') or the matching integer.
+   * Safe to call before initialize() — the value is applied when the
+   * worklet loads.
+   */
+  setSaturationCurve(curve) {
+    const value = typeof curve === 'string' ? SATURATION_CURVES[curve] : curve;
+    if (value === undefined || value === null) return;
+    this.saturationCurve = value;
+    if (this.saturationNode) {
+      this.saturationNode.port.postMessage({ curve: value });
+    }
+  }
+
+  getSaturationCurve() {
+    return this.saturationCurve;
+  }
+
+  /**
+   * Drive — pre-saturation gain into the curve. 1.0 is neutral, higher
+   * pushes more signal into the curve's nonlinear region. Smoothed via
+   * setTargetAtTime to avoid zipper noise on slider drags.
+   */
+  setSaturationDrive(value) {
+    const clamped = Math.max(0.1, Math.min(4.0, value));
+    this.saturationDrive = clamped;
+    if (this.saturationNode && this.audioContext) {
+      const param = this.saturationNode.parameters.get('drive');
+      if (param) {
+        param.setTargetAtTime(clamped, this.audioContext.currentTime, 0.02);
+      }
+    }
+  }
+
+  getSaturationDrive() {
+    return this.saturationDrive;
   }
 
   setMasterVolume(value) {

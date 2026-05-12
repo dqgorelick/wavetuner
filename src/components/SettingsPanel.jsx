@@ -41,6 +41,10 @@ export default function SettingsPanel({
   onKbdFillModeChange,
   midiEnabled,
   onMidiEnabledToggle,
+  saturationCurve,
+  onSaturationCurveChange,
+  saturationDrive,
+  onSaturationDriveChange,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -176,6 +180,35 @@ export default function SettingsPanel({
           </button>
         )}
         <span className="settings-info">{maxChannels} channels available</span>
+      </div>
+
+      <div className="settings-section">
+        <label className="settings-label">Saturation</label>
+        <select
+          className="settings-select"
+          value={saturationCurve}
+          onChange={(e) => onSaturationCurveChange(e.target.value)}
+        >
+          <option value="off">Off (bypass)</option>
+          <option value="tanh">Soft (tanh)</option>
+          <option value="cubic">Cubic</option>
+          <option value="sine">Sine</option>
+          <option value="hard">Hard clip</option>
+        </select>
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Drive</span>
+          <input
+            type="range"
+            min="0.5"
+            max="3"
+            step="0.05"
+            value={saturationDrive}
+            onChange={(e) => onSaturationDriveChange(parseFloat(e.target.value))}
+            className="tune-slider"
+            disabled={saturationCurve === 'off'}
+          />
+          <span className="tune-slider-value">{saturationDrive.toFixed(2)}×</span>
+        </div>
       </div>
 
       <div className="settings-section">

@@ -276,6 +276,210 @@ p {
   font-weight: 500;
 }
 
+/* ─── Mixer ────────────────────────────────────────────────────────────
+   Bottom-left strip listing every audible signal — drone slots (phase 1)
+   and later keyboard/MIDI voices. Builds upward from the viewport bottom
+   via flex-direction: column-reverse so the newest entry appears on top
+   and the stack is naturally bottom-anchored regardless of length. */
+.mixer-panel {
+  position: fixed;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: 16px;
+  z-index: 340;
+  width: 444px;
+  padding: 9px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mixer-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 6px;
+}
+
+/* Grid keeps the fader column at a uniform width across every row —
+   drone rows get an empty source-tag slot, and voice rows get an empty
+   action-buttons slot, so the fader column lines up everywhere. */
+.mixer-row {
+  display: grid;
+  grid-template-columns: 12px 144px 48px 1fr 90px;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: var(--mixer-color, rgba(255, 255, 255, 0.85));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 17px;
+}
+
+.mixer-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--mixer-color, #888);
+}
+
+.mixer-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.mixer-freq {
+  font-weight: 700;
+}
+
+.mixer-note {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.mixer-cents {
+  margin-left: 3px;
+  opacity: 0.55;
+  font-weight: 500;
+}
+
+/* Fader is a thin track with a colored fill line and a ball at the
+   active position. overflow: visible so the ball can hover slightly past
+   the track edges at 0% / 100% rather than getting clipped. */
+.mixer-fader {
+  position: relative;
+  height: 21px;
+  cursor: ew-resize;
+  touch-action: none;
+  background: transparent;
+  border: none;
+  overflow: visible;
+}
+
+.mixer-fader.released {
+  cursor: default;
+}
+
+.mixer-fader-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  transform: translateY(-1px);
+  pointer-events: none;
+}
+
+.mixer-fader-fill {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 3px;
+  background: var(--mixer-color, rgba(255, 255, 255, 0.6));
+  transform: translateY(-1.5px);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.mixer-fader-ball {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--mixer-color, #fff);
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: box-shadow 0.15s, transform 0.05s;
+}
+
+.mixer-fader:hover .mixer-fader-fill {
+  opacity: 1;
+}
+.mixer-fader:hover .mixer-fader-ball {
+  box-shadow: 0 0 9px var(--mixer-color);
+}
+.mixer-fader.released .mixer-fader-fill {
+  opacity: 0.45;
+}
+.mixer-fader.released:hover .mixer-fader-fill {
+  opacity: 0.45;
+}
+
+/* Source tag (KBD / MIDI) sits in the fixed-width slot before the fader
+   so the fader column lines up across drone and voice rows. The empty
+   variant preserves the slot's width on drone rows. */
+.mixer-source-tag {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+  text-align: center;
+  justify-self: stretch;
+}
+.mixer-source-tag.mixer-source-tag-empty {
+  background: transparent;
+}
+
+/* Per-row action cluster (drone rows only). Four icon buttons: clone,
+   octave-up, octave-down, remove. The voice-row variant is empty but
+   takes up the same grid column so the fader edges line up. */
+.mixer-row-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-self: end;
+}
+.mixer-row-buttons-empty {
+  /* Empty placeholder on voice rows — keeps grid alignment. */
+}
+
+.mixer-btn {
+  width: 21px;
+  height: 21px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+  border-radius: 3px;
+  padding: 0;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 17px;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s;
+}
+.mixer-btn:hover:not(:disabled) {
+  background: var(--mixer-color, rgba(255, 255, 255, 0.2));
+  color: #fff;
+}
+.mixer-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.mixer-btn-remove:hover:not(:disabled) {
+  background: rgba(220, 80, 80, 0.55);
+  color: #fff;
+}
+
+/* Released voices fade — strip stays visible during the release tail
+   so the user can see the envelope falling, then unmounts when amp
+   crosses AUDIBLE_AMP (see Mixer.jsx). */
+.mixer-row-voice.released {
+  opacity: 0.55;
+}
+
 #start-button {
   font-size: 0.9rem;
   padding: 10px 28px;
@@ -2461,6 +2665,32 @@ kbd {
   overflow: visible;
 }
 
+/* Dotted boundary lines for the edge-pan auto-scroll zone. Span the full
+   viewport height — the whole page is the dragging canvas — and sit at
+   min(10vw, 120px) from each edge so on wide screens the inset stays a
+   fixed 120px instead of growing without bound. Low opacity so they read
+   as a subtle hint, not a hard divider. */
+.fsb-edge-zone-line {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  z-index: 200;
+}
+
+/* Canvas inset = half the gutter outside the centered 1200px canvas, plus
+   10% of the canvas width (capped at 120px). The `max(0px, …)` keeps it from
+   going negative on narrow viewports. Mirrors the math in computeEdgeRate(). */
+.fsb-edge-zone-line-left {
+  left: calc(max(0px, (100vw - 1200px) / 2) + min(10vw, 120px));
+}
+
+.fsb-edge-zone-line-right {
+  right: calc(max(0px, (100vw - 1200px) / 2) + min(10vw, 120px));
+}
+
 /* Ghost at the cursor — fully colored for both drag AND grab, so the orb feels
    like it's following your mouse/finger. The real dot on the bar (outlined)
    stays at its freq position. */
@@ -2676,7 +2906,7 @@ kbd {
 #wrapper.kbd-tray-open {
   /* Taller than the previous ~50 px strip so the full key column is
      comfortably visible without cropping the labels at the top. */
-  --kbd-tray-h: 96px;
+  --kbd-tray-h: 120px;
 }
 
 .kbd-tray-handle {
@@ -2707,14 +2937,20 @@ kbd {
   left: 0;
   right: 0;
   bottom: 0;
+  /* Cap the tray's horizontal span and center it. `left:0; right:0` +
+     `margin: 0 auto` is the position:fixed equivalent of a centered
+     block — narrower viewports get the full width, wider viewports
+     anchor the tray at 1200px. */
+  max-width: 1200px;
+  margin: 0 auto;
   /* Fixed visible height so we can slide via translateY rather than
      animating `height` (height transitions don't compose well with the
      grid layout inside). Match the open-state --kbd-tray-h above so the
      spectrum bar lifts exactly to the top of the tray. */
-  height: 96px;
+  height: 120px;
   z-index: 600;
   display: grid;
-  grid-template-columns: 130px 1fr;
+  grid-template-columns: 130px 1fr 130px;
   align-items: stretch;
   background: rgba(15, 15, 15, 0.92);
   border-top: 1px solid rgba(255, 255, 255, 0.15);
@@ -2745,19 +2981,63 @@ kbd {
   font-size: 12px;
 }
 
-/* Right rail of the keyboard tray:
-       MIDI:
-       [ ON ]
-   Caption sits above the button so the toggle reads as a labeled
-   control rather than a self-contained widget. Same kbdEnabled flag
-   as before — the label is purely cosmetic. */
+/* Keyboard frequency-range readout: tiny log-scale strip (20Hz–20kHz)
+   with the currently-visible keyboard span highlighted. Sits above the
+   range-shift (Z/X) buttons so the player can see where the on-screen
+   keys land in the broader spectrum at a glance. The "range" label
+   lives on the Z/X row below — these numbers carry on their own. */
+.kbd-range-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  margin-bottom: 2px;
+}
+.kbd-range-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.kbd-range-bar {
+  position: relative;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.kbd-range-bar-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 2px;
+  min-width: 2px;
+}
+
+/* Generic right-aligned control group used inside every kbd-tray row —
+   pairs with `justify-content: space-between` on the row so captions
+   hug the left edge and the controls hug the right. */
+.kbd-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Right rail of the keyboard tray. Stacks voices / kbd hold / midi hold
+   as kbd-hold-row entries — mirrors the left rail's row format so
+   "caption + control" reads the same on both sides. */
 .kbd-tray-right {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  align-items: center;
-  gap: 4px;
-  padding: 0 14px 0 8px;
+  align-items: stretch;
+  gap: 3px;
+  padding: 0 10px;
   color: #fff;
   font-size: 12px;
 }
@@ -2808,7 +3088,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 4px;
-  justify-content: flex-end;
+  justify-content: space-between;
 }
 
 .kbd-octave-btn {
@@ -2875,7 +3155,7 @@ kbd {
 .kbd-hold-row {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 6px;
   margin-top: 4px;
 }
@@ -3176,6 +3456,9 @@ kbd {
   bottom: calc(16px + var(--kbd-tray-h));
 }
 #wrapper.kbd-tray-open .fullscreen-freq-list {
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
+}
+#wrapper.kbd-tray-open .mixer-panel {
   bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
 }
 
@@ -3627,4 +3910,252 @@ kbd {
   border-color: rgba(255, 255, 255, 0.4);
   background: rgba(0, 0, 0, 0.6);
 }
+
+/* ─── Frequency Manager rail ───────────────────────────────────────── */
+
+/* Persistent right-side rail showing all drone frequencies with
+   editable Hz / ratio columns. Shares the right column with the
+   settings panel (which slides over the top when open). Lower z-index
+   than settings / patches / hydra panels so any modal-style panel
+   covers it cleanly when summoned. */
+.freq-rail {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  bottom: 16px;
+  width: 264px;
+  background: rgba(20, 20, 25, 0.72);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  z-index: 50;
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#wrapper.kbd-tray-open .freq-rail {
+  bottom: calc(16px + var(--kbd-tray-h));
+}
+
+.freq-rail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.freq-rail-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.freq-rail-grid-header {
+  display: grid;
+  grid-template-columns: 28px 1fr 1fr 1fr;
+  gap: 6px;
+  padding: 6px 2px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.freq-rail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.freq-rail-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 1fr 1fr;
+  gap: 6px;
+  align-items: center;
+  padding: 1px 0;
+  position: relative;
+}
+
+/* Slot color stripe at the row's left edge. */
+.freq-rail-row::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--osc-color, transparent);
+  border-radius: 1px;
+  opacity: 0.55;
+}
+
+.freq-rail-slot {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.65);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 0;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: center;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.freq-rail-slot:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+.freq-rail-slot.anchor {
+  background: var(--osc-color, rgba(255, 255, 255, 0.25));
+  border-color: var(--osc-color, rgba(255, 255, 255, 0.4));
+  color: #000;
+}
+
+.freq-rail-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: #fff;
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  padding: 3px 2px;
+  outline: none;
+  transition: border-color 0.15s ease;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.freq-rail-input:hover:not(:disabled) {
+  border-bottom-color: rgba(255, 255, 255, 0.18);
+}
+.freq-rail-input:focus {
+  border-bottom-color: rgba(255, 255, 255, 0.6);
+}
+.freq-rail-input.invalid {
+  border-bottom-color: #ff4136;
+  color: #ff8174;
+}
+.freq-rail-input:disabled {
+  color: rgba(255, 255, 255, 0.55);
+  cursor: default;
+}
+
+.freq-rail-ratio.exact {
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.55);
+  text-underline-offset: 2px;
+}
+.freq-rail-ratio.locked {
+  color: #fff;
+  font-weight: 600;
+}
+.freq-rail-ratio:not(.locked):not(:focus) {
+  font-style: italic;
+}
+
+.freq-rail-note {
+  display: flex;
+  flex-direction: column;
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.15;
+  color: rgba(255, 255, 255, 0.75);
+  padding: 2px 0;
+  min-width: 0;
+}
+.freq-rail-note-name {
+  color: #fff;
+}
+.freq-rail-note-cents {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Footer: root frequency editor, align + undo action buttons.
+   Separated from the slot rows by a subtle divider — visually a
+   "secondary panel" within the rail. */
+.freq-rail-footer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.freq-rail-root {
+  display: grid;
+  grid-template-columns: 42px 1fr 22px;
+  align-items: center;
+  gap: 6px;
+}
+.freq-rail-root-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+.freq-rail-root-input {
+  font-size: 13px;
+  padding: 4px 4px;
+}
+.freq-rail-root-unit {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: 'Menlo', 'Consolas', monospace;
+}
+
+.freq-rail-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.freq-rail-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+.freq-rail-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.freq-rail-action:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+.freq-rail-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Hide on narrow viewports — the rail would crowd the scope and
+   FrequencySliders already serves as the primary input there. */
+@media (max-width: 768px) {
+  .freq-rail { display: none; }
+}
+
 

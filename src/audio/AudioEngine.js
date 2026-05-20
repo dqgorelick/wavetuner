@@ -997,7 +997,139 @@ class AudioEngine {
       console.error('AudioEngine: Failed to set oscillator count', err);
     }
   }
-  
+
+  /**
+   * Remove a single oscillator at `index` (not just the highest slot like
+   * setOscillatorCount does). Fades out and stops the slot's nodes,
+   * splices it out of every per-slot array, and reindexes routingMap so
+   * any slots that were above `index` shift down by 1. The removed state
+   * is pushed onto removedSlots so a subsequent "+ oscillator" pops it
+   * back. Refuses to drop below minOscillators.
+   *
+   * Note: any held keyboard voice referring to a slot at or above `index`
+   * would have a stale slot binding after the reindex (slot 5 played at
+   * noteOn but the slot at index 5 is now what was index 6 — a different
+   * pitch). Callers should release kbd voices before calling this — the
+   * Mixer's remove handler does so via keyboardVoiceManager.releaseAll().
+   */
+  removeOscillatorAt(index) {
+    try {
+      if (!this.isInitialized) return;
+      if (index < 0 || index >= this.oscillatorCount) return;
+      if (this.oscillatorCount <= this.minOscillators) return;
+
+      this.removedSlots.push({
+        freq: this.frequencyValues[index],
+        vol: this.volumeValues[index],
+        muted: this.mutedStates[index],
+        preMuteVol: this.preMuteVolumes[index],
+      });
+
+      const t = this.audioContext.currentTime;
+      const osc = this.oscillators[index];
+      const gainNode = this.gainNodes[index];
+      const oscR = this.oscillatorsR[index];
+      const gainNodeR = this.gainNodesR[index];
+
+      try {
+        const fadePair = (g) => {
+          if (!g) return;
+          const cur = g.gain.value;
+          g.gain.cancelScheduledValues(t);
+          g.gain.setValueAtTime(cur, t);
+          g.gain.linearRampToValueAtTime(0, t + FIXED_SLOT_FADE);
+        };
+        fadePair(gainNode);
+        fadePair(gainNodeR);
+        const stopPair = (o, g) => {
+          if (!o) return;
+          o.onended = () => {
+            try { o.disconnect(); } catch { /* ignore */ }
+            try { g && g.disconnect(); } catch { /* ignore */ }
+          };
+          o.stop(t + FIXED_SLOT_FADE + 0.05);
+        };
+        stopPair(osc, gainNode);
+        stopPair(oscR, gainNodeR);
+      } catch (e) {
+        console.warn('Error stopping oscillator', index, e);
+      }
+
+      this.oscillators.splice(index, 1);
+      this.gainNodes.splice(index, 1);
+      this.oscillatorsR.splice(index, 1);
+      this.gainNodesR.splice(index, 1);
+      this.frequencyValues.splice(index, 1);
+      this.volumeValues.splice(index, 1);
+      this.mutedStates.splice(index, 1);
+      this.preMuteVolumes.splice(index, 1);
+      this.droneDetuneOffsets.splice(index, 1);
+      this.phases.splice(index, 1);
+      this.smoothedFreqs.splice(index, 1);
+      this._lastPhaseUpdate.splice(index, 1);
+      this.phasesR.splice(index, 1);
+      this.smoothedFreqsR.splice(index, 1);
+      this._lastPhaseUpdateR.splice(index, 1);
+
+      // Reindex routing: drop the removed slot's entry and shift any
+      // higher slot's key down by 1. Mutating in-place would risk
+      // collision (slot 4 → 3 collides with the existing slot 3) so we
+      // rebuild from scratch.
+      const newRouting = {};
+      for (const [slotStr, channels] of Object.entries(this.routingMap)) {
+        const slot = Number(slotStr);
+        if (slot < index) newRouting[slot] = channels;
+        else if (slot > index) newRouting[slot - 1] = channels;
+        // slot === index drops
+      }
+      this.routingMap = newRouting;
+
+      // Same with the per-pool detune curves.
+      droneStereo.removeCurveAt(index);
+      keyboardStereo.removeCurveAt(index);
+
+      this.oscillatorCount -= 1;
+
+      this._updateMasterGainScaling();
+      this._notifyFrequencyChange();
+    } catch (err) {
+      console.error('AudioEngine: Failed to remove oscillator', err);
+    }
+  }
+
+  /**
+   * Append a new oscillator pre-seeded with `sourceIndex`'s freq/vol/mute
+   * state. Differs from setOscillatorCount(count+1) — that path either
+   * pops removedSlots or picks a random pitch near an existing one,
+   * neither of which is "make a copy of this slot". Refuses to grow past
+   * maxOscillators.
+   */
+  cloneOscillator(sourceIndex) {
+    try {
+      if (!this.isInitialized) return;
+      if (sourceIndex < 0 || sourceIndex >= this.oscillatorCount) return;
+      if (this.oscillatorCount >= this.maxOscillators) return;
+
+      const newIndex = this.oscillatorCount;
+      this.frequencyValues[newIndex] = this.frequencyValues[sourceIndex];
+      this.volumeValues[newIndex] = this.volumeValues[sourceIndex];
+      this.mutedStates[newIndex] = this.mutedStates[sourceIndex];
+      this.preMuteVolumes[newIndex] = this.preMuteVolumes[sourceIndex];
+      this.oscillatorCount = newIndex + 1;
+
+      // Stereo curves need to grow before _createSingleOscillator reads
+      // a per-slot detune for the new node.
+      droneStereo.resizeCurve(this.oscillatorCount);
+      keyboardStereo.resizeCurve(this.oscillatorCount);
+
+      this._createSingleOscillator(newIndex, true /* withFade */);
+      this._updateMasterGainScaling();
+      this._notifyFrequencyChange();
+    } catch (err) {
+      console.error('AudioEngine: Failed to clone oscillator', err);
+    }
+  }
+
   /**
    * Get current oscillator count
    */

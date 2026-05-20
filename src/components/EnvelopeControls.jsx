@@ -34,7 +34,7 @@ function formatMs(ms) {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
-export default function EnvelopeControls({ title, envelope }) {
+export default function EnvelopeControls({ title, envelope, mode = 'adsr' }) {
   const [, setTick] = useState(0);
 
   // Re-render whenever the envelope's values change (URL restore, the
@@ -44,14 +44,21 @@ export default function EnvelopeControls({ title, envelope }) {
   const attackMs = envelope.attack * 1000;
   const decayMs = envelope.decay * 1000;
   const releaseMs = envelope.release * 1000;
+  const isAR = mode === 'ar';
+
+  // In AR mode the graph should show 0 → peak → flat plateau → 0
+  // (no decay slump). Feeding decay=0 / sustain=1 to the preview gives
+  // that shape without teaching EnvelopeGraph a new code path.
+  const graphDecay = isAR ? 0 : envelope.decay;
+  const graphSustain = isAR ? 1 : envelope.sustain;
 
   return (
     <div className="settings-section envelope-section">
       <label className="settings-label">{title}</label>
       <EnvelopeGraph
         attack={envelope.attack}
-        decay={envelope.decay}
-        sustain={envelope.sustain}
+        decay={graphDecay}
+        sustain={graphSustain}
         release={envelope.release}
       />
 
@@ -69,33 +76,37 @@ export default function EnvelopeControls({ title, envelope }) {
         <span className="tune-slider-value">{formatMs(attackMs)}</span>
       </div>
 
-      <div className="tune-slider-row">
-        <span className="tune-slider-label">Decay</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.001"
-          value={msToT(decayMs)}
-          onChange={(e) => envelope.setDecay(tToMs(parseFloat(e.target.value)) / 1000)}
-          className="tune-slider"
-        />
-        <span className="tune-slider-value">{formatMs(decayMs)}</span>
-      </div>
+      {!isAR && (
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Decay</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.001"
+            value={msToT(decayMs)}
+            onChange={(e) => envelope.setDecay(tToMs(parseFloat(e.target.value)) / 1000)}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{formatMs(decayMs)}</span>
+        </div>
+      )}
 
-      <div className="tune-slider-row">
-        <span className="tune-slider-label">Sustain</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value={envelope.sustain}
-          onChange={(e) => envelope.setSustain(parseFloat(e.target.value))}
-          className="tune-slider"
-        />
-        <span className="tune-slider-value">{Math.round(envelope.sustain * 100)} %</span>
-      </div>
+      {!isAR && (
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Sustain</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={envelope.sustain}
+            onChange={(e) => envelope.setSustain(parseFloat(e.target.value))}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{Math.round(envelope.sustain * 100)} %</span>
+        </div>
+      )}
 
       <div className="tune-slider-row">
         <span className="tune-slider-label">Release</span>

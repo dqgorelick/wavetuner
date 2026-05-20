@@ -118,14 +118,24 @@ class StereoMode {
     this._notify({ kind: 'curve' });
   }
 
-  /** Resize the curve to N slots. New slots default to 0 (no detune)
-   *  so adding a drone doesn't surprise-detune anything. Excess slots
-   *  are truncated. Fires 'curve' if anything changed. */
+  /** Splice out the curve entry at `index`, shifting higher slots down
+   *  by 1. Used when an arbitrary slot is removed (vs resizeCurve, which
+   *  always truncates the tail). Fires 'curve' so audio retunes. */
+  removeCurveAt(index) {
+    if (index < 0 || index >= this.detuneCurve.length) return;
+    this.detuneCurve.splice(index, 1);
+    this._notify({ kind: 'curve' });
+  }
+
+  /** Resize the curve to N slots. New slots default to 1.0 (full curve
+   *  weight) so a freshly-added drone picks up the master detune scale
+   *  immediately — adjust the master Hz to control how prominent it is.
+   *  Excess slots are truncated. Fires 'curve' if anything changed. */
   resizeCurve(n) {
     const target = Math.max(0, Math.floor(n));
     if (target === this.detuneCurve.length) return;
     if (target > this.detuneCurve.length) {
-      while (this.detuneCurve.length < target) this.detuneCurve.push(0);
+      while (this.detuneCurve.length < target) this.detuneCurve.push(1);
     } else {
       this.detuneCurve.length = target;
     }

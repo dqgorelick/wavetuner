@@ -23,10 +23,18 @@ const SENSITIVITY_FINE = 0.1;
 const GRAB_VOL_SCALAR = 2;
 
 // Edge auto-pan: while dragging or grabbing, holding the pointer in the outer
-// EDGE_ZONE_FRAC of the bar continuously drifts frequency toward that edge.
+// EDGE_ZONE of the *canvas* continuously drifts frequency toward that edge.
+// The canvas is the centered min(viewport, CANVAS_MAX_WIDTH) region — same
+// horizontal frame as the on-screen keyboard tray — so on wide displays the
+// dragging area doesn't sprawl to the screen edges. Pulling toward the
+// canvas edge scrolls the spectrum regardless of where the (narrower) bar
+// sits inside it.
 // Rate ramps linearly from 0 at the zone boundary to MAX_EDGE_PAN_RATE at the
-// true edge, in octaves/sec. dt is clamped so a backgrounded tab can't jump.
+// canvas edge, in octaves/sec. dt is clamped so a backgrounded tab can't jump.
+// Zone width = 10% of canvas width = min(10vw, EDGE_ZONE_MAX_PX).
+const CANVAS_MAX_WIDTH = 1200;
 const EDGE_ZONE_FRAC = 0.10;
+const EDGE_ZONE_MAX_PX = 120;
 const MAX_EDGE_PAN_RATE = 2.0;
 const MAX_EDGE_PAN_DT = 0.1;
 
@@ -108,15 +116,19 @@ const DOT_CENTER_Y = DOT_SIZE / 2;
 const BAR_TOP_Y = DOT_SIZE + DOT_GAP;
 const TOTAL_HEIGHT = BAR_TOP_Y + BAR_LINE_HEIGHT + 4;
 
-function computeEdgeRate(clientX, containerLeft, barWidth) {
-  if (barWidth <= 0) return 0;
-  const frac = (clientX - containerLeft - BAR_H_PADDING) / barWidth;
-  if (frac < EDGE_ZONE_FRAC) {
-    const depth = Math.min(1, (EDGE_ZONE_FRAC - frac) / EDGE_ZONE_FRAC);
+function computeEdgeRate(clientX) {
+  const vw = window.innerWidth;
+  const canvasWidth = Math.min(vw, CANVAS_MAX_WIDTH);
+  const canvasLeft = Math.max(0, (vw - CANVAS_MAX_WIDTH) / 2);
+  const canvasRight = canvasLeft + canvasWidth;
+  const zone = Math.min(EDGE_ZONE_FRAC * canvasWidth, EDGE_ZONE_MAX_PX);
+  if (zone <= 0) return 0;
+  if (clientX < canvasLeft + zone) {
+    const depth = Math.min(1, (canvasLeft + zone - clientX) / zone);
     return -depth * MAX_EDGE_PAN_RATE;
   }
-  if (frac > 1 - EDGE_ZONE_FRAC) {
-    const depth = Math.min(1, (frac - (1 - EDGE_ZONE_FRAC)) / EDGE_ZONE_FRAC);
+  if (clientX > canvasRight - zone) {
+    const depth = Math.min(1, (clientX - (canvasRight - zone)) / zone);
     return depth * MAX_EDGE_PAN_RATE;
   }
   return 0;
@@ -146,6 +158,45 @@ function computeTargetRange(freqs) {
     logMin: Math.max(ABSOLUTE_LOG_MIN, paddedMin),
     logMax: Math.min(ABSOLUTE_LOG_MAX, paddedMax),
   };
+}
+
+// Edge-pan vector arrow that appears beside an actively-dragged/grabbed orb
+// while the pointer is in the edge zone. Anchored on the OPPOSITE side from
+// the push direction so the arrow stays on-screen when the orb itself is at
+// the very edge of a small viewport: pushing right → arrow on the orb's
+// left, pointing right.
+const EDGE_ARROW_MAX_LEN = 60;
+const EDGE_ARROW_ORB_GAP = DOT_SIZE / 2 + 2;
+const EDGE_ARROW_HEAD = 7;
+
+function renderEdgeArrow(key, x, y, edgeRate, color) {
+  if (!edgeRate) return null;
+  const magnitude = Math.min(1, Math.abs(edgeRate) / MAX_EDGE_PAN_RATE);
+  if (magnitude <= 0) return null;
+  const direction = edgeRate > 0 ? 1 : -1;
+  const len = EDGE_ARROW_MAX_LEN * magnitude;
+  const tipX = x - direction * EDGE_ARROW_ORB_GAP;
+  const tailX = tipX - direction * len;
+  const headBackX = tipX - direction * EDGE_ARROW_HEAD;
+  const headHalf = EDGE_ARROW_HEAD * 0.75;
+  return (
+    <g key={key} className="fsb-edge-arrow">
+      <line
+        x1={tailX}
+        y1={y}
+        x2={tipX}
+        y2={y}
+        stroke={color}
+        strokeWidth={3}
+        strokeOpacity={0.95}
+        strokeLinecap="round"
+      />
+      <polygon
+        points={`${tipX},${y} ${headBackX},${y - headHalf} ${headBackX},${y + headHalf}`}
+        fill={color}
+      />
+    </g>
+  );
 }
 
 // Compact arrangement of N ghost circles around a cursor: 1 center, 2 horizontal,
@@ -468,7 +519,7 @@ function FrequencySpectrumBar({
       if (next.has(index)) next.delete(index);
       else {
         next.add(index);
-        if (!suppressAutoUnmute && audioEngine.isMuted(index)) {
+        if (!suppressAutoUnmute && !audioEngine.paused && audioEngine.isMuted(index)) {
           audioEngine.unmuteOscillator(index);
         }
       }
@@ -486,8 +537,11 @@ function FrequencySpectrumBar({
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
     // Selecting a muted osc with the mouse unmutes it — UNLESS the
     // keyboard tray is up (then the orbs are a tuning UI for the
-    // keyboard and shouldn't kick the drone back on by surprise).
-    if (!suppressAutoUnmute && audioEngine.isMuted(index)) {
+    // keyboard and shouldn't kick the drone back on by surprise), and
+    // never when the drone bus is paused (a paused drone shouldn't be
+    // restarted by a stray click). Drag-confirm in handlePointerMove
+    // applies its own unmute rule that overrides suppressAutoUnmute.
+    if (!suppressAutoUnmute && !audioEngine.paused && audioEngine.isMuted(index)) {
       audioEngine.unmuteOscillator(index);
     }
     const rect = containerRef.current.getBoundingClientRect();
@@ -508,7 +562,7 @@ function FrequencySpectrumBar({
     });
     setGhosts((prev) => ({
       ...prev,
-      [e.pointerId]: { index, x: e.clientX - rect.left, y: e.clientY - rect.top },
+      [e.pointerId]: { index, x: e.clientX - rect.left, y: e.clientY - rect.top, edgeRate: 0 },
     }));
   };
 
@@ -520,6 +574,14 @@ function FrequencySpectrumBar({
     const totalDy = e.clientY - drag.startY;
     if (!drag.didDrag && (totalDx * totalDx + totalDy * totalDy) > 4) {
       drag.didDrag = true;
+      // Confirmed drag: unmute the orb regardless of suppressAutoUnmute
+      // (i.e. even when the keyboard tray is up), but ONLY while the drone
+      // bus is playing — a drag with drones paused shouldn't surprise-restart
+      // playback. Tap-only interactions still go through toggleGrab and
+      // honor suppressAutoUnmute as before.
+      if (!audioEngine.paused && audioEngine.isMuted(drag.index)) {
+        audioEngine.unmuteOscillator(drag.index);
+      }
     }
     if (drag.didDrag) {
       const deltaX = e.clientX - drag.lastX;
@@ -547,13 +609,16 @@ function FrequencySpectrumBar({
           );
         }
       }
-      drag.edgeRate = computeEdgeRate(e.clientX, drag.containerLeft, barWidthRef.current);
+      drag.edgeRate = computeEdgeRate(e.clientX);
     } else {
       drag.edgeRate = 0;
     }
     const x = e.clientX - drag.containerLeft;
     const y = e.clientY - drag.containerTop;
-    setGhosts((prev) => ({ ...prev, [e.pointerId]: { index: drag.index, x, y } }));
+    setGhosts((prev) => ({
+      ...prev,
+      [e.pointerId]: { index: drag.index, x, y, edgeRate: drag.edgeRate || 0 },
+    }));
   };
 
   const handlePointerUp = (e, cancelled = false) => {
@@ -602,8 +667,9 @@ function FrequencySpectrumBar({
 
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setGrabCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-      grabEdgeRateRef.current = computeEdgeRate(e.clientX, rect.left, barWidthRef.current);
+      const rate = computeEdgeRate(e.clientX);
+      setGrabCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top, edgeRate: rate });
+      grabEdgeRateRef.current = rate;
 
       if (lastGrabXRef.current === null) {
         lastGrabXRef.current = e.clientX;
@@ -658,6 +724,7 @@ function FrequencySpectrumBar({
         setGrabCursor({
           x: mousePosRef.current.x - rect.left,
           y: mousePosRef.current.y - rect.top,
+          edgeRate: 0,
         });
       }
       lastGrabXRef.current = mousePosRef.current.x;
@@ -843,6 +910,16 @@ function FrequencySpectrumBar({
   return (
     <>
       <div className="orb-backdrop" />
+      {/* Viewport-spanning dotted lines marking where edge auto-pan engages.
+          Only shown during an active drag or grab — otherwise they're visual
+          noise. CSS positions them at the 1200px canvas inset (matching the
+          keyboard tray); see computeEdgeRate() for the matching JS math. */}
+      {(draggingDots.size > 0 || grabbedOscs.size > 0) && (
+        <>
+          <div className="fsb-edge-zone-line fsb-edge-zone-line-left" aria-hidden="true" />
+          <div className="fsb-edge-zone-line fsb-edge-zone-line-right" aria-hidden="true" />
+        </>
+      )}
       <div
         className="freq-spectrum-bar"
         ref={containerRef}
@@ -878,6 +955,7 @@ function FrequencySpectrumBar({
           );
         })}
       </div>
+
 
       {/* Line endpoints in compact (fullscreen) mode have to compensate for
           the orb / ghost CSS transform: scale(0.5) with transform-origin
@@ -957,6 +1035,26 @@ function FrequencySpectrumBar({
                     strokeOpacity={0.5}
                     strokeWidth={1}
                   />
+                );
+              })}
+            {Object.entries(ghosts).map(([pid, g]) =>
+              renderEdgeArrow(
+                `drag-arrow-${pid}`,
+                g.x,
+                g.y + ghostYOffset,
+                g.edgeRate,
+                palette.oscColor(g.index, oscillatorCount)
+              )
+            )}
+            {grabCursor &&
+              Array.from(grabbedOscs).map((idx, i, arr) => {
+                const { dx, dy } = ghostOffset(i, arr.length);
+                return renderEdgeArrow(
+                  `grab-arrow-${idx}`,
+                  grabCursor.x + dx,
+                  grabCursor.y + dy + ghostYOffset,
+                  grabCursor.edgeRate,
+                  palette.oscColor(idx, oscillatorCount)
                 );
               })}
           </svg>

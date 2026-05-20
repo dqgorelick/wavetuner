@@ -566,8 +566,6 @@ function OscillatorControls({
   activeOscs,
   uiMode = 'simple',
   onModeChange,
-  tuneVarianceHz = 0,
-  tuneGlideSec = 1.0,
   onFineTuningChange,
   isKbdTrayOpen = false,
   onKbdTrayToggle,
@@ -589,22 +587,12 @@ function OscillatorControls({
   // up `.paused` and dim the global UI in step. The togglePlayPause
   // sites below call onPausedChange directly to keep parent + engine
   // in lockstep.
-  const [isTuning, setIsTuning] = useState(false);
   // Tracked separately from frequencies/volumes because the bottom-row
   // mute buttons append an L/R/LR suffix derived from routing (only
   // shown when the output is plain stereo — for >2 output channels we
   // omit the suffix since there's no single letter that fits).
   const [routingMap, setRoutingMap] = useState(() => audioEngine.getRoutingMap?.() ?? {});
   const [maxChannels, setMaxChannels] = useState(() => audioEngine.getMaxOutputChannels?.() ?? 2);
-
-  const handleTune = () => {
-    if (!audioEngine.initialized) return;
-    const targets = audioEngine.computeJustIntonationTargets(tuneVarianceHz);
-    setIsTuning(true);
-    audioEngine.glideToFrequencies(targets, Math.round(tuneGlideSec * 1000), () => {
-      setIsTuning(false);
-    });
-  };
 
   useEffect(() => {
     setMutedOscillators((prev) => {
@@ -839,18 +827,6 @@ function OscillatorControls({
               })}
               <div className="grid-cell fader-cell osc-more-col">
                 <div className="osc-more-stack">
-                  <button
-                    className="osc-more-btn icon-btn"
-                    onClick={handleTune}
-                    disabled={isTuning}
-                    title="Tune to just-intonation ratios (configure in settings)"
-                    aria-label="Tune"
-                  >
-                    <svg viewBox="0 0 24 24" className="button-icon">
-                      <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" />
-                    </svg>
-                  </button>
-                  <span className="osc-more-btn-caption">align</span>
                   <button
                     className="osc-more-btn icon-btn"
                     onClick={onRevertToPatch}

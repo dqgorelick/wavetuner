@@ -50,14 +50,43 @@ class Envelope {
    * `peak` is the velocity-scaled target the attack ramps up to; the
    * sustain segment then holds at peak·sustain until applyNoteOff or
    * retargetSustain is called.
+   *
+   * `attackOverride` (seconds) lets a caller substitute a longer attack
+   * time without mutating the envelope's own value — used by the
+   * computer-keyboard source so its expressive ramp doesn't bleed into
+   * MIDI play through the shared singleton.
+   *
+   * When `mode === 'ar'`, the decay→sustain segment is omitted: gain
+   * ramps 0 → peak over attack and then stays at peak. Used by the kbd
+   * source so the ramp-up plateau matches the level the player reaches,
+   * with no slump to a sustain factor.
    */
-  applyNoteOn(gainParam, ctx, peak = 1) {
+  applyNoteOn(gainParam, ctx, peak = 1, attackOverride = null, mode = 'adsr') {
     const t = ctx.currentTime;
-    const sustainLevel = peak * this.sustain;
+    const attack = attackOverride !== null ? Math.max(0.001, attackOverride) : this.attack;
     gainParam.cancelScheduledValues(t);
     gainParam.setValueAtTime(0, t);
-    gainParam.linearRampToValueAtTime(peak, t + this.attack);
-    gainParam.linearRampToValueAtTime(sustainLevel, t + this.attack + this.decay);
+    gainParam.linearRampToValueAtTime(peak, t + attack);
+    if (mode !== 'ar') {
+      const sustainLevel = peak * this.sustain;
+      gainParam.linearRampToValueAtTime(sustainLevel, t + attack + this.decay);
+    }
+  }
+
+  /**
+   * Snap an in-progress attack to "held at current gain". Cancels any
+   * remaining scheduled ramps and pins the value at whatever it reads
+   * right now — no sustain multiplication, no glide. Used by the kbd
+   * source on keyup so the note keeps sounding at exactly the level the
+   * player dialed in. Returns the captured gain so the caller can store
+   * it on the voice (for visualizer reads / re-trigger comparisons).
+   */
+  freezeToCurrent(gainParam, ctx) {
+    const t = ctx.currentTime;
+    const cur = gainParam.value;
+    gainParam.cancelScheduledValues(t);
+    gainParam.setValueAtTime(cur, t);
+    return cur;
   }
 
   /**
@@ -98,10 +127,22 @@ export const droneEnvelope = new Envelope({
   sustain: 0.7,
   release: 0.5,
 });
+// MIDI-keyboard envelope — full ADSR, velocity-sensitive sustain.
 export const keyboardEnvelope = new Envelope({
   attack: 0.1,
   decay: 1.0,
   sustain: 0.4,
+  release: 0.3,
+});
+// Computer-keyboard envelope — only attack and release are used (the
+// AR mode in applyNoteOn skips decay/sustain). The kbd source runs
+// expressively: long attack ramp the player rides, then freezeNote on
+// keyup pins the reached level until released. `release` here is what
+// noteOff and voice-stealing within the kbd cap fade over.
+export const computerKbdEnvelope = new Envelope({
+  attack: 2.0,
+  decay: 0.001,
+  sustain: 1.0,
   release: 0.3,
 });
 

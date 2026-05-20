@@ -143,10 +143,10 @@ class MidiInput {
     const value    = data.length >= 3 ? data[2] : 0;
 
     if (command === NOTE_ON && value > 0) {
-      keyboardVoiceManager.noteOn(note, value / 127);
+      keyboardVoiceManager.noteOn(note, value / 127, { source: 'midi' });
     } else if (command === NOTE_OFF || (command === NOTE_ON && value === 0)) {
       // Some controllers send NOTE_ON with velocity 0 instead of NOTE_OFF.
-      keyboardVoiceManager.noteOff(note);
+      keyboardVoiceManager.noteOff(note, { source: 'midi' });
     } else if (command === CC && note === CC_SUSTAIN) {
       keyboardVoiceManager.setSustainPedal(value >= 64);
     }

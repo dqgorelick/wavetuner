@@ -10,11 +10,7 @@ import palette from '../theme/palette';
 //   Blacks at 1,3,6,8,10
 const WHITE_OFFSETS = [0, 2, 4, 5, 7, 9, 11];
 const BLACK_OFFSETS = [1, 3, 6, 8, 10];
-
-// For each black-key offset, the index of the white key it visually
-// follows (within an octave). C# follows white#0 (C); D# follows white#1
-// (D); F# follows white#3 (F); etc.
-const BLACK_AFTER_WHITE = { 1: 0, 3: 1, 6: 3, 8: 4, 10: 5 };
+const WHITE_OFFSET_SET = new Set(WHITE_OFFSETS);
 
 // Black key as a fraction of one white key's width. Real pianos are ~0.6;
 // 0.6 reads cleanly at our key sizes.
@@ -33,7 +29,8 @@ function midiToDegreeOctave(midi) {
 
 /**
  * On-screen piano keyboard. Two octaves wide, starting at the supplied
- * keyboardOctave (so keyboardOctave=4 means the lowest key is C4 = MIDI 60).
+ * kbdRoot (the MIDI note the lowest computer-key letter triggers — e.g.
+ * 60 = C4 by default).
  *
  * Each key shows a small color dot reflecting which drone slot supplies
  * its current scale degree. Keys glow while a voice is sounding; glow
@@ -41,7 +38,7 @@ function midiToDegreeOctave(midi) {
  * per-frame DOM update (no React state on the hot path — same pattern
  * the existing oscilloscope uses).
  */
-export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2 }) {
+export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2 }) {
   const containerRef = useRef(null);
   const keyRefs = useRef(new Map()); // midi → element
   const leftArrowRef = useRef(null);
@@ -53,37 +50,62 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2 }
 
   // Build the static key layout: list of every key in the visible range,
   // tagged with whether it's black + where it should be positioned.
-  // Standard MIDI convention: C(n) = MIDI 12·(n+1), so octave 4 → C4 = 60.
   //
-  // The on-screen keyboard's VISUAL start sits one octave BELOW the
-  // computer-key mapping so the mouse can reach an octave lower than
-  // QWERTY can. The computer-key hook still uses (keyboardOctave + 1)
-  // * 12 as its base, so the labeled keys appear in the second octave
-  // from the left.
-  const letterStartMidi = (keyboardOctave + 1) * 12;
-  const startMidi = letterStartMidi - 12;
-  const totalWhites = octaveCount * WHITE_OFFSETS.length;
+  // Zoom levels:
+  //   octaveCount=1 (min): show kbdRoot up through the E one octave
+  //     above (offset +16) — that's the letter octave plus a 5-key
+  //     "peek" of the next octave. Letter row sits at the bottom edge.
+  //   octaveCount>=2: letter octave is centered, with (octaveCount-1)
+  //     full octaves of context split evenly above and below. At zoom
+  //     2 that's ½ octave on each side, at zoom 3 a full octave each
+  //     side, zoom 4 = 1½ octaves each side, etc.
+  //
+  // White/black pattern is anchored at `kbdRoot` (the QWERTY 'A' key)
+  // rather than at the visible-range start: 'A' is always drawn as a
+  // visual C-key, regardless of the actual pitch class the scale maps
+  // it to. The frequencies the keys produce still come from the
+  // tuning/scale module — only the standard piano *appearance* is
+  // pinned to the kbdRoot anchor.
+  const VISIBLE_TOP_OFFSET_ZOOM_1 = 17;  // exclusive — high E peek above kbdRoot
+  const letterStartMidi = kbdRoot;
+  const sidePad = octaveCount <= 1 ? 0 : (octaveCount - 1) * 6;
+  const startMidi = octaveCount <= 1 ? kbdRoot : kbdRoot - sidePad;
+  const endMidi = octaveCount <= 1
+    ? kbdRoot + VISIBLE_TOP_OFFSET_ZOOM_1
+    : kbdRoot + 12 + sidePad;
 
-  const { whites, blacks } = useMemo(() => {
+  const { whites, blacks, totalWhites } = useMemo(() => {
+    const visibleStart = startMidi;
+    const visibleEnd = endMidi;
+    // Iterate enough kbdRoot-rooted octaves to cover the visible span,
+    // then drop anything outside [visibleStart, visibleEnd). Going
+    // semitone-by-semitone within each octave keeps the whites/blacks
+    // in MIDI order so `whiteIndex` and `whiteAfter` come out monotonic.
+    const minOct = Math.floor((visibleStart - kbdRoot) / 12);
+    const maxOct = Math.ceil((visibleEnd - kbdRoot) / 12);
     const whites = [];
     const blacks = [];
-    for (let oct = 0; oct < octaveCount; oct++) {
-      for (let i = 0; i < WHITE_OFFSETS.length; i++) {
-        whites.push({
-          midi: startMidi + oct * 12 + WHITE_OFFSETS[i],
-          whiteIndex: oct * WHITE_OFFSETS.length + i,
-        });
-      }
-      for (const off of BLACK_OFFSETS) {
-        const whiteAfter = BLACK_AFTER_WHITE[off] + oct * WHITE_OFFSETS.length;
-        blacks.push({
-          midi: startMidi + oct * 12 + off,
-          whiteAfter,
-        });
+    let whiteIndex = 0;
+    // -1 means "no white visible yet" — a black key at the leftmost
+    // partial-octave edge gets that and ends up positioned slightly
+    // off the left edge (overhanging into the gutter), which reads as
+    // "more keys exist below the view".
+    let lastWhiteIndex = -1;
+    for (let oct = minOct; oct < maxOct; oct++) {
+      for (let off = 0; off < 12; off++) {
+        const midi = kbdRoot + oct * 12 + off;
+        if (midi < visibleStart || midi >= visibleEnd) continue;
+        if (WHITE_OFFSET_SET.has(off)) {
+          whites.push({ midi, whiteIndex });
+          lastWhiteIndex = whiteIndex;
+          whiteIndex += 1;
+        } else {
+          blacks.push({ midi, whiteAfter: lastWhiteIndex });
+        }
       }
     }
-    return { whites, blacks };
-  }, [startMidi, octaveCount]);
+    return { whites, blacks, totalWhites: whiteIndex };
+  }, [startMidi, endMidi, kbdRoot]);
 
   // Per-key color update — sets BOTH the small dot's background AND a
   // `--key-color` CSS variable on the key element itself. The CSS
@@ -131,7 +153,7 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2 }
   // notes below startMidi, right for notes at or above the upper edge).
   useEffect(() => {
     const visibleStart = startMidi;
-    const visibleEnd = startMidi + octaveCount * 12; // exclusive
+    const visibleEnd = endMidi; // exclusive — matches the layout loop
     let raf = null;
     // Visual amp normalization: with TAP_VELOCITY=0.5 and keyboard
     // envelope sustain≈0.4, a held note's gain.value sits near 0.2.
@@ -187,26 +209,35 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2 }
     };
     tick();
     return () => { if (raf) cancelAnimationFrame(raf); };
-  }, [startMidi, octaveCount]);
+  }, [startMidi, endMidi]);
 
-  // Pointer handlers — pointerdown on a key triggers noteOn; pointerup or
-  // pointer leaving the keyboard area triggers noteOff. Dragging from
+  // Pointer handlers — pointerdown on a key triggers noteOn; pointerup
+  // freezes (when kbd hold is on) or releases (when off). Dragging from
   // one key to another performs legato (releases the previous, triggers
   // the next).
-  // Fixed velocity matches the computer-keyboard tray: pointer taps
-  // don't carry real velocity, so we send a moderate value that keeps
-  // polyphonic stacking within bus headroom.
-  const TAP_VELOCITY = 0.5;
+  //
+  // Mouse/touch input uses the same source: 'kbd' as the computer
+  // keyboard, so it gets the long expressive ramp, the AR envelope,
+  // and the freeze-on-release-or-tap-to-toggle-off semantics. The
+  // velocity arg is ignored for kbd voices (peak is always 1.0; the
+  // player dials it down by how long they hold).
+  const releasePrev = (prev) => {
+    // Drag-off semantics: leaving a key during a drag releases it even
+    // when hold is on. Otherwise dragging across keys with hold-on
+    // would accumulate latched voices and bury the glissando feel
+    // under a chord stack. The voice's release ramp captures wherever
+    // the attack got to, so a quick brush yields a quick taper.
+    if (prev === undefined) return;
+    keyboardVoiceManager.releaseNote(prev, 'kbd');
+  };
   const handlePointerDown = (e, midi) => {
     if (!audioEngine.isInitialized) return;
     e.preventDefault();
     const id = e.pointerId;
     const prev = pointerHeld.current.get(id);
-    if (prev !== undefined && prev !== midi) {
-      keyboardVoiceManager.noteOff(prev);
-    }
+    if (prev !== undefined && prev !== midi) releasePrev(prev);
     pointerHeld.current.set(id, midi);
-    keyboardVoiceManager.noteOn(midi, TAP_VELOCITY);
+    keyboardVoiceManager.noteOn(midi, 1, { source: 'kbd' });
     // Intentionally NOT calling setPointerCapture — pointer capture
     // would prevent pointerenter from firing on neighboring keys, which
     // would break drag-to-glissando.
@@ -217,15 +248,21 @@ export default function OnScreenKeyboard({ keyboardOctave = 4, octaveCount = 2 }
     const id = e.pointerId;
     const prev = pointerHeld.current.get(id);
     if (prev === midi) return;
-    if (prev !== undefined) keyboardVoiceManager.noteOff(prev);
+    releasePrev(prev);
     pointerHeld.current.set(id, midi);
-    keyboardVoiceManager.noteOn(midi, TAP_VELOCITY);
+    keyboardVoiceManager.noteOn(midi, 1, { source: 'kbd' });
   };
   const handlePointerUp = (e) => {
     const id = e.pointerId;
     const midi = pointerHeld.current.get(id);
     if (midi !== undefined) {
-      keyboardVoiceManager.noteOff(midi);
+      // Tap release follows keyup rules: freeze at the reached level if
+      // kbd hold is on, otherwise normal release.
+      if (keyboardVoiceManager.getHold('kbd')) {
+        keyboardVoiceManager.freezeNote(midi, 'kbd');
+      } else {
+        keyboardVoiceManager.noteOff(midi, { source: 'kbd' });
+      }
       pointerHeld.current.delete(id);
     }
   };

@@ -6,15 +6,18 @@ import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
 import { droneWave, keyboardWave } from './audio/Wave';
 import { droneFold, keyboardFold } from './audio/Fold';
 import { droneStereo, keyboardStereo } from './audio/StereoMode';
+import frequencyManager from './audio/FrequencyManager';
 import midiInput from './audio/MidiInput';
 import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
 import FullscreenFreqList from './components/FullscreenFreqList';
+import FrequencyManagerPanel from './components/FrequencyManager';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
+import Mixer from './components/Mixer';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
 import HydraOverlay from './components/HydraOverlay';
@@ -348,11 +351,27 @@ function App() {
     const threshold = kbdKeyMode === 'white-only' ? 7 : 11;
     if (oscillatorCount > threshold) setKbdFillMode('fill');
   }, [oscillatorCount, kbdKeyMode]);
-  // Hold mode: each key press latches the note on; pressing again
-  // toggles it off. Mirrored into the voice manager so all input
-  // sources (MIDI, computer kbd, on-screen) get the toggle behavior.
-  const [kbdHoldOn, setKbdHoldOn] = useState(false);
-  useEffect(() => { keyboardVoiceManager.setHold(kbdHoldOn); }, [kbdHoldOn]);
+  // Hold mode is per source. The computer keyboard runs in an expressive
+  // mode (long ramp on attack, freeze-on-keyup), so hold-on is its
+  // default; MIDI defaults to press-and-hold like a normal controller.
+  // Pressing a latched note from either source toggles it off.
+  const [kbdHoldOn, setKbdHoldOn] = useState(true);
+  const [midiHoldOn, setMidiHoldOn] = useState(false);
+  useEffect(() => { keyboardVoiceManager.setHold(kbdHoldOn, 'kbd'); }, [kbdHoldOn]);
+  useEffect(() => { keyboardVoiceManager.setHold(midiHoldOn, 'midi'); }, [midiHoldOn]);
+
+  // Computer-keyboard voice cap. Cap exceeded → oldest kbd voice enters
+  // its release tail (no abrupt cut). Default 2 encourages two-handed
+  // picking on a Mac keyboard. MIDI keeps the voice manager's built-in
+  // default (32) — no UI for it yet.
+  const [kbdVoiceCount, setKbdVoiceCount] = useState(2);
+  useEffect(() => { keyboardVoiceManager.setMaxVoices(kbdVoiceCount, 'kbd'); }, [kbdVoiceCount]);
+
+  // Re-press behavior when kbd hold is engaged. 'toggle' = second press
+  // releases the latched voice. 'restart' = second press releases AND
+  // spawns a fresh voice ramping from 0. Kbd-only knob.
+  const [kbdRepressMode, setKbdRepressMode] = useState('toggle');
+  useEffect(() => { keyboardVoiceManager.setKbdRepressMode(kbdRepressMode); }, [kbdRepressMode]);
   // MIDI-input gate — when off, incoming MIDI messages are dropped at
   // the source (MidiInput._handleMessage). Computer-keyboard and
   // on-screen play paths are unaffected. The keyboard *bus* itself
@@ -400,6 +419,28 @@ function App() {
     palette.setTheme(t);
     setThemeState(palette.theme);
   }, []);
+
+  // JI ratio limit for the frequency rail's nearest-ratio readout.
+  // Mirrors frequencyManager.limit; setter pushes back into the
+  // singleton so the rail picks it up.
+  const [jiLimit, setJiLimit] = useState(frequencyManager.limit);
+  const handleJiLimitChange = useCallback((n) => {
+    frequencyManager.setLimit(n);
+    setJiLimit(frequencyManager.limit);
+  }, []);
+
+  // Align button — glides every drone to its nearest JI target. Lives
+  // in the frequency rail's footer now; App owns the busy state so a
+  // mid-glide click doesn't double-trigger the gliding scheduler.
+  const [isAligning, setIsAligning] = useState(false);
+  const handleAlign = useCallback(() => {
+    if (!audioEngine.initialized) return;
+    const targets = audioEngine.computeJustIntonationTargets(tuneVarianceHz);
+    setIsAligning(true);
+    audioEngine.glideToFrequencies(targets, Math.round(tuneGlideSec * 1000), () => {
+      setIsAligning(false);
+    });
+  }, [tuneVarianceHz, tuneGlideSec]);
 
   // Mobile caps the oscillator count at 4 — but ONLY on iOS, where the
   // Web Audio backend is the bottleneck (Safari struggles with 10+ live
@@ -702,6 +743,10 @@ function App() {
   // for them, so reverting to the *as-loaded* state means snapshotting
   // what the user actually heard, not what the patch on disk encoded.
   const handlePatchLoaded = useCallback((patch) => {
+    // Held kbd voices (latched via hold, or mid-ramp) were tuned to
+    // the previous scale — let them go silent so the new patch's
+    // drones aren't competing with stale keyboard notes.
+    keyboardVoiceManager.releaseAll('kbd');
     const captured = capturePatch({
       id: patch?.id,
       name: patch?.name,
@@ -720,6 +765,7 @@ function App() {
   // routing changes can't be crossfaded without a click.
   const handleRevertToPatch = useCallback(async () => {
     if (!currentPatch) return;
+    keyboardVoiceManager.releaseAll('kbd');
     await applyPatchSmooth(currentPatch);
     syncStateFromEngine();
   }, [currentPatch, syncStateFromEngine]);
@@ -844,6 +890,20 @@ function App() {
               onPausedChange={setIsPaused}
             />
           )}
+          {uiMode !== 'fullscreen' && (
+            <FrequencyManagerPanel
+              oscillatorCount={oscillatorCount}
+              onAlign={handleAlign}
+              isAligning={isAligning}
+            />
+          )}
+          <Mixer
+            oscillatorCount={oscillatorCount}
+            minOscillators={2}
+            maxOscillators={maxOscillators}
+            onSlotsChange={syncStateFromEngine}
+          />
+
           <OscillatorControls
             oscillatorCount={oscillatorCount}
             maxOscillators={maxOscillators}
@@ -855,8 +915,6 @@ function App() {
             activeOscs={activeOscs}
             uiMode={uiMode}
             onModeChange={setUiMode}
-            tuneVarianceHz={tuneVarianceHz}
-            tuneGlideSec={tuneGlideSec}
             onFineTuningChange={handleFineTuningChange}
             isKbdTrayOpen={isKbdTrayOpen}
             onKbdTrayToggle={() => setIsKbdTrayOpen((v) => !v)}
@@ -1030,12 +1088,21 @@ function App() {
             onSaturationCurveChange={handleSaturationCurveChange}
             saturationDrive={saturationDrive}
             onSaturationDriveChange={handleSaturationDriveChange}
+            kbdRepressMode={kbdRepressMode}
+            onKbdRepressModeChange={setKbdRepressMode}
+            jiLimit={jiLimit}
+            onJiLimitChange={handleJiLimitChange}
           />
           <KeyboardTray
             isOpen={isKbdTrayOpen}
             onOpenChange={setIsKbdTrayOpen}
             kbdHoldOn={kbdHoldOn}
             onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
+            midiHoldOn={midiHoldOn}
+            onMidiHoldToggle={() => setMidiHoldOn((v) => !v)}
+            kbdVoiceCount={kbdVoiceCount}
+            onKbdVoiceCountChange={setKbdVoiceCount}
+            oscillatorCount={oscillatorCount}
           />
         </>
       )}

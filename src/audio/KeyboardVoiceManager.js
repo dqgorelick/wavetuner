@@ -24,13 +24,22 @@
 
 import audioEngine from './AudioEngine';
 import tuning from './Tuning';
-import { keyboardEnvelope } from './Envelope';
+import { keyboardEnvelope, computerKbdEnvelope } from './Envelope';
 import { keyboardWave } from './Wave';
 import { keyboardStereo } from './StereoMode';
 
-const MAX_VOICES = 32;
+// Pick the envelope that owns this source's attack/release shape. The
+// kbd source runs AR-only off its own envelope so it doesn't share
+// state with the velocity-sensitive MIDI envelope.
+function envForSource(source) {
+  return source === 'kbd' ? computerKbdEnvelope : keyboardEnvelope;
+}
+
+const MAX_VOICES = 32;             // hard ceiling across all sources
+const DEFAULT_MAX_KBD = 2;         // computer-keyboard default polyphony
+const DEFAULT_MAX_MIDI = 32;       // MIDI default polyphony (existing behavior)
 const RETUNE_TAU = 0.016; // matches drone's setTargetAtTime tau
-const STEAL_FADE = 0.01;  // 10 ms fast fade for stolen held voices
+const STEAL_FADE = 0.01;  // 10 ms fast fade for stolen held voices (hard cap only)
 // Tau for re-panning live voices on width/mode change. ~50 ms reads as a
 // smooth glide rather than a jump but is fast enough that dragging the
 // width slider feels live.
@@ -45,13 +54,23 @@ class KeyboardVoiceManager {
     this.sustainPedalDown = false;
     this.pendingReleases = new Set(); // voice IDs awaiting pedal-up release
     this._nextVoiceId = 0;
-    // Hold mode: pressing a key latches it on; pressing the same key
-    // again toggles it off. Differs from a sustain pedal in that EACH
-    // key independently toggles — there's no global "release all".
-    // Voices spawned while hold is on get `_latched = true`; noteOff
-    // ignores latched voices (the audio thread's noteOff equivalent is
-    // a second noteOn on the same midi).
-    this._hold = false;
+    // Hold mode is per-source so the computer keyboard (expressive,
+    // hold-on by default) and MIDI (press-and-hold by default) can run
+    // with independent semantics. When a source's hold is on, voices it
+    // spawns get `_latched = true`; that source's noteOff ignores those
+    // voices and a second noteOn on the same midi releases them (toggle).
+    this._holdBySource = { kbd: true, midi: false };
+
+    // Per-source voice cap. Exceeding the cap RELEASES the oldest voice
+    // of the same source (natural envelope tail) — the hard MAX_VOICES
+    // ceiling above is the only path that uses fast-fade stealing.
+    this._maxVoicesBySource = { kbd: DEFAULT_MAX_KBD, midi: DEFAULT_MAX_MIDI };
+
+    // Re-press behavior for the kbd source when hold is engaged.
+    //   'toggle'  — re-pressing a latched note releases it (default).
+    //   'restart' — re-pressing releases the existing voice AND starts
+    //               a fresh one ramping up from 0.
+    this._kbdRepressMode = 'toggle';
 
     // Velocity curve preset. Applied to the 0-1 input velocity before it
     // becomes the envelope peak. 'linear' = identity (pre-existing behavior).
@@ -175,12 +194,17 @@ class KeyboardVoiceManager {
    * change. A voice mid-attack/mid-decay abandons its scheduled ramp
    * and heads straight for the new sustain target — accepted as second-
    * order: sustain dragging is exploratory, not performative.
+   *
+   * kbd-source voices are AR (no sustain stage) and held at whatever
+   * gain the player dialed in, so the sustain slider doesn't apply to
+   * them — they get skipped here.
    */
   _retargetVoiceSustain() {
     const ctx = audioEngine.audioContext;
     if (!ctx) return;
     for (const v of this.voices) {
       if (v.released) continue;
+      if (v._source === 'kbd') continue;
       keyboardEnvelope.retargetSustain(v.gain.gain, ctx, v.peak);
       if (v._isStereo && v.gainR) {
         keyboardEnvelope.retargetSustain(v.gainR.gain, ctx, v.peak);
@@ -222,28 +246,44 @@ class KeyboardVoiceManager {
     }
   }
 
-  setHold(on) {
-    const wasHold = this._hold;
-    this._hold = !!on;
-    if (!wasHold && this._hold) {
-      // Turning hold ON — latch every voice that's currently sounding so
-      // the user can lift their fingers and the held chord persists.
-      // Voices in their release tail are skipped (they're already on
-      // their way out — re-latching would make hold feel sticky).
+  setHold(on, source = 'midi') {
+    const next = !!on;
+    const wasHold = !!this._holdBySource[source];
+    if (next === wasHold) return;
+    this._holdBySource[source] = next;
+    if (!wasHold && next) {
+      // Turning hold ON for this source — latch every voice from this
+      // source that's currently sounding so the user can lift their
+      // fingers and the held chord persists. Voices in their release
+      // tail are skipped (re-latching would make hold feel sticky).
       for (const v of this.voices) {
+        if (v._source !== source) continue;
         if (!v.released) v._latched = true;
       }
-    } else if (wasHold && !this._hold) {
-      // Turning hold OFF releases everything that was latched, since
-      // there's no real "press" holding those voices anymore.
+    } else if (wasHold && !next) {
+      // Turning hold OFF for this source releases its latched voices.
       for (const v of this.voices) {
+        if (v._source !== source) continue;
         if (v._latched && !v.released) this._releaseVoice(v);
         if (v) v._latched = false;
       }
     }
   }
 
-  getHold() { return this._hold; }
+  getHold(source = 'midi') { return !!this._holdBySource[source]; }
+
+  setMaxVoices(count, source = 'midi') {
+    const n = Math.max(1, Math.min(MAX_VOICES, count | 0));
+    this._maxVoicesBySource[source] = n;
+  }
+
+  getMaxVoices(source = 'midi') { return this._maxVoicesBySource[source]; }
+
+  setKbdRepressMode(mode) {
+    if (mode === 'toggle' || mode === 'restart') this._kbdRepressMode = mode;
+  }
+
+  getKbdRepressMode() { return this._kbdRepressMode; }
 
   setVelocityCurve(curve) {
     if (typeof curve !== 'string') return;
@@ -264,22 +304,29 @@ class KeyboardVoiceManager {
     }
   }
 
-  noteOn(midiNote, velocity = 1) {
+  noteOn(midiNote, velocity = 1, options = {}) {
     if (!audioEngine.isInitialized) return null;
     // Gate input on the keyboard pool's enable state — toggling
     // "keyboard off" via the bottom-row play/stop button stops voices
     // from spawning (in addition to ramping the audio bus to 0).
     if (audioEngine.getKeyboardEnabled && !audioEngine.getKeyboardEnabled()) return null;
 
-    // Hold-mode toggle: pressing a key that's already latched releases
-    // it (with normal envelope release). Falls through to spawn a new
-    // voice when no latched voice for this midi exists yet.
-    if (this._hold) {
+    const source = options.source === 'kbd' ? 'kbd' : 'midi';
+    const holdOn = !!this._holdBySource[source];
+
+    // Hold-mode re-press: pressing a key that's already latched (from
+    // the same source) either releases it ('toggle') or releases AND
+    // restarts a fresh ramp ('restart'). 'restart' is only meaningful
+    // for the kbd source; midi always toggles.
+    if (holdOn) {
       const existing = this.voices.find(v =>
-        v.midiNote === midiNote && !v.released && v._latched);
+        v.midiNote === midiNote && !v.released && v._latched && v._source === source);
       if (existing) {
         this._releaseVoice(existing);
-        return existing.id;
+        if (!(source === 'kbd' && this._kbdRepressMode === 'restart')) {
+          return existing.id;
+        }
+        // 'restart' falls through to spawn a new voice ramping from 0.
       }
     }
 
@@ -305,6 +352,11 @@ class KeyboardVoiceManager {
     this._ensureWaveSubscribed();
     this._ensureWidthSubscribed();
 
+    // Source-aware soft cap: when exceeded, send the oldest voice OF
+    // THE SAME SOURCE into its release tail (no abrupt fade). MAX_VOICES
+    // is the absolute ceiling for the whole pool — only that path uses
+    // fast-fade stealing.
+    this._releaseOldestOfSource(source);
     if (this.voices.length >= MAX_VOICES) {
       this._stealVoice();
     }
@@ -317,7 +369,15 @@ class KeyboardVoiceManager {
 
     // Velocity → envelope peak. Captured on the voice so a later
     // sustain change can retarget held notes to peak·newSustain.
-    const peak = this._applyVelocityCurve(velocity);
+    // For kbd source, peak always starts at 1.0 — the user "dials in"
+    // their dynamic by how long they hold the key; freezeNote on keyup
+    // captures the reached level and overwrites peak.
+    const peak = source === 'kbd' ? 1 : this._applyVelocityCurve(velocity);
+    // kbd voices run AR-only against their own envelope: ramp 0 → peak,
+    // then hold at peak (no decay slump). MIDI keeps full ADSR off the
+    // shared keyboardEnvelope.
+    const env = envForSource(source);
+    const envMode = source === 'kbd' ? 'ar' : 'adsr';
     const t0 = ctx.currentTime;
     const wave = keyboardWave.getPeriodicWave(ctx);
 
@@ -350,15 +410,16 @@ class KeyboardVoiceManager {
       // values but are separate AudioParams since they're on different
       // GainNodes. applyNoteOn with the same params on both produces
       // matching ramps.
-      keyboardEnvelope.applyNoteOn(gainL.gain, ctx, peak);
-      keyboardEnvelope.applyNoteOn(gainR.gain, ctx, peak);
+      env.applyNoteOn(gainL.gain, ctx, peak, null, envMode);
+      env.applyNoteOn(gainR.gain, ctx, peak, null, envMode);
       oscL.start();
       oscR.start();
 
       voice = {
         id: this._nextVoiceId++,
         midiNote, degree, slot, octave, peak,
-        startTime: t0, released: false, _latched: this._hold,
+        startTime: t0, released: false, _latched: holdOn,
+        _source: source,
         detuneHz,
         _isStereo: true,
         osc: oscL, gain: gainL,           // primary (L)
@@ -387,13 +448,14 @@ class KeyboardVoiceManager {
       osc.connect(gain);
       gain.connect(panner);
       panner.connect(dest);
-      keyboardEnvelope.applyNoteOn(gain.gain, ctx, peak);
+      env.applyNoteOn(gain.gain, ctx, peak, null, envMode);
       osc.start();
 
       voice = {
         id: this._nextVoiceId++,
         midiNote, degree, slot, octave, peak,
-        startTime: t0, released: false, _latched: this._hold,
+        startTime: t0, released: false, _latched: holdOn,
+        _source: source,
         detuneHz,
         _isStereo: false,
         osc, gain, panner,
@@ -407,13 +469,15 @@ class KeyboardVoiceManager {
     return voice.id;
   }
 
-  noteOff(midiNote) {
-    // Most-recent un-released voice for this MIDI note. Latched voices
-    // (hold mode) are skipped — those toggle via a second noteOn, not
-    // via the corresponding noteOff event.
+  noteOff(midiNote, options = {}) {
+    const source = options.source === 'kbd' ? 'kbd' : 'midi';
+    // Most-recent un-released voice for this MIDI note from this source.
+    // Latched voices (hold mode) are skipped — those toggle via a second
+    // noteOn, not via the corresponding noteOff event.
     for (let i = this.voices.length - 1; i >= 0; i--) {
       const v = this.voices[i];
       if (v.midiNote !== midiNote || v.released) continue;
+      if (v._source !== source) continue;
       if (v._latched) continue;
       if (this.sustainPedalDown) {
         this.pendingReleases.add(v.id);
@@ -422,6 +486,85 @@ class KeyboardVoiceManager {
       }
       return;
     }
+  }
+
+  /**
+   * Release every voice (optionally filtered by source). Latched voices
+   * count too — this is the "hard stop" path used when external state
+   * upends what's playing (e.g. loading a patch swaps the scale, so any
+   * held kbd notes were tuned to the OLD drones and should go silent
+   * rather than retune to the new ones). Released voices fade over the
+   * envelope's release time; cleanup happens via the usual onended.
+   */
+  releaseAll(source = null) {
+    for (let i = this.voices.length - 1; i >= 0; i--) {
+      const v = this.voices[i];
+      if (v.released) continue;
+      if (source && v._source !== source) continue;
+      this._releaseVoice(v);
+    }
+    // Pedal-pending releases no longer correspond to live voices.
+    if (!source || source === 'midi') this.pendingReleases.clear();
+  }
+
+  /**
+   * Force-release the active voice for `midiNote` from this source,
+   * latched or not. Used by the on-screen keyboard for drag-leave —
+   * dragging across a latched key should not leave a stuck voice
+   * behind. Falls back to the same envelope-release ramp as noteOff.
+   */
+  releaseNote(midiNote, source = 'midi') {
+    for (let i = this.voices.length - 1; i >= 0; i--) {
+      const v = this.voices[i];
+      if (v.midiNote !== midiNote || v.released) continue;
+      if (v._source !== source) continue;
+      this._releaseVoice(v);
+      return;
+    }
+  }
+
+  /**
+   * Snap the active kbd voice for `midiNote` to "frozen at current gain"
+   * and retarget its sustain to current·sustain. Used by the computer-
+   * keyboard expressive mode on keyup: the volume the user dialed in by
+   * how long they held becomes the note's sustain level. The voice's
+   * `peak` is rewritten to the captured gain so later sustain-slider
+   * movements scale relative to the frozen level (consistent with the
+   * peak·sustain math everywhere else).
+   */
+  freezeNote(midiNote, source = 'kbd') {
+    const ctx = audioEngine.audioContext;
+    if (!ctx) return;
+    const env = envForSource(source);
+    for (let i = this.voices.length - 1; i >= 0; i--) {
+      const v = this.voices[i];
+      if (v.midiNote !== midiNote || v.released) continue;
+      if (v._source !== source) continue;
+      const cur = env.freezeToCurrent(v.gain.gain, ctx);
+      if (v._isStereo && v.gainR) {
+        env.freezeToCurrent(v.gainR.gain, ctx);
+      }
+      v.peak = cur;
+      return;
+    }
+  }
+
+  /**
+   * If this source already has its cap worth of non-released voices,
+   * push the oldest one of THIS SOURCE into its release tail so a new
+   * note can come in without an abrupt cut. The release uses the normal
+   * envelope release time — caller invokes this before spawning.
+   */
+  _releaseOldestOfSource(source) {
+    const cap = this._maxVoicesBySource[source] ?? MAX_VOICES;
+    let count = 0;
+    let oldest = null;
+    for (const v of this.voices) {
+      if (v._source !== source || v.released) continue;
+      count += 1;
+      if (oldest === null || v.startTime < oldest.startTime) oldest = v;
+    }
+    if (count >= cap && oldest) this._releaseVoice(oldest);
   }
 
   setSustainPedal(down) {
@@ -441,16 +584,19 @@ class KeyboardVoiceManager {
     if (voice.released) return;
     voice.released = true;
     const ctx = audioEngine.audioContext;
+    // Use the voice's own source envelope so kbd voices stolen by the
+    // kbd cap fade over the kbd release time, not the MIDI one.
     // applyNoteOff captures the live gain value so a release mid-attack
     // doesn't jump to the sustain level. Returns the absolute time the
     // ramp lands; osc.stop scheduled with a 50 ms safety pad.
-    const releaseEnd = keyboardEnvelope.applyNoteOff(voice.gain.gain, ctx);
+    const env = envForSource(voice._source);
+    const releaseEnd = env.applyNoteOff(voice.gain.gain, ctx);
     voice.osc.stop(releaseEnd + 0.05);
     if (voice._isStereo && voice.oscR) {
       // Both gains share the same envelope state, so applyNoteOff on
       // gainR returns the same releaseEnd. Stop the partner osc at the
       // same time so the voice goes silent simultaneously on L and R.
-      keyboardEnvelope.applyNoteOff(voice.gainR.gain, ctx);
+      env.applyNoteOff(voice.gainR.gain, ctx);
       voice.oscR.stop(releaseEnd + 0.05);
     }
     // osc.onended (primary) will fire _cleanupVoice for the whole voice.
@@ -536,7 +682,71 @@ class KeyboardVoiceManager {
       octave: v.octave,
       released: v.released,
       amp: v.gain.gain.value,
+      // Source + start time let consumers (e.g. the mixer) compute when
+      // the voice has finished its attack/decay ramp and is sitting at
+      // sustain — the predicate depends on which envelope the source uses.
+      source: v._source,
+      startTime: v.startTime,
+      // Velocity-scaled envelope peak. The mixer derives the steady-state
+      // "where it lands" amp from this: peak·sustain for ADSR voices,
+      // peak for AR (kbd) voices.
+      peak: v.peak,
+      // Sounding frequency for visualizers. For stereo voices the primary
+      // (L) freq is exposed; the partner (R) sits at -detune/2 from this.
+      freq: v.targetFreq,
     }));
+  }
+
+  /**
+   * Set a held voice's steady-state level. `level` is on the same 0..1
+   * scale as the displayed amp — i.e., what the user wants the voice to
+   * settle at after the envelope finishes. The translation back to peak
+   * depends on source: ADSR's peak·sustain landing means `peak = level /
+   * sustain` (clamped at 1, capping the achievable level at `sustain`);
+   * AR voices have no sustain multiplier so `peak = level`.
+   *
+   * The live gain is retargeted with the same setTargetAtTime path the
+   * sustain slider uses, so an in-flight attack/decay smoothly redirects
+   * to the new target without clicking. Released voices are ignored —
+   * once a voice is in its release tail we can't reasonably re-grab it.
+   */
+  setVoiceLevel(voiceId, level) {
+    const voice = this.voices.find(v => v.id === voiceId);
+    if (!voice || voice.released) return;
+    const ctx = audioEngine.audioContext;
+    if (!ctx) return;
+
+    const clamped = Math.max(0, Math.min(1, level));
+    const env = envForSource(voice._source);
+
+    if (voice._source === 'kbd') {
+      voice.peak = clamped;
+    } else {
+      const s = env.sustain;
+      voice.peak = s > 0.001 ? Math.min(1, clamped / s) : 1;
+    }
+
+    if (voice._source === 'kbd') {
+      // AR mode: held level == peak (no sustain multiplier). Retarget
+      // directly. Pinning the value first means a mid-attack drag won't
+      // continue ramping toward the original peak.
+      const SUSTAIN_TAU = 0.05;
+      const apply = (param) => {
+        const t = ctx.currentTime;
+        param.cancelScheduledValues(t);
+        param.setValueAtTime(param.value, t);
+        param.setTargetAtTime(voice.peak, t, SUSTAIN_TAU);
+      };
+      apply(voice.gain.gain);
+      if (voice._isStereo && voice.gainR) apply(voice.gainR.gain);
+    } else {
+      // ADSR mode: reuse Envelope.retargetSustain so the glide tau and
+      // schedule semantics match the SettingsPanel sustain slider.
+      env.retargetSustain(voice.gain.gain, ctx, voice.peak);
+      if (voice._isStereo && voice.gainR) {
+        env.retargetSustain(voice.gainR.gain, ctx, voice.peak);
+      }
+    }
   }
 
   /**

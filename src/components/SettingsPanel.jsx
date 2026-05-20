@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import midiInput from '../audio/MidiInput';
-import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
+import { droneEnvelope, keyboardEnvelope, computerKbdEnvelope } from '../audio/Envelope';
 import { droneWave, keyboardWave } from '../audio/Wave';
 import { droneFold, keyboardFold } from '../audio/Fold';
 import { droneStereo, keyboardStereo } from '../audio/StereoMode';
@@ -45,6 +45,10 @@ export default function SettingsPanel({
   onSaturationCurveChange,
   saturationDrive,
   onSaturationDriveChange,
+  kbdRepressMode,
+  onKbdRepressModeChange,
+  jiLimit,
+  onJiLimitChange,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -287,7 +291,12 @@ export default function SettingsPanel({
       <StereoModeControls title="Keyboard stereo" stereoMode={keyboardStereo} slotCount={oscillatorCount} />
 
       <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
-      <EnvelopeControls title="Keyboard envelope" envelope={keyboardEnvelope} />
+      <EnvelopeControls title="MIDI envelope" envelope={keyboardEnvelope} />
+      <EnvelopeControls
+        title="Computer keyboard envelope (AR)"
+        envelope={computerKbdEnvelope}
+        mode="ar"
+      />
 
       <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
       <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
@@ -347,6 +356,27 @@ export default function SettingsPanel({
           <option value="hard">Hard — flatten dynamics</option>
           <option value="fixed">Fixed — ignore velocity</option>
         </select>
+        <label className="settings-sublabel">Re-press behavior (hold on)</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${kbdRepressMode === 'toggle' ? 'on' : 'off'}`}
+            onClick={() => onKbdRepressModeChange?.('toggle')}
+            aria-pressed={kbdRepressMode === 'toggle'}
+            title="Re-pressing a held note releases it"
+          >
+            toggle
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${kbdRepressMode === 'restart' ? 'on' : 'off'}`}
+            onClick={() => onKbdRepressModeChange?.('restart')}
+            aria-pressed={kbdRepressMode === 'restart'}
+            title="Re-pressing releases the held note AND starts a fresh ramp"
+          >
+            restart
+          </button>
+        </div>
       </div>
 
       <div className="settings-section tune-section">
@@ -388,6 +418,44 @@ export default function SettingsPanel({
           routingMap={routingMap}
           onRoutingChange={onRoutingChange}
         />
+      </div>
+
+      <div className="settings-section">
+        <label className="settings-label">Just intonation</label>
+        <label className="settings-sublabel">
+          Ratio limit — controls which fractions the frequency rail labels.
+          Higher = denser readout (more 7- and 11-prime ratios visible);
+          lower = sparser, more stable labels as you drag.
+        </label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${jiLimit === 5 ? 'on' : 'off'}`}
+            onClick={() => onJiLimitChange?.(5)}
+            aria-pressed={jiLimit === 5}
+            title="5-prime limit — 5-limit JI, ~12 ratios per octave"
+          >
+            5
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${jiLimit === 7 ? 'on' : 'off'}`}
+            onClick={() => onJiLimitChange?.(7)}
+            aria-pressed={jiLimit === 7}
+            title="7-prime limit — adds septimal intervals (default)"
+          >
+            7
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${jiLimit === 11 ? 'on' : 'off'}`}
+            onClick={() => onJiLimitChange?.(11)}
+            aria-pressed={jiLimit === 11}
+            title="11-prime limit — adds undecimal (Partch) intervals"
+          >
+            11
+          </button>
+        </div>
       </div>
 
       <div className="settings-section">

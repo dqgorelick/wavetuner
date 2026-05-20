@@ -5,29 +5,27 @@ import { isEditableTarget } from './keyboardUtils';
 /**
  * Ableton-style computer-keyboard input.
  *
- *   White keys (semitones from root): A=0  S=2  D=4  F=5  G=7  H=9  J=11  K=12  L=14
+ *   White keys (semitones from root): A=0  S=2  D=4  F=5  G=7  H=9  J=11  K=12  L=14  ;=16
  *   Black keys                      : W=1  E=3  T=6  Y=8  U=10 O=13 P=15
- *   Z = octave down,  X = octave up
+ *   Z = transpose down,  X = transpose up
  *
- * MIDI math follows the standard "C(n) = MIDI 12·(n+1)" convention, so
- * keyboardOctave=4 means the lowest key on the on-screen keyboard is
- * MIDI 60 (C4). Stays in sync with OnScreenKeyboard via the same formula.
+ * The Z/X buttons shift the keyboard's lowest-key MIDI note by `stepSize`
+ * semitones — KeyboardTray feeds in the live oscillator count so the
+ * shift is one "scale octave" worth (N degrees) rather than always 12.
+ * Default kbdRoot is MIDI 60 (C4); stays in sync with OnScreenKeyboard.
  */
 
 const KEY_TO_OFFSET = {
-  a: 0, s: 2, d: 4, f: 5, g: 7, h: 9, j: 11, k: 12, l: 14,
+  a: 0, s: 2, d: 4, f: 5, g: 7, h: 9, j: 11, k: 12, l: 14, ';': 16,
   w: 1, e: 3, t: 6, y: 8, u: 10, o: 13, p: 15,
 };
 
-// Computer-keyboard hits don't carry real velocity, so we substitute a
-// fixed value at noteOn time. 0.5 is calibrated for safe polyphony:
-// √N × 0.5 stays at or below unity for N ≤ 4 voices (random-phase
-// summation), so typical chording doesn't push the bus past clip.
-// Real MIDI controllers can hit 1.0, but they DON'T do it on every
-// note — dynamic play averages much lower. The fixed-velocity nature
-// of computer keyboard is what makes it stack worse than typical MIDI
-// play, so we compensate by pinning it lower.
-const COMPUTER_KEY_VELOCITY = 0.5;
+// Computer-keyboard hits don't carry real velocity, so the kbd source
+// in the voice manager substitutes peak=1.0 and the user dials in their
+// dynamic via the long-ramp attack: how long they hold the key sets the
+// amplitude reached, and keyup freezes that level as the new sustain.
+// (See KeyboardVoiceManager.noteOn — the velocity arg is ignored for
+// source: 'kbd'.)
 
 // Inverse table: semitone offset → uppercase letter, for the on-screen
 // keyboard's labels overlay. Single source of truth for the layout —
@@ -40,27 +38,33 @@ export const OFFSET_TO_LETTER = (() => {
   return out;
 })();
 
-export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboardOctave }) {
+export default function useComputerKeyboard({ enabled, kbdRoot, setKbdRoot, stepSize }) {
   // Refs let the keydown closure see latest values without us having
   // to re-attach listeners on every render.
   const enabledRef = useRef(enabled);
-  const octaveRef = useRef(keyboardOctave);
+  const rootRef = useRef(kbdRoot);
+  const stepRef = useRef(stepSize);
   // Per-key bookkeeping: which lowercase letter currently holds which
   // MIDI note. Lets keyup release the *exact* midi that keydown fired,
-  // even after a Z/X octave shift in between (the held note keeps
+  // even after a Z/X transpose shift in between (the held note keeps
   // sounding at its original pitch and gets released cleanly).
   const heldNotes = useRef(new Map());
 
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
-  useEffect(() => { octaveRef.current = keyboardOctave; }, [keyboardOctave]);
+  useEffect(() => { rootRef.current = kbdRoot; }, [kbdRoot]);
+  useEffect(() => { stepRef.current = stepSize; }, [stepSize]);
 
-  // Toggling off mid-play should silence any held letters — otherwise
-  // they'd be stuck (no keyup will reach noteOff once the listener is
-  // gated off below).
+  // Toggling off mid-play resolves any held letters as if the user had
+  // released them — freeze if hold is on (so the latched chord persists
+  // via the kbd hold mechanic), otherwise noteOff. Without this, ramping
+  // notes get stuck mid-attack since no keyup will reach below once the
+  // listener gate flips.
   useEffect(() => {
     if (enabled) return;
+    const holdOn = keyboardVoiceManager.getHold('kbd');
     for (const midi of heldNotes.current.values()) {
-      keyboardVoiceManager.noteOff(midi);
+      if (holdOn) keyboardVoiceManager.freezeNote(midi, 'kbd');
+      else keyboardVoiceManager.noteOff(midi, { source: 'kbd' });
     }
     heldNotes.current.clear();
   }, [enabled]);
@@ -75,12 +79,14 @@ export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboa
       const key = e.key.toLowerCase();
 
       if (key === 'z') {
-        setKeyboardOctave((o) => Math.max(0, o - 1));
+        const step = Math.max(1, stepRef.current | 0);
+        setKbdRoot((r) => Math.max(12, r - step));
         e.preventDefault();
         return;
       }
       if (key === 'x') {
-        setKeyboardOctave((o) => Math.min(8, o + 1));
+        const step = Math.max(1, stepRef.current | 0);
+        setKbdRoot((r) => Math.min(108, r + step));
         e.preventDefault();
         return;
       }
@@ -92,9 +98,11 @@ export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboa
       // double-trigger.
       if (heldNotes.current.has(key)) return;
 
-      const midi = (octaveRef.current + 1) * 12 + offset;
+      const midi = rootRef.current + offset;
       heldNotes.current.set(key, midi);
-      keyboardVoiceManager.noteOn(midi, COMPUTER_KEY_VELOCITY);
+      // Velocity arg is ignored for source: 'kbd' — peak is fixed at 1.0
+      // and the user dials it down by releasing during the ramp.
+      keyboardVoiceManager.noteOn(midi, 1, { source: 'kbd' });
       e.preventDefault();
     };
 
@@ -103,14 +111,25 @@ export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboa
       const midi = heldNotes.current.get(key);
       if (midi === undefined) return;
       heldNotes.current.delete(key);
-      keyboardVoiceManager.noteOff(midi);
+      // With kbd hold on, keyup freezes the voice at its reached gain
+      // (becomes the new sustain). With hold off, fall back to a normal
+      // release ramp from current gain — same captured-from-current
+      // shape, just heading to 0 instead of sustain.
+      if (keyboardVoiceManager.getHold('kbd')) {
+        keyboardVoiceManager.freezeNote(midi, 'kbd');
+      } else {
+        keyboardVoiceManager.noteOff(midi, { source: 'kbd' });
+      }
     };
 
     // Window blur (alt-tab, focus loss) can swallow keyups → stuck
-    // notes. Release everything on blur as a safety net.
+    // notes. Resolve held keys the same way keyup would so a blurred
+    // chord either persists (hold on, frozen) or fades out (hold off).
     const handleBlur = () => {
+      const holdOn = keyboardVoiceManager.getHold('kbd');
       for (const midi of heldNotes.current.values()) {
-        keyboardVoiceManager.noteOff(midi);
+        if (holdOn) keyboardVoiceManager.freezeNote(midi, 'kbd');
+        else keyboardVoiceManager.noteOff(midi, { source: 'kbd' });
       }
       heldNotes.current.clear();
     };
@@ -124,10 +143,12 @@ export default function useComputerKeyboard({ enabled, keyboardOctave, setKeyboa
       window.removeEventListener('blur', handleBlur);
       // The ref's Map is stable across renders; we mutate it in place.
       // eslint-disable-next-line react-hooks/exhaustive-deps
+      const holdOn = keyboardVoiceManager.getHold('kbd');
       for (const midi of heldNotes.current.values()) {
-        keyboardVoiceManager.noteOff(midi);
+        if (holdOn) keyboardVoiceManager.freezeNote(midi, 'kbd');
+        else keyboardVoiceManager.noteOff(midi, { source: 'kbd' });
       }
       heldNotes.current.clear();
     };
-  }, [setKeyboardOctave]);
+  }, [setKbdRoot]);
 }

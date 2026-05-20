@@ -430,6 +430,46 @@ p {
   background: transparent;
 }
 
+/* Ratio tag on partial rows — same shape as KBD/MIDI tag but a slightly
+   subdued color so it reads as info, not a source label. */
+.mixer-source-tag.mixer-source-tag-ratio {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 600;
+}
+
+/* Indent partial rows under their parent slot. The grid template is
+   unchanged — padding-left shifts everything (dot, label, tag, fader,
+   buttons) right uniformly so the parent–child relationship reads
+   visually without breaking column alignment with non-indented rows. */
+.mixer-row.mixer-row-partial {
+  padding-left: 24px;
+}
+
+/* Smaller, outlined dot on partial rows — a subtle visual cue that this
+   row is a child, distinct from the filled dot on primary/voice rows. */
+.mixer-dot.mixer-dot-partial {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+  border: 2px solid var(--mixer-color, #888);
+  box-sizing: border-box;
+}
+
+/* Muted partial — full row dim. The fader is still interactive so a
+   drag re-arms the level even while muted; the dim is the visual cue
+   that the audio side is silenced. */
+.mixer-row.mixer-row-partial.muted {
+  opacity: 0.5;
+}
+
+/* Muted drone primary row — same dim treatment as a muted partial. The
+   row stays interactive so the user can drag vol back up + unmute from
+   the spectrum bar without losing their spot in the mixer. */
+.mixer-row.mixer-row-drone.muted {
+  opacity: 0.5;
+}
+
 /* Per-row action cluster (drone rows only). Four icon buttons: clone,
    octave-up, octave-down, remove. The voice-row variant is empty but
    takes up the same grid column so the fader edges line up. */
@@ -2586,7 +2626,22 @@ kbd {
   -webkit-user-select: none;
   touch-action: none;
   overflow: visible;
-  transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* When settings is open, slide the centered partials rail leftward by
+   half of the panel's footprint (320 width + 16 margin = 336, so half
+   = 168). Keeps it visually centered in the area NOT covered by the
+   panel. Skipped on mobile — the panel covers the whole width there. */
+#wrapper.settings-open .freq-spectrum-bar {
+  transform: translateX(calc(-50% - 168px));
+}
+@media (max-width: 768px) {
+  #wrapper.settings-open .freq-spectrum-bar {
+    transform: translateX(-50%);
+  }
 }
 
 .fsb-track {
@@ -3923,7 +3978,7 @@ kbd {
   top: 64px;
   right: 16px;
   bottom: 16px;
-  width: 264px;
+  width: 320px;
   background: rgba(20, 20, 25, 0.72);
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -3936,11 +3991,20 @@ kbd {
   overflow-y: auto;
   font-size: 11px;
   color: rgba(255, 255, 255, 0.85);
-  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    right 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #wrapper.kbd-tray-open .freq-rail {
   bottom: calc(16px + var(--kbd-tray-h));
+}
+
+/* Shift the freq rail out from under the settings panel so the user can
+   read both. Settings panel is 320px + 16px right margin = clear at
+   right: 352px. Matches settings-panel's slide easing. */
+#wrapper.settings-open .freq-rail {
+  right: calc(16px + 320px + 16px);
 }
 
 .freq-rail-header {
@@ -4150,6 +4214,75 @@ kbd {
 .freq-rail-action:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* Spectrum analyzer — FFT of the master bus, log freq axis. Lives at
+   the bottom of the freq rail so the user can correlate active drone
+   notes (rows above) with the energy actually leaving the master. */
+.spectrum-analyzer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.spectrum-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.spectrum-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+.spectrum-actions {
+  display: flex;
+  gap: 4px;
+}
+.spectrum-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.75);
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+.spectrum-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.spectrum-btn.active {
+  background: rgba(255, 140, 26, 0.18);
+  border-color: rgba(255, 140, 26, 0.55);
+  color: #ff8c1a;
+}
+.spectrum-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Canvas bleeds outside the freq-rail's side padding so the spectrum
+   occupies the full panel width, then rounds into the panel's bottom
+   corners so it reads as a single surface (not a card-on-card). */
+.spectrum-canvas {
+  width: calc(100% + 28px);
+  margin: 0 -14px -14px;
+  height: 140px;
+  display: block;
+  background: rgba(0, 0, 0, 0.35);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
 }
 
 /* Hide on narrow viewports — the rail would crowd the scope and

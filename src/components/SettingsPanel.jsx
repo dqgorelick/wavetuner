@@ -420,43 +420,48 @@ export default function SettingsPanel({
         />
       </div>
 
-      <div className="settings-section">
-        <label className="settings-label">Just intonation</label>
-        <label className="settings-sublabel">
-          Ratio limit — controls which fractions the frequency rail labels.
-          Higher = denser readout (more 7- and 11-prime ratios visible);
-          lower = sparser, more stable labels as you drag.
-        </label>
-        <div className="settings-toggle-row">
-          <button
-            type="button"
-            className={`settings-toggle-btn ${jiLimit === 5 ? 'on' : 'off'}`}
-            onClick={() => onJiLimitChange?.(5)}
-            aria-pressed={jiLimit === 5}
-            title="5-prime limit — 5-limit JI, ~12 ratios per octave"
-          >
-            5
-          </button>
-          <button
-            type="button"
-            className={`settings-toggle-btn ${jiLimit === 7 ? 'on' : 'off'}`}
-            onClick={() => onJiLimitChange?.(7)}
-            aria-pressed={jiLimit === 7}
-            title="7-prime limit — adds septimal intervals (default)"
-          >
-            7
-          </button>
-          <button
-            type="button"
-            className={`settings-toggle-btn ${jiLimit === 11 ? 'on' : 'off'}`}
-            onClick={() => onJiLimitChange?.(11)}
-            aria-pressed={jiLimit === 11}
-            title="11-prime limit — adds undecimal (Partch) intervals"
-          >
-            11
-          </button>
+      {/* Just-intonation limit picker — hidden alongside the frequency
+          rail until the rail's restructuring lands. Restore by removing
+          the `false &&` guard. */}
+      {false && (
+        <div className="settings-section">
+          <label className="settings-label">Just intonation</label>
+          <label className="settings-sublabel">
+            Ratio limit — controls which fractions the frequency rail labels.
+            Higher = denser readout (more 7- and 11-prime ratios visible);
+            lower = sparser, more stable labels as you drag.
+          </label>
+          <div className="settings-toggle-row">
+            <button
+              type="button"
+              className={`settings-toggle-btn ${jiLimit === 5 ? 'on' : 'off'}`}
+              onClick={() => onJiLimitChange?.(5)}
+              aria-pressed={jiLimit === 5}
+              title="5-prime limit — 5-limit JI, ~12 ratios per octave"
+            >
+              5
+            </button>
+            <button
+              type="button"
+              className={`settings-toggle-btn ${jiLimit === 7 ? 'on' : 'off'}`}
+              onClick={() => onJiLimitChange?.(7)}
+              aria-pressed={jiLimit === 7}
+              title="7-prime limit — adds septimal intervals (default)"
+            >
+              7
+            </button>
+            <button
+              type="button"
+              className={`settings-toggle-btn ${jiLimit === 11 ? 'on' : 'off'}`}
+              onClick={() => onJiLimitChange?.(11)}
+              aria-pressed={jiLimit === 11}
+              title="11-prime limit — adds undecimal (Partch) intervals"
+            >
+              11
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="settings-section">
         <label className="settings-label">Color theme</label>

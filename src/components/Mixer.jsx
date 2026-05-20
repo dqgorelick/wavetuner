@@ -22,10 +22,19 @@ function formatFreq(freq) {
   return freq.toFixed(2);
 }
 
-// "Audible" drone threshold. getAllVolumes returns 0-100, so 0.1 ≈ 0.001 in
-// the 0-1 scale. Filters out near-zero strips so the mixer doesn't list a
-// drone the user has faded all the way down.
-const AUDIBLE_VOL = 0.1;
+// Pretty-print a partial's ratio. Integer multipliers read "×N",
+// reciprocals of integers read "÷N", anything else falls back to a
+// truncated decimal so non-octave ratios still display compactly.
+function formatRatio(r) {
+  if (Math.abs(r - 1) < 1e-6) return '×1';
+  if (r > 1) {
+    if (Math.abs(r - Math.round(r)) < 1e-6) return `×${Math.round(r)}`;
+    return `×${r.toFixed(2)}`;
+  }
+  const inv = 1 / r;
+  if (Math.abs(inv - Math.round(inv)) < 1e-6) return `÷${Math.round(inv)}`;
+  return `×${r.toFixed(2)}`;
+}
 
 // "Audible" voice amp threshold (0-1 scale). Once a released voice's
 // envelope tail decays below this, the strip is removed — keeps released
@@ -37,8 +46,9 @@ const AUDIBLE_AMP = 0.001;
 // model is intentionally hit-test driven (not pointer-capture driven) so
 // the user can sweep vertically through the mixer and have each fader's
 // value snap to the cursor X as it's crossed. Data attributes on the
-// fader element identify the target (drone slot vs voice id); released
-// voices opt out via data-released so a sweep skips them.
+// fader element identify the target: drone slot, partial (slot+index),
+// or voice. Released voices opt out via data-released so a sweep skips
+// them.
 function applyAtPoint(clientX, clientY) {
   const el = document.elementFromPoint(clientX, clientY);
   if (!el) return;
@@ -50,6 +60,14 @@ function applyAtPoint(clientX, clientY) {
   const oscIdx = fader.getAttribute('data-osc-index');
   if (oscIdx !== null) {
     audioEngine.setVolume(Number(oscIdx), v);
+    return;
+  }
+  const partialSlot = fader.getAttribute('data-partial-slot');
+  if (partialSlot !== null) {
+    const pIdx = fader.getAttribute('data-partial-index');
+    if (pIdx !== null) {
+      audioEngine.setPartialVolume(Number(partialSlot), Number(pIdx), v);
+    }
     return;
   }
   const voiceId = fader.getAttribute('data-voice-id');
@@ -79,10 +97,9 @@ function startMixerDrag(e) {
 }
 
 // Fader cell — thin track with a colored fill line and a ball at the
-// active position. For drones, fill and ball share the same value (the
-// drone is always at its set volume). For voices, fill = live envelope
-// amp (animates), ball = steady-state target (peak·sustain or peak).
-// Released voices hide the ball (no setpoint to grab during release).
+// active position. For drones / partials, fill and ball share the same
+// value. For voices, fill = live envelope amp (animates), ball =
+// steady-state target. Released voices hide the ball.
 const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released }) {
   const fillPct = Math.max(0, Math.min(1, fill)) * 100;
   const ballPct = ball === null ? null : Math.max(0, Math.min(1, ball)) * 100;
@@ -102,31 +119,24 @@ const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released }) {
   );
 });
 
-// Per-row action cluster: remove, clone, octave-up, octave-down. Wired
-// to the AudioEngine slot APIs. Lives outside the grid's fader cell so
-// the buttons don't intercept fader drags; pointer-down on a button
-// stops propagation so the cross-row sweep doesn't fire either.
-const RowButtons = memo(function RowButtons({ slot, canRemove, canClone, onSlotsChange }) {
-  const stopPointer = (e) => {
-    // Buttons live inside the grid but outside .mixer-fader; the
-    // global sweep handler wouldn't pick them up anyway. The
-    // stopPropagation guard is defensive — preventing a future
-    // mixer-level pointerdown from snagging on a button click.
-    e.stopPropagation();
-  };
+// Buttons cluster for a drone primary row. Clone now adds a partial
+// (was: cloneOscillator). Octave shifts the slot's base freq; partials
+// follow via ratio so the whole stack transposes together. Remove drops
+// the slot (plus all its partials — engine handles the tear-down).
+const PrimaryButtons = memo(function PrimaryButtons({ slot, canRemove, onSlotsChange }) {
+  const stopPointer = (e) => e.stopPropagation();
 
   const handleRemove = () => {
     if (!canRemove) return;
-    // Stale slot bindings on held kbd voices after the reindex — drop
-    // them so the user doesn't hear a held note jump to a new pitch.
     keyboardVoiceManager.releaseAll();
     audioEngine.removeOscillatorAt(slot);
     onSlotsChange?.();
   };
   const handleClone = () => {
-    if (!canClone) return;
-    audioEngine.cloneOscillator(slot);
-    onSlotsChange?.();
+    // Repurposed: add a partial under this slot instead of spawning a
+    // new top-level slot. No onSlotsChange — oscillator count hasn't
+    // moved, and partial state is polled directly from the engine.
+    audioEngine.addPartial(slot);
   };
   const handleOctave = (factor) => {
     const cur = audioEngine.getFrequency(slot);
@@ -141,9 +151,8 @@ const RowButtons = memo(function RowButtons({ slot, canRemove, canClone, onSlots
         type="button"
         className="mixer-btn"
         onClick={handleClone}
-        disabled={!canClone}
-        title="Clone (add a copy of this drone)"
-        aria-label="Clone drone"
+        title="Add a partial under this drone"
+        aria-label="Add partial"
       >+</button>
       <button
         type="button"
@@ -164,55 +173,137 @@ const RowButtons = memo(function RowButtons({ slot, canRemove, canClone, onSlots
         className="mixer-btn mixer-btn-remove"
         onClick={handleRemove}
         disabled={!canRemove}
-        title="Remove this drone"
+        title="Remove this drone (and its partials)"
         aria-label="Remove drone"
       >×</button>
     </div>
   );
 });
 
-function Mixer({ oscillatorCount, minOscillators = 2, maxOscillators = 12, onSlotsChange }) {
+// Buttons cluster for a partial row. Clone adds a sibling partial.
+// Octave shifts the partial's ratio (×2 / ÷2). Remove drops just this
+// partial — its parent slot stays.
+const PartialButtons = memo(function PartialButtons({ slot, partialIndex }) {
+  const stopPointer = (e) => e.stopPropagation();
+
+  const handleClone = () => {
+    audioEngine.addPartial(slot);
+  };
+  const handleOctave = (factor) => {
+    // The engine snapshots ratio inside setPartialRatio; pull current
+    // off getExtraPartials so successive presses compound correctly.
+    const list = audioEngine.getExtraPartials(slot);
+    const cur = list[partialIndex]?.ratio;
+    if (!Number.isFinite(cur)) return;
+    audioEngine.setPartialRatio(slot, partialIndex, cur * factor);
+  };
+  const handleRemove = () => {
+    audioEngine.removePartialAt(slot, partialIndex);
+  };
+
+  return (
+    <div className="mixer-row-buttons" onPointerDown={stopPointer}>
+      <button
+        type="button"
+        className="mixer-btn"
+        onClick={handleClone}
+        title="Add another partial to this drone"
+        aria-label="Add partial"
+      >+</button>
+      <button
+        type="button"
+        className="mixer-btn"
+        onClick={() => handleOctave(2)}
+        title="Up an octave"
+        aria-label="Octave up"
+      >↑</button>
+      <button
+        type="button"
+        className="mixer-btn"
+        onClick={() => handleOctave(0.5)}
+        title="Down an octave"
+        aria-label="Octave down"
+      >↓</button>
+      <button
+        type="button"
+        className="mixer-btn mixer-btn-remove"
+        onClick={handleRemove}
+        title="Remove this partial"
+        aria-label="Remove partial"
+      >×</button>
+    </div>
+  );
+});
+
+function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
   useTheme(); // re-render on theme flip so palette.oscColor swaps correctly
 
-  // RAF-driven snapshot of audible drones + voices.
-  //   drones: [{ slot, freq, vol }]
-  //   voices: [{ id, slot, freq, amp, target, source, released }]
-  // Drones are signature-compared so we don't re-render on sub-perceptual
-  // jitter; voices skip signature dedup because amp moves every frame
-  // (envelope ramp visualization).
-  const [drones, setDrones] = useState([]);
+  // RAF-driven snapshot of mixer rows.
+  //   rows: flat list of { type: 'drone' | 'partial', ... }
+  //         DOM order: per audible slot, partials first then primary.
+  //         column-reverse in CSS flips this so primary visually sits on
+  //         top of its partials, newest partial right beneath it.
+  //   voices: separate list, appended after rows in DOM (voices appear
+  //           at the visual top of the mixer).
+  const [rows, setRows] = useState([]);
   const [voices, setVoices] = useState([]);
 
   useEffect(() => {
     let raf;
-    let lastDroneSig = '';
+    let lastRowSig = '';
     const tick = () => {
       raf = requestAnimationFrame(tick);
       if (!audioEngine.isInitialized) return;
       try {
-        // Drones
         const freqs = audioEngine.getAllFrequencies();
         const vols100 = audioEngine.getAllVolumes(); // 0-100
         const muted = audioEngine.getAllMutedStates();
-        const nextDrones = [];
+        const nextRows = [];
         for (let i = 0; i < oscillatorCount; i++) {
-          if (muted[i]) continue;
+          // Every slot is rendered, even silent or muted — the mixer is
+          // the user's roster of drones, so dropping a row when vol hits
+          // 0 (or on mute) would surprise them and force a trip to the
+          // spectrum bar to re-enable. Muted/zero rows still surface
+          // the buttons + fader so the user can recover from the mixer.
+          const baseFreq = freqs[i] ?? 0;
           const v100 = vols100[i] ?? 0;
-          if (v100 <= AUDIBLE_VOL) continue;
-          nextDrones.push({ slot: i, freq: freqs[i] ?? 0, vol: v100 / 100 });
-        }
-        const droneSig = nextDrones.map(d =>
-          `${d.slot}:${Math.round(d.freq * 20)}:${Math.round(d.vol * 200)}`
-        ).join('|');
-        if (droneSig !== lastDroneSig) {
-          lastDroneSig = droneSig;
-          setDrones(nextDrones);
+          const isMuted = !!muted[i];
+          // Partials first in DOM so column-reverse puts the primary on
+          // top of its partials. Always show every extra of an audible
+          // primary — even silent/muted ones — so the user can re-enable
+          // without re-finding the row.
+          const extras = audioEngine.getExtraPartials(i);
+          for (const p of extras) {
+            nextRows.push({
+              type: 'partial',
+              id: p.id,
+              slot: i,
+              partialIndex: p.partialIndex,
+              ratio: p.ratio,
+              freq: baseFreq * p.ratio,
+              vol: p.vol,
+              muted: p.muted,
+            });
+          }
+          nextRows.push({
+            type: 'drone',
+            slot: i,
+            freq: baseFreq,
+            vol: v100 / 100,
+            muted: isMuted,
+          });
         }
 
-        // Voices. Skip the released-and-already-silent ones so the strip
-        // drops off as soon as the release tail is inaudible. Target is
-        // the steady-state level the envelope will land on for held
-        // voices — peak·sustain for ADSR, peak for AR.
+        const rowSig = nextRows.map(r => r.type === 'drone'
+          ? `d:${r.slot}:${Math.round(r.freq * 20)}:${Math.round(r.vol * 200)}:${r.muted ? 1 : 0}`
+          : `p:${r.id}:${Math.round(r.freq * 20)}:${Math.round(r.vol * 200)}:${r.muted ? 1 : 0}:${r.ratio.toFixed(4)}`
+        ).join('|');
+        if (rowSig !== lastRowSig) {
+          lastRowSig = rowSig;
+          setRows(nextRows);
+        }
+
+        // Voices.
         const active = keyboardVoiceManager.getActiveVoices();
         const sustain = keyboardEnvelope.sustain;
         const nextVoices = [];
@@ -236,44 +327,72 @@ function Mixer({ oscillatorCount, minOscillators = 2, maxOscillators = 12, onSlo
     return () => cancelAnimationFrame(raf);
   }, [oscillatorCount]);
 
-  if (drones.length === 0 && voices.length === 0) return null;
+  if (rows.length === 0 && voices.length === 0) return null;
 
   return (
     <div className="mixer-panel" role="region" aria-label="Mixer">
       <div className="mixer-stack">
-        {/* Drones first in DOM order so column-reverse puts them at the
-            bottom; voices follow and stack above as they spawn. The grid
-            on .mixer-row keeps the fader column aligned across all rows
-            regardless of whether the tag slot is populated. */}
-        {drones.map(({ slot, freq, vol }) => {
+        {rows.map((row) => {
+          if (row.type === 'drone') {
+            const { slot, freq, vol, muted } = row;
+            const color = palette.oscColor(slot, oscillatorCount);
+            const note = freqToNote(freq);
+            const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
+            return (
+              <div
+                key={`drone-${slot}`}
+                className={`mixer-row mixer-row-drone ${muted ? 'muted' : ''}`}
+                style={{ '--mixer-color': color }}
+              >
+                <span className="mixer-dot" />
+                <span className="mixer-label">
+                  <span className="mixer-freq">{formatFreq(freq)}</span>
+                  <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
+                </span>
+                <span className="mixer-source-tag mixer-source-tag-empty" />
+                <Fader
+                  dataAttrs={{ 'data-osc-index': slot }}
+                  fill={vol}
+                  ball={vol}
+                  color={color}
+                  released={false}
+                />
+                <PrimaryButtons
+                  slot={slot}
+                  canRemove={oscillatorCount > minOscillators}
+                  onSlotsChange={onSlotsChange}
+                />
+              </div>
+            );
+          }
+          // partial row
+          const { id, slot, partialIndex, ratio, freq, vol, muted } = row;
           const color = palette.oscColor(slot, oscillatorCount);
           const note = freqToNote(freq);
           const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
           return (
             <div
-              key={`drone-${slot}`}
-              className="mixer-row mixer-row-drone"
+              key={`partial-${id}`}
+              className={`mixer-row mixer-row-partial ${muted ? 'muted' : ''}`}
               style={{ '--mixer-color': color }}
             >
-              <span className="mixer-dot" />
+              <span className="mixer-dot mixer-dot-partial" />
               <span className="mixer-label">
                 <span className="mixer-freq">{formatFreq(freq)}</span>
                 <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
               </span>
-              <span className="mixer-source-tag mixer-source-tag-empty" />
+              <span className="mixer-source-tag mixer-source-tag-ratio">{formatRatio(ratio)}</span>
               <Fader
-                dataAttrs={{ 'data-osc-index': slot }}
+                dataAttrs={{
+                  'data-partial-slot': slot,
+                  'data-partial-index': partialIndex,
+                }}
                 fill={vol}
                 ball={vol}
                 color={color}
                 released={false}
               />
-              <RowButtons
-                slot={slot}
-                canRemove={oscillatorCount > minOscillators}
-                canClone={oscillatorCount < maxOscillators}
-                onSlotsChange={onSlotsChange}
-              />
+              <PartialButtons slot={slot} partialIndex={partialIndex} />
             </div>
           );
         })}
@@ -304,9 +423,6 @@ function Mixer({ oscillatorCount, minOscillators = 2, maxOscillators = 12, onSlo
                 color={color}
                 released={released}
               />
-              {/* Empty buttons slot — keeps the grid column count
-                  consistent so the fader edges line up with drone
-                  rows that have an active button cluster. */}
               <span className="mixer-row-buttons mixer-row-buttons-empty" />
             </div>
           );

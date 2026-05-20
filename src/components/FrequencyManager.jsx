@@ -8,6 +8,7 @@ import {
   EXACT_CENTS_TOLERANCE,
 } from '../audio/jiRatios';
 import palette, { useTheme } from '../theme/palette';
+import SpectrumAnalyzer from './SpectrumAnalyzer';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -324,6 +325,7 @@ export default function FrequencyManagerPanel({ oscillatorCount, onAlign, isAlig
           </button>
         </div>
       </div>
+      <SpectrumAnalyzer />
     </div>
   );
 }

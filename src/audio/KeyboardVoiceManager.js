@@ -124,6 +124,90 @@ class KeyboardVoiceManager {
    * (slot) and ramp its oscillator to the new played freq. Tau matches
    * the noteOn retune tau.
    */
+  /**
+   * Build the voice's partial stack — one audio osc per non-muted entry
+   * in audioEngine.getExtraPartials(slot). Snapshots `ratio` + `vol`
+   * at noteOn so live mixer edits on the parent slot don't retroactively
+   * change a held voice's stack (user-confirmed Stage 3 decision).
+   *
+   * Each extra mirrors the primary's topology — stereo voices get a
+   * dual-osc + merger per extra, lr voices get a single-osc + panner.
+   * Envelope schedules use the same applyNoteOn with peak scaled by the
+   * partial's vol so the partial's contribution sits at the user-set
+   * mix balance.
+   *
+   * Muted partials are skipped at noteOn (no audio nodes built) — the
+   * Stage 3 snapshot rule means an unmute mid-press wouldn't re-spawn
+   * them anyway, so save the resources.
+   */
+  _buildVoiceExtras(voice, freq, dest, peak, source, ctx) {
+    const slot = voice.slot;
+    const detuneHz = voice.detuneHz || 0;
+    const env = envForSource(source);
+    const envMode = source === 'kbd' ? 'ar' : 'adsr';
+    const wave = keyboardWave.getPeriodicWave(ctx);
+    const t0 = ctx.currentTime;
+    const isStereo = voice._isStereo;
+    const pan = voice.panner ? this._panForDegree(voice.degree) : 0;
+
+    const extras = [];
+    const slotPartials = audioEngine.getExtraPartials(slot);
+    for (const p of slotPartials) {
+      if (p.muted) continue;
+      const extraNominal = Math.max(0.001, Math.min(20000, freq * p.ratio));
+      // Effective peak for this partial: voice peak (velocity-scaled or
+      // 1.0 for kbd) × the partial's mixer vol. Snapshotted so a later
+      // mixer drag on the parent's partial doesn't retroactively rebalance.
+      const extraPeak = peak * (p.vol || 0);
+      const entry = { ratio: p.ratio, partialVol: p.vol || 0 };
+      if (isStereo) {
+        const oscL = ctx.createOscillator();
+        const gainL = ctx.createGain();
+        const oscR = ctx.createOscillator();
+        const gainR = ctx.createGain();
+        const merger = ctx.createChannelMerger(2);
+        if (wave) {
+          oscL.setPeriodicWave(wave);
+          oscR.setPeriodicWave(wave);
+        }
+        const halfDetune = detuneHz / 2;
+        const fL = Math.max(0.001, Math.min(20000, extraNominal + halfDetune));
+        const fR = Math.max(0.001, Math.min(20000, extraNominal - halfDetune));
+        oscL.frequency.setValueAtTime(fL, t0);
+        oscR.frequency.setValueAtTime(fR, t0);
+        oscL.connect(gainL);
+        oscR.connect(gainR);
+        gainL.connect(merger, 0, 0);
+        gainR.connect(merger, 0, 1);
+        merger.connect(dest);
+        env.applyNoteOn(gainL.gain, ctx, extraPeak, null, envMode);
+        env.applyNoteOn(gainR.gain, ctx, extraPeak, null, envMode);
+        oscL.start();
+        oscR.start();
+        entry.osc = oscL; entry.gain = gainL;
+        entry.oscR = oscR; entry.gainR = gainR;
+        entry.merger = merger; entry.panner = null;
+      } else {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const panner = ctx.createStereoPanner();
+        if (wave) osc.setPeriodicWave(wave);
+        const played = Math.max(0.001, Math.min(20000, extraNominal + detuneHz));
+        osc.frequency.setValueAtTime(played, t0);
+        panner.pan.setValueAtTime(pan, t0);
+        osc.connect(gain);
+        gain.connect(panner);
+        panner.connect(dest);
+        env.applyNoteOn(gain.gain, ctx, extraPeak, null, envMode);
+        osc.start();
+        entry.osc = osc; entry.gain = gain; entry.panner = panner;
+        entry.oscR = null; entry.gainR = null; entry.merger = null;
+      }
+      extras.push(entry);
+    }
+    voice._extras = extras;
+  }
+
   _reapplyVoiceDetune() {
     const ctx = audioEngine.audioContext;
     if (!ctx) return;
@@ -148,6 +232,24 @@ class KeyboardVoiceManager {
         voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
         voice.targetFreq = newFreq;
       }
+      // Extras follow the same shape, but nominal = raw * ratio. The
+      // detune shift is applied additively, identical to the primary
+      // path — same beat rate across partials.
+      if (voice._extras) {
+        for (const e of voice._extras) {
+          const nominal = raw * e.ratio;
+          if (voice._isStereo) {
+            const half = newDetune / 2;
+            const fL = Math.max(0.001, Math.min(20000, nominal + half));
+            const fR = Math.max(0.001, Math.min(20000, nominal - half));
+            if (e.osc) e.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
+            if (e.oscR) e.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
+          } else {
+            const newFreq = Math.max(0.001, Math.min(20000, nominal + newDetune));
+            if (e.osc) e.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
+          }
+        }
+      }
     }
   }
 
@@ -164,11 +266,19 @@ class KeyboardVoiceManager {
       // Stereo voices use a ChannelMerger and have no panner — their
       // L/R split is baked into the topology. Only single-osc (lr)
       // voices have a panner to retarget.
-      if (!v.panner) continue;
       const target = keyboardStereo.mode === 'stereo'
         ? 0
         : this._panForDegree(v.degree);
-      v.panner.pan.setTargetAtTime(target, t, PAN_RAMP_TAU);
+      if (v.panner) {
+        v.panner.pan.setTargetAtTime(target, t, PAN_RAMP_TAU);
+      }
+      // Extras mirror the primary topology — lr extras have their own
+      // panner; stereo extras have their own merger and no panner.
+      if (v._extras) {
+        for (const e of v._extras) {
+          if (e.panner) e.panner.pan.setTargetAtTime(target, t, PAN_RAMP_TAU);
+        }
+      }
     }
   }
 
@@ -186,6 +296,12 @@ class KeyboardVoiceManager {
     for (const v of this.voices) {
       v.osc.setPeriodicWave(wave);
       if (v._isStereo && v.oscR) v.oscR.setPeriodicWave(wave);
+      if (v._extras) {
+        for (const e of v._extras) {
+          if (e.osc) e.osc.setPeriodicWave(wave);
+          if (e.oscR) e.oscR.setPeriodicWave(wave);
+        }
+      }
     }
   }
 
@@ -208,6 +324,15 @@ class KeyboardVoiceManager {
       keyboardEnvelope.retargetSustain(v.gain.gain, ctx, v.peak);
       if (v._isStereo && v.gainR) {
         keyboardEnvelope.retargetSustain(v.gainR.gain, ctx, v.peak);
+      }
+      // Extras: their landing level is voice.peak × partialVol, so
+      // retargetSustain gets called with that scaled peak.
+      if (v._extras) {
+        for (const e of v._extras) {
+          const extraPeak = v.peak * e.partialVol;
+          keyboardEnvelope.retargetSustain(e.gain.gain, ctx, extraPeak);
+          if (e.gainR) keyboardEnvelope.retargetSustain(e.gainR.gain, ctx, extraPeak);
+        }
       }
     }
   }
@@ -242,6 +367,23 @@ class KeyboardVoiceManager {
         const newFreq = Math.max(0.001, Math.min(20000, raw + detune));
         voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
         voice.targetFreq = newFreq;
+      }
+      // Extras: nominal = raw * ratio, then detune applied the same way.
+      // Ratios were snapshotted at noteOn so they don't drift mid-press.
+      if (voice._extras) {
+        for (const e of voice._extras) {
+          const nominal = raw * e.ratio;
+          if (voice._isStereo) {
+            const half = detune / 2;
+            const fL = Math.max(0.001, Math.min(20000, nominal + half));
+            const fR = Math.max(0.001, Math.min(20000, nominal - half));
+            if (e.osc) e.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
+            if (e.oscR) e.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
+          } else {
+            const newFreq = Math.max(0.001, Math.min(20000, nominal + detune));
+            if (e.osc) e.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
+          }
+        }
       }
     }
   }
@@ -435,6 +577,7 @@ class KeyboardVoiceManager {
       // up the whole voice — we stop both at the same scheduled time so
       // the second onended is harmless.
       oscL.onended = () => this._cleanupVoice(voice);
+      this._buildVoiceExtras(voice, freq, dest, peak, source, ctx);
     } else {
       // Single-osc topology (lr mode): osc → gain → panner → dest.
       // Inherits the drone slot's L/R routing for the hard pan position.
@@ -463,6 +606,7 @@ class KeyboardVoiceManager {
         targetFreq: playedFreq, smoothedFreq: playedFreq, phase: 0, _lastPhaseUpdate: t0,
       };
       osc.onended = () => this._cleanupVoice(voice);
+      this._buildVoiceExtras(voice, freq, dest, peak, source, ctx);
     }
 
     this.voices.push(voice);
@@ -599,6 +743,18 @@ class KeyboardVoiceManager {
       env.applyNoteOff(voice.gainR.gain, ctx);
       voice.oscR.stop(releaseEnd + 0.05);
     }
+    // Extras share the voice's envelope — release each one at the same
+    // schedule so the whole stack fades together. osc.stop is set to
+    // the same releaseEnd so all partial oscs go silent at the same
+    // moment as the primary.
+    if (voice._extras) {
+      for (const e of voice._extras) {
+        env.applyNoteOff(e.gain.gain, ctx);
+        e.osc.stop(releaseEnd + 0.05);
+        if (e.gainR) env.applyNoteOff(e.gainR.gain, ctx);
+        if (e.oscR) e.oscR.stop(releaseEnd + 0.05);
+      }
+    }
     // osc.onended (primary) will fire _cleanupVoice for the whole voice.
   }
 
@@ -610,6 +766,14 @@ class KeyboardVoiceManager {
       try { releasedVoice.osc.stop(); } catch { /* already stopped */ }
       if (releasedVoice._isStereo && releasedVoice.oscR) {
         try { releasedVoice.oscR.stop(); } catch { /* already stopped */ }
+      }
+      if (releasedVoice._extras) {
+        for (const e of releasedVoice._extras) {
+          try { e.osc.stop(); } catch { /* already stopped */ }
+          if (e.oscR) {
+            try { e.oscR.stop(); } catch { /* already stopped */ }
+          }
+        }
       }
       return;
     }
@@ -631,6 +795,14 @@ class KeyboardVoiceManager {
       fadeGain(oldest.gainR);
       oldest.oscR.stop(t + STEAL_FADE + 0.005);
     }
+    if (oldest._extras) {
+      for (const e of oldest._extras) {
+        fadeGain(e.gain);
+        e.osc.stop(t + STEAL_FADE + 0.005);
+        if (e.gainR) fadeGain(e.gainR);
+        if (e.oscR) e.oscR.stop(t + STEAL_FADE + 0.005);
+      }
+    }
   }
 
   _cleanupVoice(voice) {
@@ -643,6 +815,23 @@ class KeyboardVoiceManager {
       try { voice.oscR && voice.oscR.disconnect(); } catch { /* ignore */ }
       try { voice.gainR && voice.gainR.disconnect(); } catch { /* ignore */ }
       try { voice.merger && voice.merger.disconnect(); } catch { /* ignore */ }
+    }
+    // Disconnect every extra. Each partial's osc was scheduled to stop
+    // at the same time as the primary, so their own onended callbacks
+    // would fire harmlessly — we don't wire them; the primary's
+    // onended drives the single cleanup pass for the whole voice.
+    if (voice._extras) {
+      for (const e of voice._extras) {
+        try { e.osc.disconnect(); } catch { /* ignore */ }
+        try { e.gain.disconnect(); } catch { /* ignore */ }
+        if (e.panner) {
+          try { e.panner.disconnect(); } catch { /* ignore */ }
+        }
+        if (e.oscR) { try { e.oscR.disconnect(); } catch { /* ignore */ } }
+        if (e.gainR) { try { e.gainR.disconnect(); } catch { /* ignore */ } }
+        if (e.merger) { try { e.merger.disconnect(); } catch { /* ignore */ } }
+      }
+      voice._extras = null;
     }
     const idx = this.voices.indexOf(voice);
     if (idx >= 0) this.voices.splice(idx, 1);
@@ -731,20 +920,38 @@ class KeyboardVoiceManager {
       // directly. Pinning the value first means a mid-attack drag won't
       // continue ramping toward the original peak.
       const SUSTAIN_TAU = 0.05;
-      const apply = (param) => {
+      const applyTo = (param, targetPeak) => {
         const t = ctx.currentTime;
         param.cancelScheduledValues(t);
         param.setValueAtTime(param.value, t);
-        param.setTargetAtTime(voice.peak, t, SUSTAIN_TAU);
+        param.setTargetAtTime(targetPeak, t, SUSTAIN_TAU);
       };
-      apply(voice.gain.gain);
-      if (voice._isStereo && voice.gainR) apply(voice.gainR.gain);
+      applyTo(voice.gain.gain, voice.peak);
+      if (voice._isStereo && voice.gainR) applyTo(voice.gainR.gain, voice.peak);
+      // Extras land at voice.peak × partialVol. The mixer's voice
+      // fader represents the primary's level; extras follow the same
+      // peak change scaled by their snapshotted partialVol so the
+      // stack stays balanced as the user drags.
+      if (voice._extras) {
+        for (const e of voice._extras) {
+          const extraPeak = voice.peak * e.partialVol;
+          applyTo(e.gain.gain, extraPeak);
+          if (e.gainR) applyTo(e.gainR.gain, extraPeak);
+        }
+      }
     } else {
       // ADSR mode: reuse Envelope.retargetSustain so the glide tau and
       // schedule semantics match the SettingsPanel sustain slider.
       env.retargetSustain(voice.gain.gain, ctx, voice.peak);
       if (voice._isStereo && voice.gainR) {
         env.retargetSustain(voice.gainR.gain, ctx, voice.peak);
+      }
+      if (voice._extras) {
+        for (const e of voice._extras) {
+          const extraPeak = voice.peak * e.partialVol;
+          env.retargetSustain(e.gain.gain, ctx, extraPeak);
+          if (e.gainR) env.retargetSustain(e.gainR.gain, ctx, extraPeak);
+        }
       }
     }
   }

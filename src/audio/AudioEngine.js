@@ -47,6 +47,11 @@ class AudioEngine {
     this.masterGainNode = null;
     this.analyserNode1 = null;   // Left channel visualization
     this.analyserNode2 = null;   // Right channel visualization
+    // High-resolution FFT analysers dedicated to the spectrum panel.
+    // Separate from analyserNode1/2 so we can crank the FFT size for
+    // bin precision without affecting calibratePhases() or scope timing.
+    this.spectrumAnalyserL = null;
+    this.spectrumAnalyserR = null;
     this.isInitialized = false;
     this.isPaused = false;
     
@@ -83,6 +88,17 @@ class AudioEngine {
     // setOscillatorCount. Re-adding pops the most-recently-removed state so
     // the user's freq/volume/mute settings come back instead of being random.
     this.removedSlots = [];
+
+    // Per-slot list of additional partials (ratio-locked sub-oscillators
+    // bound to their parent slot). extraPartials[i] is an array of
+    // { ratio, vol, muted, _osc, _gain, _oscR, _gainR } — each entry is a
+    // real audio osc that sounds at frequencyValues[i] * ratio + detune.
+    // The primary oscillator stays in the flat oscillators[i]/gainNodes[i]
+    // arrays as before — partials live alongside but don't change any
+    // existing per-slot APIs. Initialized empty; grown/shrunk in sync
+    // with oscillatorCount through setOscillatorCount, removeOscillatorAt,
+    // and cloneOscillator.
+    this.extraPartials = [[], [], [], []];
     
     // Generate random default frequencies
     // First two oscillators: 50-130 Hz, 1-4 Hz apart
@@ -218,6 +234,15 @@ class AudioEngine {
     while (this.droneDetuneOffsets.length < this.oscillatorCount) {
       this.droneDetuneOffsets.push(0);
     }
+    // Each slot starts with no extra partials. Re-init (URL load with
+    // more slots than the constructor's 4) tops up empty arrays.
+    while (this.extraPartials.length < this.oscillatorCount) {
+      this.extraPartials.push([]);
+    }
+    // Monotonic id source for partials. The Mixer keys React rows by
+    // this so removing partial N doesn't reconcile the row for N+1
+    // onto N's component instance.
+    if (this._nextPartialId === undefined) this._nextPartialId = 1;
     // Sync per-pool detune curves to the live drone count. Only grows
     // them — values from URL state are preserved.
     droneStereo.resizeCurve(this.oscillatorCount);
@@ -364,6 +389,19 @@ class AudioEngine {
     this.analyserNode1.connect(finalMerger, 0, 0);
     this.analyserNode2.connect(finalMerger, 0, 1);
 
+    // High-resolution spectrum analysers tap the same post-master split.
+    // 32768 → ~1.35 Hz bins at 44.1k. Latency tradeoff is ~743 ms window
+    // length but for drone visualization that's fine (slower envelope
+    // changes read better than a jittery short window).
+    this.spectrumAnalyserL = this.audioContext.createAnalyser();
+    this.spectrumAnalyserR = this.audioContext.createAnalyser();
+    this.spectrumAnalyserL.fftSize = 32768;
+    this.spectrumAnalyserR.fftSize = 32768;
+    this.spectrumAnalyserL.smoothingTimeConstant = 0.6;
+    this.spectrumAnalyserR.smoothingTimeConstant = 0.6;
+    splitter.connect(this.spectrumAnalyserL, 0);
+    splitter.connect(this.spectrumAnalyserR, 1);
+
     finalMerger.connect(this.audioContext.destination);
     
     // Get max channel count from destination
@@ -446,6 +484,19 @@ class AudioEngine {
             if (this.gainNodesR[i]) {
               this.gainNodesR[i].gain.setTargetAtTime(this._dronePartnerTargetGain(i), t, 0.05);
             }
+            // Reconnect extras + ramp their partner gain just like the
+            // primary path. Stereo mode flip needs both — the routing
+            // target swaps (lr uses routingMap, stereo always goes L)
+            // and the partner becomes audible/silent.
+            const partials = this.extraPartials[i];
+            if (partials) {
+              for (const p of partials) {
+                this._connectPartialToChannels(i, p);
+                if (p._gainR) {
+                  p._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(p), t, 0.05);
+                }
+              }
+            }
           }
         } else if (info.kind === 'detune' || info.kind === 'curve') {
           this._applyDroneDetuneCurve();
@@ -457,14 +508,27 @@ class AudioEngine {
   _retargetDronesForSustain() {
     if (!this.isInitialized || !this.audioContext) return;
     for (let i = 0; i < this.oscillatorCount; i++) {
-      if (this.mutedStates[i]) continue;
-      const gainNode = this.gainNodes[i];
-      const gainNodeR = this.gainNodesR[i];
-      const peak = this.volumeValues[i];
-      if (gainNode) droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, peak);
-      // Partner only retargets to peak in stereo mode; lr mode stays muted.
-      if (gainNodeR && droneStereo.mode === 'stereo') {
-        droneEnvelope.retargetSustain(gainNodeR.gain, this.audioContext, peak);
+      if (!this.mutedStates[i]) {
+        const gainNode = this.gainNodes[i];
+        const gainNodeR = this.gainNodesR[i];
+        const peak = this.volumeValues[i];
+        if (gainNode) droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, peak);
+        if (gainNodeR && droneStereo.mode === 'stereo') {
+          droneEnvelope.retargetSustain(gainNodeR.gain, this.audioContext, peak);
+        }
+      }
+      // Partials follow the same shared sustain. Each uses its own
+      // peak; muted partials skip — _partialTargetGain already returns
+      // 0, but explicit-skip avoids scheduling a pointless ramp.
+      const partials = this.extraPartials[i];
+      if (partials) {
+        for (const p of partials) {
+          if (p.muted || !p._gain) continue;
+          droneEnvelope.retargetSustain(p._gain.gain, this.audioContext, p.vol);
+          if (p._gainR && droneStereo.mode === 'stereo') {
+            droneEnvelope.retargetSustain(p._gainR.gain, this.audioContext, p.vol);
+          }
+        }
       }
     }
   }
@@ -476,6 +540,13 @@ class AudioEngine {
     for (let i = 0; i < this.oscillatorCount; i++) {
       if (this.oscillators[i]) this.oscillators[i].setPeriodicWave(wave);
       if (this.oscillatorsR[i]) this.oscillatorsR[i].setPeriodicWave(wave);
+      const partials = this.extraPartials[i];
+      if (partials) {
+        for (const p of partials) {
+          if (p._osc) p._osc.setPeriodicWave(wave);
+          if (p._oscR) p._oscR.setPeriodicWave(wave);
+        }
+      }
     }
   }
   
@@ -809,6 +880,152 @@ class AudioEngine {
   }
 
   /**
+   * Partial's primary-side played frequency. Same shape as
+   * _dronePrimaryFreq but the nominal is base*ratio. Detune is added
+   * AFTER the ratio (additively) so the beat rate between primary and
+   * partner stays the same across partials — beating reads as a slot
+   * property, not a per-pitch property.
+   */
+  _partialPrimaryFreq(slotIndex, partial) {
+    const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1);
+    const offset = this.droneDetuneOffsets[slotIndex] || 0;
+    const shift = droneStereo.mode === 'stereo' ? offset / 2 : offset;
+    return Math.max(0.001, Math.min(20000, nominal + shift));
+  }
+
+  _partialPartnerFreq(slotIndex, partial) {
+    const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1);
+    const offset = this.droneDetuneOffsets[slotIndex] || 0;
+    return Math.max(0.001, Math.min(20000, nominal - offset / 2));
+  }
+
+  /** Steady-state gain target for a partial — its own vol/mute, scaled by
+   *  the shared drone-pool envelope's sustain. Primary's mute does NOT
+   *  cascade to extras here; the slot-level mute logic in toggleMute
+   *  applies to extras separately so the user can mute the whole slot
+   *  in one gesture from existing UI without losing per-partial state. */
+  _partialTargetGain(partial) {
+    if (partial.muted) return 0;
+    return (partial.vol || 0) * droneEnvelope.sustain;
+  }
+
+  _partialPartnerTargetGain(partial) {
+    if (droneStereo.mode !== 'stereo') return 0;
+    return this._partialTargetGain(partial);
+  }
+
+  /** Build the audio nodes for a single partial. Mirrors the primary
+   *  oscillator path in _createSingleOscillator: dual-osc topology
+   *  (primary + partner) so the same lr/stereo modes apply. Routing
+   *  inherits the parent slot's routingMap entry via
+   *  _connectPartialToChannels. Caller decides `withFade` — passing true
+   *  ramps gain from 0 to target over FIXED_SLOT_FADE so user-initiated
+   *  partial adds don't click. */
+  _createPartialNodes(slotIndex, partial, withFade = false) {
+    if (!this.audioContext) return;
+    const osc = this.audioContext.createOscillator();
+    const gain = this.audioContext.createGain();
+    const oscR = this.audioContext.createOscillator();
+    const gainR = this.audioContext.createGain();
+
+    const wave = droneWave.getPeriodicWave(this.audioContext);
+    if (wave) {
+      osc.setPeriodicWave(wave);
+      oscR.setPeriodicWave(wave);
+    }
+
+    osc.connect(gain);
+    oscR.connect(gainR);
+    if (this.channelGains[1]) gainR.connect(this.channelGains[1]);
+
+    partial._osc = osc;
+    partial._gain = gain;
+    partial._oscR = oscR;
+    partial._gainR = gainR;
+    this._connectPartialToChannels(slotIndex, partial);
+
+    const primaryFreq = this._partialPrimaryFreq(slotIndex, partial);
+    const partnerFreq = this._partialPartnerFreq(slotIndex, partial);
+    const primaryTarget = this._partialTargetGain(partial);
+    const partnerTarget = this._partialPartnerTargetGain(partial);
+    const t = this.audioContext.currentTime;
+
+    osc.frequency.setValueAtTime(primaryFreq, t);
+    oscR.frequency.setValueAtTime(partnerFreq, t);
+
+    if (withFade) {
+      gain.gain.setValueAtTime(0, t);
+      gainR.gain.setValueAtTime(0, t);
+      if (primaryTarget > 0) gain.gain.linearRampToValueAtTime(primaryTarget, t + FIXED_SLOT_FADE);
+      if (partnerTarget > 0) gainR.gain.linearRampToValueAtTime(partnerTarget, t + FIXED_SLOT_FADE);
+    } else {
+      gain.gain.setValueAtTime(primaryTarget, t);
+      gainR.gain.setValueAtTime(partnerTarget, t);
+    }
+
+    osc.start();
+    oscR.start();
+  }
+
+  /** Fade out + tear down a partial's audio nodes. Mirrors the
+   *  per-slot fade-and-stop logic in setOscillatorCount's remove path. */
+  _destroyPartialNodes(partial) {
+    if (!this.audioContext) return;
+    const t = this.audioContext.currentTime;
+    const fadeStop = (osc, gain) => {
+      if (!osc) return;
+      try {
+        if (gain) {
+          const cur = gain.gain.value;
+          gain.gain.cancelScheduledValues(t);
+          gain.gain.setValueAtTime(cur, t);
+          gain.gain.linearRampToValueAtTime(0, t + FIXED_SLOT_FADE);
+        }
+        osc.onended = () => {
+          try { osc.disconnect(); } catch { /* ignore */ }
+          try { gain && gain.disconnect(); } catch { /* ignore */ }
+        };
+        osc.stop(t + FIXED_SLOT_FADE + 0.05);
+      } catch (e) {
+        console.warn('Error stopping partial osc', e);
+      }
+    };
+    fadeStop(partial._osc, partial._gain);
+    fadeStop(partial._oscR, partial._gainR);
+    partial._osc = null;
+    partial._gain = null;
+    partial._oscR = null;
+    partial._gainR = null;
+  }
+
+  /** Re-wire a partial's primary+partner gains to the channel graph,
+   *  honoring the slot's routingMap and current stereo mode. Equivalent
+   *  to _connectDroneToChannels for partials, sharing the slot's routing
+   *  — partials and primary always go to the same output channels. */
+  _connectPartialToChannels(slotIndex, partial) {
+    if (!partial._gain) return;
+    if (!this.channelGains.length) return;
+
+    try { partial._gain.disconnect(); } catch { /* ignore */ }
+    if (droneStereo.mode === 'stereo') {
+      if (this.channelGains[0]) partial._gain.connect(this.channelGains[0]);
+    } else {
+      const channels = this.routingMap[slotIndex] || [];
+      for (const ch of channels) {
+        if (ch >= 0 && ch < this.channelGains.length) {
+          partial._gain.connect(this.channelGains[ch]);
+        }
+      }
+    }
+
+    if (partial._gainR) {
+      try { partial._gainR.disconnect(); } catch { /* ignore */ }
+      const right = this.channelGains[1];
+      if (right) partial._gainR.connect(right);
+    }
+  }
+
+  /**
    * Re-route both the primary and partner oscillators for drone slot
    * `i` per the current mode. Topology:
    *
@@ -870,6 +1087,13 @@ class AudioEngine {
       if (this.oscillatorsR[i]) {
         this.oscillatorsR[i].frequency.setTargetAtTime(this._dronePartnerFreq(i), t, 0.016);
       }
+      const partials = this.extraPartials[i];
+      if (partials) {
+        for (const p of partials) {
+          if (p._osc) p._osc.frequency.setTargetAtTime(this._partialPrimaryFreq(i, p), t, 0.016);
+          if (p._oscR) p._oscR.frequency.setTargetAtTime(this._partialPartnerFreq(i, p), t, 0.016);
+        }
+      }
     }
   }
   
@@ -915,6 +1139,9 @@ class AudioEngine {
             this.mutedStates[i] = false;
             this.preMuteVolumes[i] = 0.5;
           }
+          // Fresh slot starts with no extras. Existing slots' extras
+          // (lower indices) are untouched.
+          if (!this.extraPartials[i]) this.extraPartials[i] = [];
           this._createSingleOscillator(i, true /* withFade */);
         }
       } else {
@@ -962,6 +1189,13 @@ class AudioEngine {
           } catch (e) {
             console.warn('Error stopping oscillator', i, e);
           }
+
+          // Tear down any partials living on this slot before splicing
+          // the slot itself — the partials are gone for good (not pushed
+          // onto removedSlots, which only restores primary state).
+          const extras = this.extraPartials[i] || [];
+          for (const p of extras) this._destroyPartialNodes(p);
+          this.extraPartials.splice(i, 1);
 
           this.oscillators.splice(i, 1);
           this.gainNodes.splice(i, 1);
@@ -1055,6 +1289,14 @@ class AudioEngine {
         console.warn('Error stopping oscillator', index, e);
       }
 
+      // Same as setOscillatorCount's remove path: tear down extras for
+      // the removed slot before splicing. Higher slots' extras come
+      // along via the splice and stay bound to their (now-shifted) slot
+      // index naturally.
+      const extras = this.extraPartials[index] || [];
+      for (const p of extras) this._destroyPartialNodes(p);
+      this.extraPartials.splice(index, 1);
+
       this.oscillators.splice(index, 1);
       this.gainNodes.splice(index, 1);
       this.oscillatorsR.splice(index, 1);
@@ -1115,6 +1357,10 @@ class AudioEngine {
       this.volumeValues[newIndex] = this.volumeValues[sourceIndex];
       this.mutedStates[newIndex] = this.mutedStates[sourceIndex];
       this.preMuteVolumes[newIndex] = this.preMuteVolumes[sourceIndex];
+      // Cloned slot starts fresh — the source's partials don't copy
+      // over. Use addPartial after clone if you want the same harmonic
+      // stack on both.
+      this.extraPartials[newIndex] = [];
       this.oscillatorCount = newIndex + 1;
 
       // Stereo curves need to grow before _createSingleOscillator reads
@@ -1128,6 +1374,130 @@ class AudioEngine {
     } catch (err) {
       console.error('AudioEngine: Failed to clone oscillator', err);
     }
+  }
+
+  // ─── Partial APIs ──────────────────────────────────────────────────
+  // partialIndex is 0-based on the slot's extras list — partial 0 is
+  // the first extra, NOT the primary. The primary uses the existing
+  // setFrequency / setVolume / toggleMute / removeOscillatorAt APIs.
+
+  /** Append a new partial to `slotIndex`. Default ratio 1 (unison) and
+   *  vol matching the slot's primary so the new partial is audible at
+   *  the same level. Fades in over FIXED_SLOT_FADE — no click. */
+  addPartial(slotIndex) {
+    if (!this.isInitialized) return;
+    if (slotIndex < 0 || slotIndex >= this.oscillatorCount) return;
+    const list = this.extraPartials[slotIndex];
+    if (!list) return;
+    const primaryVol = this.volumeValues[slotIndex] ?? 0.5;
+    const partial = {
+      id: this._nextPartialId++,
+      ratio: 1,
+      vol: primaryVol,
+      muted: false,
+    };
+    this._createPartialNodes(slotIndex, partial, true /* withFade */);
+    list.push(partial);
+    this._updateMasterGainScaling();
+  }
+
+  /** Tear down + drop the partial at extras index `partialIndex`. */
+  removePartialAt(slotIndex, partialIndex) {
+    if (!this.isInitialized) return;
+    const list = this.extraPartials[slotIndex];
+    if (!list || partialIndex < 0 || partialIndex >= list.length) return;
+    const partial = list[partialIndex];
+    this._destroyPartialNodes(partial);
+    list.splice(partialIndex, 1);
+    this._updateMasterGainScaling();
+  }
+
+  /** Set a partial's pitch ratio (base*ratio = sounding nominal). Ramps
+   *  the live oscs over 16 ms — matches setFrequency's tau so dragging
+   *  the ratio feels equivalently smooth. */
+  setPartialRatio(slotIndex, partialIndex, ratio) {
+    const list = this.extraPartials[slotIndex];
+    if (!list || partialIndex < 0 || partialIndex >= list.length) return;
+    const partial = list[partialIndex];
+    const clamped = Math.max(0.001, Math.min(64, ratio));
+    if (Math.abs(clamped - partial.ratio) < 1e-6) return;
+    partial.ratio = clamped;
+    if (!this.audioContext || !partial._osc) return;
+    const t = this.audioContext.currentTime;
+    partial._osc.frequency.setTargetAtTime(this._partialPrimaryFreq(slotIndex, partial), t, 0.016);
+    if (partial._oscR) {
+      partial._oscR.frequency.setTargetAtTime(this._partialPartnerFreq(slotIndex, partial), t, 0.016);
+    }
+  }
+
+  /** Set a partial's volume (0..1). Ramps to target via setTargetAtTime
+   *  like setVolume on the primary path. */
+  setPartialVolume(slotIndex, partialIndex, vol) {
+    const list = this.extraPartials[slotIndex];
+    if (!list || partialIndex < 0 || partialIndex >= list.length) return;
+    const partial = list[partialIndex];
+    const clamped = Math.max(0, Math.min(1, vol));
+    if (Math.abs(clamped - partial.vol) < 0.005) return;
+    partial.vol = clamped;
+    if (!this.audioContext || !partial._gain) return;
+    if (this.audioContext.state === 'suspended') this.audioContext.resume();
+    const t = this.audioContext.currentTime;
+    partial._gain.gain.setTargetAtTime(this._partialTargetGain(partial), t, 0.016);
+    if (partial._gainR) {
+      partial._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(partial), t, 0.016);
+    }
+  }
+
+  /** Toggle a partial's mute. Same ramp as setPartialVolume — gain goes
+   *  to 0 on mute, back to vol*sustain on unmute. */
+  togglePartialMute(slotIndex, partialIndex) {
+    const list = this.extraPartials[slotIndex];
+    if (!list || partialIndex < 0 || partialIndex >= list.length) return;
+    const partial = list[partialIndex];
+    partial.muted = !partial.muted;
+    if (!this.audioContext || !partial._gain) return;
+    const t = this.audioContext.currentTime;
+    partial._gain.gain.setTargetAtTime(this._partialTargetGain(partial), t, 0.016);
+    if (partial._gainR) {
+      partial._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(partial), t, 0.016);
+    }
+  }
+
+  /** Plain-object view of a slot's extras (excluding primary). Each
+   *  entry carries the stable `id` (for React keys) and the position
+   *  `partialIndex` (for set/remove API calls). Returns [] for an
+   *  out-of-range slot, so callers can iterate without a length check. */
+  getExtraPartials(slotIndex) {
+    const list = this.extraPartials[slotIndex];
+    if (!list) return [];
+    return list.map((p, i) => ({
+      id: p.id,
+      partialIndex: i,
+      ratio: p.ratio,
+      vol: p.vol,
+      muted: p.muted,
+    }));
+  }
+
+  /** Read-only view of a slot's full partial list: [primary, ...extras].
+   *  Primary is synthesized from the existing flat-array state — the
+   *  caller (e.g. Mixer) can treat the list uniformly without branching
+   *  on primary-vs-extra. */
+  getPartials(slotIndex) {
+    if (slotIndex < 0 || slotIndex >= this.oscillatorCount) return [];
+    const primary = {
+      ratio: 1,
+      vol: this.volumeValues[slotIndex] ?? 0,
+      muted: !!this.mutedStates[slotIndex],
+      isPrimary: true,
+    };
+    const extras = (this.extraPartials[slotIndex] || []).map(p => ({
+      ratio: p.ratio,
+      vol: p.vol,
+      muted: p.muted,
+      isPrimary: false,
+    }));
+    return [primary, ...extras];
   }
 
   /**
@@ -1161,6 +1531,12 @@ class AudioEngine {
       // mode flips back to 'lr').
       this.routingMap[oscIndex] = [...channels, newChannel];
       this._connectDroneToChannels(oscIndex);
+      // Extras inherit the slot's routing — reconnect after the map
+      // update so they stay aligned with their parent's channels.
+      const partials = this.extraPartials[oscIndex];
+      if (partials) {
+        for (const p of partials) this._connectPartialToChannels(oscIndex, p);
+      }
 
       // Notify listeners
       if (this.onRoutingChange) {
@@ -1194,6 +1570,10 @@ class AudioEngine {
       // In 'stereo' mode the audio stays on L+R; the map change only
       // takes effect when mode flips back to 'lr'.
       this._connectDroneToChannels(oscIndex);
+      const partials = this.extraPartials[oscIndex];
+      if (partials) {
+        for (const p of partials) this._connectPartialToChannels(oscIndex, p);
+      }
 
       // If no channels left in lr mode, oscillator is disconnected (silent) - that's okay
 
@@ -1346,6 +1726,11 @@ class AudioEngine {
         this.routingMap[i] = [i % numChannels];
       }
       this._connectDroneToChannels(i);
+      // Extras share the slot's routing — reconnect alongside.
+      const partials = this.extraPartials[i];
+      if (partials) {
+        for (const p of partials) this._connectPartialToChannels(i, p);
+      }
     }
     
     console.log('Channel routing rebuilt for', numChannels, 'channels');
@@ -1385,6 +1770,14 @@ class AudioEngine {
     this.oscillators[index].frequency.setTargetAtTime(this._dronePrimaryFreq(index), t, 0.016);
     if (this.oscillatorsR[index]) {
       this.oscillatorsR[index].frequency.setTargetAtTime(this._dronePartnerFreq(index), t, 0.016);
+    }
+    // Each partial's nominal freq is base*ratio — retune alongside.
+    const partials = this.extraPartials[index];
+    if (partials) {
+      for (const p of partials) {
+        if (p._osc) p._osc.frequency.setTargetAtTime(this._partialPrimaryFreq(index, p), t, 0.016);
+        if (p._oscR) p._oscR.frequency.setTargetAtTime(this._partialPartnerFreq(index, p), t, 0.016);
+      }
     }
 
     this._notifyFrequencyChange();

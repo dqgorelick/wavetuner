@@ -851,7 +851,7 @@ function App() {
   // computer-key input. Fullscreen still toggles via the on-screen button.)
 
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -890,7 +890,12 @@ function App() {
               onPausedChange={setIsPaused}
             />
           )}
-          {uiMode !== 'fullscreen' && (
+          {/* Frequency manager rail — temporarily hidden while the
+              left-side relocation + spectrum extraction + save/load
+              patch integration is in progress. Re-enable by flipping
+              the guard to `uiMode !== 'fullscreen'` once the new
+              layout lands. */}
+          {false && (
             <FrequencyManagerPanel
               oscillatorCount={oscillatorCount}
               onAlign={handleAlign}

@@ -43,6 +43,11 @@ const SNAPSHOT_DEBOUNCE_MS = 350;
 // Maximum history depth — older snapshots fall off the bottom.
 const UNDO_LIMIT = 30;
 
+// Glide duration (ms) when recalling a saved state. Matches
+// applyPatchSmooth's SMOOTH_GLIDE_MS so save-recalls feel like the
+// "return to patch" gesture.
+const RECALL_GLIDE_MS = 800;
+
 class FrequencyManager {
   constructor() {
     if (FrequencyManager.instance) return FrequencyManager.instance;
@@ -54,11 +59,16 @@ class FrequencyManager {
     this._lastAnchorHz = 0;
     this._inPropagation = false;
 
-    // Undo state
+    // Undo / redo state
     this._undoStack = [];
+    this._redoStack = [];
     this._lastStable = null;     // most recently captured stable snapshot
     this._snapTimer = null;
     this._inUndoRestore = false;
+
+    // In-memory named save slots. Lost on reload by design.
+    this._saveSlots = [];
+    this._saveSeq = 0;           // monotonic counter for auto-names
 
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
 
@@ -172,21 +182,106 @@ class FrequencyManager {
     this._fire();
   }
 
-  // ─── Undo ──────────────────────────────────────────────────────────
+  // ─── Undo / Redo ───────────────────────────────────────────────────
 
   canUndo() { return this._undoStack.length > 0; }
+  canRedo() { return this._redoStack.length > 0; }
 
   /**
    * Pop the most recent snapshot off the undo stack and restore engine +
-   * manager state to it. The current state is discarded (no redo).
+   * manager state to it. The current state is pushed onto the redo
+   * stack so a subsequent redo() can return here.
    */
   undo() {
     if (this._undoStack.length === 0) return false;
+    if (this._lastStable) this._redoStack.push(this._lastStable);
     const target = this._undoStack.pop();
     this._applySnapshot(target);
     this._lastStable = target;
     this._fire();
     return true;
+  }
+
+  /**
+   * Inverse of undo: pop the redo stack, applying that snapshot and
+   * pushing the current state back onto the undo stack.
+   */
+  redo() {
+    if (this._redoStack.length === 0) return false;
+    if (this._lastStable) {
+      this._undoStack.push(this._lastStable);
+      if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
+    }
+    const target = this._redoStack.pop();
+    this._applySnapshot(target);
+    this._lastStable = target;
+    this._fire();
+    return true;
+  }
+
+  // ─── Save slots ────────────────────────────────────────────────────
+
+  getSlots() {
+    return this._saveSlots.map((s) => ({
+      id: s.id,
+      name: s.name,
+      createdAt: s.createdAt,
+    }));
+  }
+
+  /**
+   * Capture the current state as a named save slot. Returns the slot id.
+   * Slots live in memory only — lost on reload.
+   */
+  saveCurrent({ name } = {}) {
+    if (!audioEngine.initialized) return null;
+    this._saveSeq += 1;
+    const id = `save_${Date.now().toString(36)}_${this._saveSeq}`;
+    const slot = {
+      id,
+      name: name || `Save ${this._saveSeq}`,
+      createdAt: Date.now(),
+      snapshot: this._takeSnapshot(),
+    };
+    this._saveSlots.push(slot);
+    this._fire();
+    return id;
+  }
+
+  /**
+   * Apply a saved slot's snapshot with a smooth frequency glide. The
+   * pre-recall state is pushed onto the undo stack so the user can
+   * back out of a recall. Redo is cleared (recall counts as a "new
+   * edit" branch).
+   */
+  recallSlot(id) {
+    const slot = this._saveSlots.find((s) => s.id === id);
+    if (!slot) return false;
+    if (!audioEngine.initialized) return false;
+    // Treat the recall as a new edit: capture pre-recall state for undo,
+    // wipe redo so its branch doesn't get stranded.
+    if (this._lastStable) {
+      this._undoStack.push(this._lastStable);
+      if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
+    }
+    this._redoStack = [];
+    this._applySnapshotSmooth(slot.snapshot, RECALL_GLIDE_MS);
+    return true;
+  }
+
+  deleteSlot(id) {
+    const before = this._saveSlots.length;
+    this._saveSlots = this._saveSlots.filter((s) => s.id !== id);
+    if (this._saveSlots.length !== before) this._fire();
+  }
+
+  renameSlot(id, name) {
+    const slot = this._saveSlots.find((s) => s.id === id);
+    if (!slot) return;
+    const trimmed = String(name || '').trim();
+    if (!trimmed || trimmed === slot.name) return;
+    slot.name = trimmed;
+    this._fire();
   }
 
   _takeSnapshot() {
@@ -214,6 +309,39 @@ class FrequencyManager {
       this._inPropagation = false;
       this._inUndoRestore = false;
     }
+  }
+
+  /**
+   * Glide engine frequencies toward the snapshot's targets while
+   * setting manager-only fields (anchor / ratios / limit) immediately.
+   * The undo-restore guard stays raised for the full duration so the
+   * per-frame engine listener doesn't treat the glide as user drift
+   * and purge locks. On completion we capture the landed state as
+   * `_lastStable` so further edits diff against it.
+   */
+  _applySnapshotSmooth(snap, durationMs) {
+    // Cancel any in-flight glide so back-to-back recalls behave.
+    if (audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
+
+    this._inUndoRestore = true;
+    this._anchorSlot = snap.anchorSlot;
+    this._slotRatios = new Map(snap.slotRatios);
+    this._limit = snap.limit;
+
+    const count = audioEngine.getOscillatorCount();
+    const targets = snap.frequencies.slice(0, count);
+
+    const finish = () => {
+      this._inUndoRestore = false;
+      this._lastAnchorHz = audioEngine.getFrequency(this._anchorSlot);
+      this._lastStable = this._takeSnapshot();
+      this._fire();
+    };
+
+    // Fire once now so the UI reflects the new anchor / ratios while
+    // the glide is in motion.
+    this._fire();
+    audioEngine.glideToFrequencies(targets, durationMs, finish);
   }
 
   _snapshotsEqual(a, b) {
@@ -249,6 +377,8 @@ class FrequencyManager {
     if (this._snapshotsEqual(this._lastStable, now)) return;
     this._undoStack.push(this._lastStable);
     if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
+    // A real edit branches history — any pending redo is now stranded.
+    if (this._redoStack.length > 0) this._redoStack = [];
     this._lastStable = now;
     this._fire();
   }

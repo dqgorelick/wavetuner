@@ -122,6 +122,9 @@ export default function OscillatorDisplay({ onValuesChange }) {
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (isEditableTarget(event.target)) return;
+      // Bail on Cmd/Ctrl/Alt so OS-level chords (Cmd+Tab, Cmd+1 to
+      // switch tab, etc.) don't trigger drone toggles.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
       const key = event.key.toLowerCase();
 
       if (key === 'shift') {

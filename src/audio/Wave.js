@@ -58,7 +58,9 @@ const ANCHOR_COEFFS = (() => {
 
 // Interpolate the four anchors at position p ∈ [0, 3]. Returns a fresh
 // Float32Array(HARMONICS + 1) of sine coefficients for createPeriodicWave.
-function shapeCoeffs(p) {
+// Exported so non-audio consumers (AudioFeatures' dissonance calc) can
+// model what partials a voice is contributing without an AudioContext.
+export function shapeCoeffs(p) {
   const clamped = Math.max(0, Math.min(POSITION_MAX, p));
   const seg = Math.min(2, Math.floor(clamped));
   const t = clamped - seg;

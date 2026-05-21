@@ -143,7 +143,7 @@ export const computerKbdEnvelope = new Envelope({
   attack: 2.0,
   decay: 0.001,
   sustain: 1.0,
-  release: 0.3,
+  release: 0.7,
 });
 
 export default Envelope;

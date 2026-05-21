@@ -514,7 +514,14 @@ class KeyboardVoiceManager {
     // For kbd source, peak always starts at 1.0 — the user "dials in"
     // their dynamic by how long they hold the key; freezeNote on keyup
     // captures the reached level and overwrites peak.
-    const peak = source === 'kbd' ? 1 : this._applyVelocityCurve(velocity);
+    // Equal-loudness compensation for stereo mode. With both L and R
+    // channels running at peak the perceived loudness is ~√2× louder
+    // than lr mode (which only fires one channel). Scaling per-side
+    // peak by 1/√2 brings stereo back into line with lr. Bake into
+    // voice.peak so retargetSustain and freezeToCurrent automatically
+    // see the corrected value.
+    const peakRaw = source === 'kbd' ? 1 : this._applyVelocityCurve(velocity);
+    const peak = isStereo ? peakRaw / Math.sqrt(2) : peakRaw;
     // kbd voices run AR-only against their own envelope: ramp 0 → peak,
     // then hold at peak (no decay slump). MIDI keeps full ADSR off the
     // shared keyboardEnvelope.

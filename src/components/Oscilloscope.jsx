@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
+import { updateAudioFeatures } from '../audio/AudioFeatures';
 import palette from '../theme/palette';
 
 // Synth-buffer length policy for the XY / Hilbert / face scopes.
@@ -238,7 +239,6 @@ function drawStatic(
 
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
   ctx.lineWidth = 1;
-  ctx.shadowBlur = 0;
   ctx.beginPath();
   ctx.moveTo(traceOffsetX, centerY);
   ctx.lineTo(traceOffsetX + traceWidth, centerY);
@@ -350,8 +350,6 @@ function drawStatic(
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = color;
-      ctx.shadowBlur = 14 * lineScale;
-      ctx.shadowColor = color;
       for (let i = 0; i < samples; i++) {
         const p = i / (samples - 1);
         const t = p * windowSec - windowHalf;
@@ -381,8 +379,6 @@ function drawStatic(
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = color;
-      ctx.shadowBlur = 14 * lineScale;
-      ctx.shadowColor = typeof color === 'string' ? color : '#fff';
       const rp = relVoicePhase(v);
       for (let i = 0; i < samples; i++) {
         const p = i / (samples - 1);
@@ -445,19 +441,14 @@ function drawStatic(
   if (outlineThickness > 0) {
     ctx.lineWidth = aggOuterWidth;
     ctx.strokeStyle = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 1)`;
-    ctx.shadowBlur = Math.max(outlineThickness, 4) * lineScale;
-    ctx.shadowColor = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 0.8)`;
     drawAggPath();
   }
 
   ctx.lineWidth = aggWidth;
   ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
-  ctx.shadowBlur = 8 * lineScale;
-  ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
   drawAggPath();
 
   ctx.globalAlpha = 1;
-  ctx.shadowBlur = 0;
 }
 
 // Produce (L, R) Float32Arrays matching what the analyzer would yield if
@@ -734,14 +725,12 @@ function drawXY(
   whiteWidth *= lineWidthScale;
   colorWidth *= outlineScale;
 
-  const strokePath = (color, lw, blur, glowColor) => {
+  const strokePath = (color, lw) => {
     ctx.beginPath();
     ctx.lineWidth = lw;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = color;
-    ctx.shadowBlur = blur;
-    ctx.shadowColor = glowColor;
     let prevX = null;
     let prevY = null;
     for (let i = renderStart; i < dataLen; i += sampleStep) {
@@ -770,11 +759,8 @@ function drawXY(
   };
 
   const col = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 1)`;
-  const glowCol = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 0.8)`;
-  strokePath(col, colorWidth, 25 * lineScale, glowCol);
-  strokePath('rgba(255, 255, 255, 1)', whiteWidth, 10 * lineScale, 'rgba(255, 255, 255, 0.6)');
-
-  ctx.shadowBlur = 0;
+  strokePath(col, colorWidth);
+  strokePath('rgba(255, 255, 255, 1)', whiteWidth);
 }
 
 /**
@@ -782,7 +768,6 @@ function drawXY(
  * Uses refs and imperative animation loop to avoid React re-render overhead
  */
 export default function Oscilloscope({
-  uiMode = 'simple',
   staticMode = 'beating',
   staticPeriods = 10,
   staticLineWidth = 1.0,
@@ -802,12 +787,9 @@ export default function Oscilloscope({
 }) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const calibrateTickRef = useRef(0);
   const dimensionsRef = useRef({ width: 0, height: 0, scaleX: 1, scaleY: 1 });
 
-  const uiModeRef = useRef(uiMode);
-  useEffect(() => {
-    uiModeRef.current = uiMode;
-  }, [uiMode]);
   const staticModeRef = useRef(staticMode);
   useEffect(() => {
     staticModeRef.current = staticMode;
@@ -859,10 +841,6 @@ export default function Oscilloscope({
   // Smoothed fundamental + periods, tweened toward targets so zoom and
   // mute transitions glide rather than snap.
   const smoothedWindowRef = useRef({ fundamental: 0, periods: 0 });
-  // Smoothed bottom-reserved pixels. The target changes with uiMode and
-  // we tween so the layout glides in sync with the CSS panel animation
-  // (which uses a 0.3 s cubic-bezier transition on .orb-backdrop.height).
-  const smoothedBottomRef = useRef(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -887,7 +865,7 @@ export default function Oscilloscope({
         scaleY: cssHeight / 1024
       };
     };
-    
+
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
     
@@ -915,8 +893,15 @@ export default function Oscilloscope({
       // sees, eliminating drift from Web Audio start-phase uncertainty
       // and freq-smoothing approximation. Oscillators routed only to
       // output channels > 1 stay on the accumulator (no analyzer to
-      // measure them from).
-      audioEngine.calibratePhases();
+      // measure them from). Run at half rate — the 20%-per-frame blend
+      // cap already spreads corrections over ~5 frames, so doubling the
+      // gap to ~33 ms is invisible while halving the LSQ cost.
+      calibrateTickRef.current = (calibrateTickRef.current + 1) & 1;
+      if (calibrateTickRef.current === 0) audioEngine.calibratePhases();
+      // Tier-3 audio features (dissonance, consonance, beating) for the
+      // dissonance meter under the spectrum and for Hydra sketches
+      // referencing `audio.dissonance` etc. via callback uniforms.
+      updateAudioFeatures(audioEngine);
 
       const { width, height, scaleX, scaleY } = dimensionsRef.current;
 
@@ -928,21 +913,9 @@ export default function Oscilloscope({
       const b = Math.sin(angle + PHASE_OFFSET * 2) * 127 + 128;
       const lineScale = Math.min(scaleX, scaleY);
 
-      // Bottom-reserved strip follows uiMode — simple: ~top-of-orbs
-      // (135 px), expanded: full orb-backdrop + panel (~340 px),
-      // fullscreen: thin bar (60 px). Tweened to match the CSS
-      // panel-expand animation.
-      const uiMode = uiModeRef.current;
-      const targetBottom = uiMode === 'expanded' ? 340
-        : uiMode === 'fullscreen' ? 60
-        : 135;
-      if (smoothedBottomRef.current === null) {
-        smoothedBottomRef.current = targetBottom;
-      } else {
-        smoothedBottomRef.current +=
-          (targetBottom - smoothedBottomRef.current) * 0.12;
-      }
-      const BOTTOM_RESERVED = Math.round(smoothedBottomRef.current);
+      // Bottom-reserved strip = ~top-of-orbs (135 px). The expanded and
+      // fullscreen UI modes were removed, so this is a constant.
+      const BOTTOM_RESERVED = 135;
       const usableHeight = Math.max(0, height - BOTTOM_RESERVED);
       const staticStyle = staticModeRef.current;
       const sampleRate = audioEngine.audioContext

@@ -9,6 +9,8 @@ import EnvelopeControls from './EnvelopeControls';
 import WaveControls from './WaveControls';
 import StereoModeControls from './StereoModeControls';
 import RoutingPatchBay from './RoutingPatchBay';
+import SpectrumAnalyzer from './SpectrumAnalyzer';
+import DissonanceMeter from './DissonanceMeter';
 
 /**
  * SettingsPanel - Expandable settings panel from bottom-right.
@@ -47,6 +49,8 @@ export default function SettingsPanel({
   onSaturationDriveChange,
   kbdRepressMode,
   onKbdRepressModeChange,
+  showKbdLabels,
+  onShowKbdLabelsChange,
   jiLimit,
   onJiLimitChange,
 }) {
@@ -377,6 +381,27 @@ export default function SettingsPanel({
             restart
           </button>
         </div>
+        <label className="settings-sublabel">Key labels</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${showKbdLabels ? 'on' : 'off'}`}
+            onClick={() => onShowKbdLabelsChange?.(true)}
+            aria-pressed={!!showKbdLabels}
+            title="Show the QWERTY letter that triggers each key"
+          >
+            show
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${!showKbdLabels ? 'on' : 'off'}`}
+            onClick={() => onShowKbdLabelsChange?.(false)}
+            aria-pressed={!showKbdLabels}
+            title="Hide the QWERTY letter overlay"
+          >
+            hide
+          </button>
+        </div>
       </div>
 
       <div className="settings-section tune-section">
@@ -485,6 +510,14 @@ export default function SettingsPanel({
             classic
           </button>
         </div>
+      </div>
+
+      <div className="settings-section settings-section-analyzer">
+        <SpectrumAnalyzer />
+      </div>
+
+      <div className="settings-section settings-section-analyzer">
+        <DissonanceMeter />
       </div>
     </div>
   );

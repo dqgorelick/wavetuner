@@ -64,235 +64,91 @@ p {
   cursor: pointer;
 }
 
-/* Simple UI mode uses the spectrum/backdrop default values (80 / 164). */
-
-/* Expanded UI mode — panel grows upward with the readout/octave/fader rows;
-   spectrum moves up to stay just above it. */
-.expanded-mode .freq-spectrum-bar {
-  bottom: calc(254px + env(safe-area-inset-bottom));
-}
-.expanded-mode .orb-backdrop {
-  /* expanded spectrum 254 + bar offset 34 + 50 gradient = 338 */
-  height: calc(338px + env(safe-area-inset-bottom));
-}
-
-/* Fullscreen UI mode — no canvas transform needed; Oscilloscope.jsx
-   handles the expanded scope size internally when uiMode === 'fullscreen'. */
-.fullscreen-mode .osc-controls-panel {
-  display: none;
-}
-
-.fullscreen-mode .freq-spectrum-bar {
-  bottom: calc(20px + env(safe-area-inset-bottom));
-}
-
-/* Fullscreen: orbs stay (so users can still drag/grab and see which
-   slots are playing). Half size via scale(0.5), with the scale anchored
-   to the BOTTOM of the bounding box so the visual orb sits low in the
-   box — closer to the spectrum bar below it. The bounding box stays
-   full-size under the transform so click targets remain generous. */
-.fullscreen-mode .fsb-dot,
-.fullscreen-mode .fsb-ghost {
-  transform: scale(0.5);
-  transform-origin: 50% 100%;
-}
-.fullscreen-mode .fsb-dot:hover {
-  transform: scale(0.6);
-  transform-origin: 50% 100%;
-}
-.fullscreen-mode .fsb-dot.dragging,
-.fullscreen-mode .fsb-dot.grabbed {
-  transform: scale(0.5);
-  transform-origin: 50% 100%;
-}
-
-/* "Playing" indicator: unmuted orbs in fullscreen pick up a soft glow.
-   Sized to match the keyboard dots' "lit" intensity — small, focused
-   halo rather than a wide bloom, so the orb reads as on without being
-   visually loud. */
-.fullscreen-mode .fsb-dot:not(.muted):not(.dragging):not(.grabbed) {
-  opacity: 1;
-  box-shadow: 0 0 10px var(--dot-color),
-              0 0 4px var(--dot-color);
-}
-
-/* Octave-activity bubble columns above each orb — same data-octave/data-state
-   system used for the main-screen number labels, just with the number text
-   itself hidden so only the bubble columns render. The label container
-   shrinks to bubble width when nothing's sounding, so it's invisible at
-   rest. The active-freq variant (drag/grab readout) still shows the freq. */
-.fullscreen-mode .fsb-dot-label:not(.active-freq) .fsb-label-text {
-  display: none;
-}
-
-/* Make freq markers stand out more without orbs above them. */
-.fullscreen-mode .fsb-freq-marker {
-  width: 3px;
-  margin-left: -1.5px;
-  opacity: 0.9;
-}
-.fullscreen-mode .fsb-freq-marker.active {
-  width: 5px;
-  margin-left: -2.5px;
-  opacity: 1;
-  box-shadow: 0 0 12px var(--marker-color, currentColor),
-              0 0 4px var(--marker-color, currentColor);
-}
-
-.fullscreen-mode .orb-backdrop {
-  /* spectrum bottom 20 + bar offset 34 + 50 gradient = 104 */
-  height: calc(104px + env(safe-area-inset-bottom));
-  background: linear-gradient(
-    to bottom,
-    transparent 0,
-    rgba(0, 0, 0, 0.4) 50px,
-    rgba(0, 0, 0, 0.4) 100%
-  );
-}
-
-/* Fullscreen freq list — anchored at the bottom-left corner of the viewport.
-   Position: fixed + bottom-anchored means the list grows UPWARD as more
-   oscillators are added, keeping the bottom edge glued to the corner. */
-.fullscreen-freq-list {
-  position: fixed;
-  bottom: max(16px, env(safe-area-inset-bottom));
-  left: 16px;
-  z-index: 350;
-  width: 200px;
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.5);
-  border-radius: 8px;
-  backdrop-filter: blur(10px);
-  pointer-events: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* The rows live inside a relative wrapper so their absolute `top` can
-   animate when frequencies cross each other. Wrapper height matches the
-   row count so the parent flex column reflows the footer correctly as
-   oscillators are added/removed. */
-.ff-rows {
-  --ff-row-stride: 24px;
-  position: relative;
-  width: 100%;
-  height: calc(var(--ff-row-count, 1) * var(--ff-row-stride));
-}
-
-.ff-row {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(var(--ff-row-rank, 0) * var(--ff-row-stride));
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 2px 4px;
-  background: transparent;
-  border: none;
-  color: var(--osc-color);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  cursor: pointer;
-  border-radius: 4px;
-  text-align: left;
-  transition: top 0.32s cubic-bezier(0.4, 0, 0.2, 1),
-              background 0.15s,
-              opacity 0.15s;
-}
-
-/* Footer: Hold + Play/Pause buttons beneath the freq rows. Sits at the
-   bottom of the bottom-anchored container, so as oscillators are added
-   the rows grow upward and the footer stays glued to the viewport bottom. */
-.ff-footer {
-  display: flex;
-  gap: 6px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.ff-footer-btn {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 24px;
-  padding: 0 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: none;
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.7);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.4px;
-  text-transform: lowercase;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.ff-footer-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
-}
-.ff-footer-btn.on {
-  background: rgba(255, 255, 255, 0.20);
-  color: #fff;
-}
-.ff-footer-btn.paused {
-  color: #ffd166;
-}
-
-.ff-row:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.ff-row.selected {
-  background: color-mix(in srgb, var(--osc-color), transparent 80%);
-}
-
-.ff-row.muted {
-  opacity: 0.4;
-}
-
-.ff-row .ff-freq {
-  font-weight: 700;
-  min-width: 56px;
-  text-align: right;
-}
-
-.ff-row .ff-sep {
-  opacity: 0.45;
-}
-
-.ff-row .ff-note {
-  font-weight: 600;
-}
-
-.ff-row .ff-cents {
-  margin-left: 4px;
-  opacity: 0.6;
-  font-weight: 500;
-}
+/* Simple UI mode uses the spectrum/backdrop default values (80 / 164).
+   The expanded and fullscreen modes were removed — bottom-row controls
+   are now the only visible row, so the spectrum stays at the simple-mode
+   offset regardless. */
 
 /* ─── Mixer ────────────────────────────────────────────────────────────
    Bottom-left strip listing every audible signal — drone slots (phase 1)
    and later keyboard/MIDI voices. Builds upward from the viewport bottom
    via flex-direction: column-reverse so the newest entry appears on top
    and the stack is naturally bottom-anchored regardless of length. */
-.mixer-panel {
+/* Left-rail stack — fixed wrapper that hosts the mixer (top) and the
+   tuning panel (bottom). Both children render as normal-flow blocks
+   inside this stack, so adding / removing one re-flows the other
+   without absolute-position math. The stack itself is bottom-anchored
+   so it grows upward as panels expand. */
+.left-stack {
   position: fixed;
-  bottom: max(16px, env(safe-area-inset-bottom));
+  /* +20px above the standard 16px gutter so the stack's bottom edge
+     clears the centered play/pause button. */
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 20px);
   left: 16px;
   z-index: 340;
-  width: 444px;
-  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.left-stack > * { pointer-events: auto; }
+
+#wrapper.kbd-tray-open .left-stack {
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 20px + var(--kbd-tray-h));
+}
+
+.mixer-panel,
+.tuning-panel {
+  padding: 9px 10px 9px 10px;
   background: rgba(0, 0, 0, 0.5);
   border-radius: 12px;
   backdrop-filter: blur(10px);
-  pointer-events: auto;
-  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mixer-panel { width: 275px; }
+.tuning-panel { width: 280px; }
+
+/* Tuning panel internal layout — Root sits at the top, then the
+   scale rows, then the action cluster, then save chips. Tight
+   column gap so the panel matches the mixer's density. */
+.tuning-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Action buttons (Align / Undo / Redo) — content-sized columns
+   pinned left so each button is only as wide as its icon + label
+   plus a little padding. Matches the KBD / DRONE button visual
+   (gray fill rather than the previous near-transparent tint). */
+.tuning-actions {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  justify-content: start;
+  gap: 4px;
+}
+
+/* Tablet / mobile: lift the left-stack above the spectrum bar's orb
+   row so it isn't covered by the orbs at narrow widths, and clamp
+   the panels' width so the spectrum bar still breathes to their
+   right. Breakpoint at 1250px — below that the panels start to
+   encroach on the spectrum / center UI on typical laptop widths. */
+@media (max-width: 1250px) {
+  .left-stack {
+    bottom: calc(220px + env(safe-area-inset-bottom));
+    left: 8px;
+    z-index: 360;
+  }
+  #wrapper.kbd-tray-open .left-stack {
+    bottom: calc(220px + env(safe-area-inset-bottom) + var(--kbd-tray-h));
+  }
+  .mixer-panel { width: min(275px, calc(100vw - 16px)); }
+  .tuning-panel { width: min(310px, calc(100vw - 16px)); }
+}
+
+@media (max-width: 480px) {
+  .mixer-panel { width: min(280px, calc(100vw - 16px)); }
+  .tuning-panel { width: min(280px, calc(100vw - 16px)); }
 }
 
 .mixer-stack {
@@ -306,15 +162,17 @@ p {
    action-buttons slot, so the fader column lines up everywhere. */
 .mixer-row {
   display: grid;
-  grid-template-columns: 12px 144px 48px 1fr 90px;
+  /* marker | freq | note | source-tag | fader | × button. */
+  grid-template-columns: 24px 54px 56px 6px 100px 22px;
+  justify-content: start;
   align-items: center;
-  gap: 9px;
-  height: 30px;
-  padding: 0 6px;
+  gap: 4px;
+  height: 26px;
+  padding: 0 0;
   border-radius: 6px;
   color: var(--mixer-color, rgba(255, 255, 255, 0.85));
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 17px;
+  font-size: 14px;
 }
 
 .mixer-dot {
@@ -324,19 +182,40 @@ p {
   background: var(--mixer-color, #888);
 }
 
-.mixer-label {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
+/* Text marker that replaces the dot on drone + voice rows. Drone rows
+   show the slot number (1..N), voice rows show 'k' (keyboard) or 'm'
+   (MIDI). Sized to fit double-digit slot indices comfortably and
+   colored with the row's mixer color so the row's identity is still
+   readable at a glance. */
+.mixer-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--mixer-color, rgba(255, 255, 255, 0.85));
+  line-height: 1;
   white-space: nowrap;
-  overflow: hidden;
 }
 
 .mixer-freq {
   font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .mixer-note {
+  /* padding-left adds breathing room between the freq number and
+     the note text — the row's grid gap alone reads too tight. The
+     mixer's note column is widened to absorb this so the readout
+     still fits. */
+  padding-left: 8px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
   font-weight: 600;
   opacity: 0.85;
 }
@@ -349,10 +228,15 @@ p {
 
 /* Fader is a thin track with a colored fill line and a ball at the
    active position. overflow: visible so the ball can hover slightly past
-   the track edges at 0% / 100% rather than getting clipped. */
+   the track edges at 0% / 100% rather than getting clipped. width is
+   capped so the slider stays short — its grid cell is 1fr, so this
+   max-width is what actually decides the visual length. */
 .mixer-fader {
   position: relative;
   height: 21px;
+  width: 100%;
+  max-width: 88px;
+  justify-self: start;
   cursor: ew-resize;
   touch-action: none;
   background: transparent;
@@ -386,14 +270,17 @@ p {
   pointer-events: none;
 }
 
+/* Volume position marker — vertical line stretching the full fader
+   height. Replaces the previous circular ball; reads as a meter tick
+   so the fader looks more like a level indicator than a knob. */
 .mixer-fader-ball {
   position: absolute;
   top: 50%;
-  width: 14px;
+  width: 2px;
   height: 14px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--mixer-color, #fff);
-  border: 2px solid rgba(255, 255, 255, 0.85);
+  border: none;
   transform: translate(-50%, -50%);
   pointer-events: none;
   transition: box-shadow 0.15s, transform 0.05s;
@@ -416,10 +303,10 @@ p {
    so the fader column lines up across drone and voice rows. The empty
    variant preserves the slot's width on drone rows. */
 .mixer-source-tag {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 2px 5px;
+  letter-spacing: 0.3px;
+  padding: 1px 2px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.7);
@@ -479,13 +366,19 @@ p {
   gap: 2px;
   justify-self: end;
 }
+/* Voice rows have only one button (release ×). Left-align it within the
+   button column so it sits at the same x as the leftmost (×) button on
+   drone rows, giving every row a column of mute buttons in a clean line. */
+.mixer-row-buttons-voice {
+  justify-self: start;
+}
 .mixer-row-buttons-empty {
   /* Empty placeholder on voice rows — keeps grid alignment. */
 }
 
 .mixer-btn {
-  width: 21px;
-  height: 21px;
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -496,7 +389,7 @@ p {
   padding: 0;
   cursor: pointer;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 17px;
+  font-size: 14px;
   line-height: 1;
   transition: background 0.12s, color 0.12s;
 }
@@ -508,7 +401,10 @@ p {
   opacity: 0.3;
   cursor: default;
 }
-.mixer-btn-remove:hover:not(:disabled) {
+/* Mute button (× on both drone and voice rows). Red hover so the
+   "this will silence something" intent reads clearly without needing
+   a different glyph from the octave / arrow buttons. */
+.mixer-btn-mute:hover:not(:disabled) {
   background: rgba(220, 80, 80, 0.55);
   color: #fff;
 }
@@ -1353,9 +1249,9 @@ kbd {
   transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Fullscreen toggle — always-visible top-right corner button.
-   Toggles the fullscreen UI mode (also bound to F key). */
-.fullscreen-toggle,
+/* Top-row toggles — always-visible corner buttons. Right cluster:
+   settings (16px), share (58px). Left cluster: help (16px), patches
+   (58px), hydra (100px). */
 .help-toggle,
 .patches-toggle,
 .hydra-toggle,
@@ -1377,7 +1273,6 @@ kbd {
   transition: background 0.15s, color 0.15s;
 }
 
-.fullscreen-toggle,
 .help-toggle,
 .patches-toggle,
 .hydra-toggle,
@@ -1388,11 +1283,10 @@ kbd {
   z-index: 200;
 }
 
-.fullscreen-toggle { right: 16px; }
-.settings-toggle  { right: 58px; }
-.share-toggle    { right: 100px; }
-.patches-toggle { left: 58px; }
-.hydra-toggle   { left: 100px; }
+.settings-toggle { right: 16px; }
+.share-toggle    { right: 58px; }
+.patches-toggle  { left: 58px; }
+.hydra-toggle    { left: 100px; }
 .patches-toggle:hover,
 .settings-toggle:hover,
 .share-toggle:hover,
@@ -1435,7 +1329,7 @@ kbd {
 .scope-mode-buttons {
   position: fixed;
   top: 16px;
-  right: 142px;
+  right: 100px;
   z-index: 200;
 }
 
@@ -1454,7 +1348,6 @@ kbd {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.fullscreen-toggle:hover,
 .help-toggle:hover,
 .scope-mode-btn:hover {
   background: rgba(255, 255, 255, 0.14);
@@ -1563,19 +1456,76 @@ kbd {
 }
 
 .osc-grid-row {
+  --osc-row-gap: 6px;
   display: grid;
-  /* KBD fixed | ALL fixed | per-osc cells (one per --cols) | MORE fixed */
-  grid-template-columns: 50px 50px repeat(var(--cols), 50px) 50px;
-  gap: 6px;
+  /* PLAY | KBD | DRONE | per-osc cells (--cols) | MIXER | TUNING */
+  grid-template-columns: 50px 50px 50px repeat(var(--cols), 50px) 50px 50px;
+  gap: var(--osc-row-gap);
   align-items: end;
   justify-content: center;
-  transition: gap 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    gap 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    grid-template-columns 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Expanded mode spreads cells out a touch — adds breathing room since
-   there's more vertical content competing. */
-.expanded-mode .osc-grid-row {
-  gap: 12px;
+/* When drones are disabled the per-osc grid tracks collapse to zero,
+   sliding the numbered cells into the drone button while leaving the
+   fixed columns (play / kbd / drone / mixer / tuning) visible. */
+.osc-grid-wrap.drone-off .osc-grid-row {
+  grid-template-columns: 50px 50px 50px repeat(var(--cols), 0px) 50px 50px;
+}
+
+/* The grid still places one gap between every adjacent track, so with
+   --cols zero-width per-osc tracks the row has --cols × gap of unused
+   space between the drone button and the More column. Pull the More
+   column leftward by exactly that amount so the four fixed buttons
+   sit on a consistent gap. */
+.osc-more-col,
+.osc-mixer-col,
+.osc-tuning-col {
+  transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.osc-grid-wrap.drone-off .osc-more-col,
+.osc-grid-wrap.drone-off .osc-mixer-col,
+.osc-grid-wrap.drone-off .osc-tuning-col {
+  margin-left: calc(-1 * var(--cols) * var(--osc-row-gap));
+}
+
+/* Per-osc grid cells follow the grid track width instead of the
+   fixed-50px default that .grid-cell sets — so when --cols' inner
+   width transitions to 0, the cell collapses with it. The per-osc
+   cells sit one z-stacking level below the fixed columns so when
+   they translate leftward they slip behind the drone button rather
+   than overlapping in front of it. */
+.grid-cell.osc-num-cell {
+  width: auto;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.osc-play-col,
+.osc-kbd-col,
+.osc-all-col,
+.osc-more-col,
+.osc-mixer-col,
+.osc-tuning-col {
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+}
+
+/* On collapse, each per-osc cell slides leftward by exactly its offset
+   from the drone column (one 50px column + (idx + 1) gaps), so all
+   cells converge behind the drone button by the end of the transition.
+   On expand, the same transform reverses — they emerge from behind the
+   drone button and slide right into their own columns. No opacity
+   fade: the drone button's higher z-index hides them as they slide. */
+.osc-grid-wrap.drone-off .osc-num-cell {
+  transform: translateX(calc(-1 * (50px + (var(--osc-idx, 0) + 1) * var(--osc-row-gap))));
+  pointer-events: none;
 }
 
 .grid-cell {
@@ -1614,25 +1564,6 @@ kbd {
 .fader-cell {
   justify-content: flex-end;
   padding: 0;
-}
-
-/* Collapsible wrapper — transitions grid-template-rows from 0fr (collapsed)
-   to 1fr (expanded). The inner div must have min-height:0 + overflow hidden
-   for the trick to clip smoothly. */
-.expanded-collapsible {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.expanded-collapsible.open {
-  grid-template-rows: 1fr;
-}
-.expanded-inner {
-  overflow: hidden;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 /* Bottom row: play + mutes + chevron — always visible and anchored. */
@@ -1685,26 +1616,6 @@ kbd {
   background: color-mix(in srgb, var(--cell-color), transparent 75%);
 }
 
-/* Small L / R / LR suffix next to the oscillator number, indicating
-   which stereo channel(s) the osc is routed to. Only rendered when
-   the output device is plain stereo; for >2 output channels the suffix
-   is omitted entirely. */
-.bottom-mute-channel {
-  font-size: 0.62em;
-  opacity: 0.7;
-  margin-left: 2px;
-  vertical-align: baseline;
-  letter-spacing: 0.02em;
-}
-
-
-/* Chevron icon rotates 180° when the panel is expanded (collapse affordance). */
-.double-chevron {
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.double-chevron.flipped {
-  transform: rotate(180deg);
-}
 
 /* Left "ALL" column — mirrors .osc-col layout so the per-row slots
    (readout / octave buttons / fader / mute) line up with the per-osc cols. */
@@ -1732,52 +1643,42 @@ kbd {
 .kbd-fader.disabled {
   opacity: 0.45;
 }
-/* Bottom-row buttons keep their icon-only look — labels live OUTSIDE
-   the button now, in the .bottom-cell-wrap below. The keyboard cell is
-   now a tray-toggle (piano icon) instead of a play/stop button; the
-   play/stop lives inside the tray's left rail next to the keys. */
-.bottom-kbd-tray.on {
+/* KBD / drone toggle buttons live in the bottom row as text with a thin
+   underline below the label. The underline lights blue when the toggle
+   is active (KBD tray open, drones playing) and stays transparent
+   otherwise. */
+.bottom-toggle {
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.bottom-toggle-label {
+  line-height: 1;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.15s, box-shadow 0.15s, color 0.15s;
+}
+.bottom-toggle.on .bottom-toggle-label {
+  border-bottom-color: rgba(74, 158, 255, 0.95);
+  box-shadow: 0 2px 6px -2px rgba(74, 158, 255, 0.65);
+}
+.bottom-toggle.on {
   color: rgba(74, 158, 255, 0.95);
   background: rgba(74, 158, 255, 0.16);
 }
-.bottom-kbd-tray.off {
-  opacity: 0.75;
+.bottom-toggle.off {
+  opacity: 0.78;
 }
 
-/* Bottom-cell wrapper: stacks the existing <button> on top of a small
-   caption ("drone" / "keyboard" / "left" / "right" / "both" / "more" /
-   "less"). The wrapper is what sits in the grid; the button keeps its
-   original .bottom-cell styling so it doesn't change look. */
+/* Bottom-cell wrapper — was previously a stacked button + caption pair;
+   now the cells just hold a single button (captions moved inside the
+   KBD/drone toggles as text). Kept as a wrapper so per-cell color vars
+   and the existing grid-cell sizing still apply. */
 .bottom-cell-wrap {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
-}
-.bottom-cell-caption {
-  font-size: 9px;
-  line-height: 1;
-  letter-spacing: 0.4px;
-  color: rgba(255, 255, 255, 0.6);
-  text-align: center;
-  text-transform: lowercase;
-  font-family: monospace;
-  font-weight: 600;
-  /* min-height keeps an empty caption (e.g. unrouted osc, multichannel
-     setup, or where the label is just whitespace) from collapsing the
-     wrapper height — keeps every cell's button vertically aligned. */
-  min-height: 9px;
-}
-/* Caption follows the tray-toggle's "on" tint so the keyboard pair
-   reads as a single unit when the tray is open. */
-.bottom-kbd-tray.on + .bottom-cell-caption {
-  color: rgba(74, 158, 255, 0.8);
-}
-/* Don't double-dim a muted osc's caption — the muted button already
-   reads quiet. Pull the caption fully so the routing label stays
-   readable. */
-.bottom-mute.muted + .bottom-cell-caption {
-  opacity: 0.55;
 }
 
 /* Keyboard "hold" button — in the readout-row at osc-kbd-col, sits
@@ -1848,13 +1749,10 @@ kbd {
    orb dims while dragging; a ghost follows the cursor viewport-wide. */
 .global-detune-orb-wrap {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  width: 100%;
-  height: 100%;
-  padding: 8px 0 2px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -1888,15 +1786,6 @@ kbd {
   opacity: 0.25;
   box-shadow: none;
   transform: none;
-}
-
-.global-detune-orb-label {
-  font-family: monospace;
-  font-size: 9px;
-  letter-spacing: 0.5px;
-  color: rgba(255, 255, 255, 0.55);
-  text-transform: lowercase;
-  line-height: 1;
 }
 
 /* Portal root — wraps the tether SVG and the ghost orb inside a single
@@ -2007,8 +1896,8 @@ kbd {
   padding: 0;
 }
 
-/* Caption beneath the tune button — same treatment as `.bottom-cell-caption`
-   so the label visually matches the captions under the bottom-row buttons. */
+/* Caption beneath the tune button — small uppercase-suppressed label
+   below the icon. */
 .osc-more-btn-caption {
   font-size: 9px;
   line-height: 1;
@@ -2532,17 +2421,13 @@ kbd {
     margin: 0.5rem 0 0.3rem;
   }
 
-  /* Mobile has no physical keyboard and no fullscreen toggle, so the
-     keyboard-shortcuts block is irrelevant — hide it. */
+  /* Mobile has no physical keyboard, so the keyboard-shortcuts block is
+     irrelevant — hide it. */
   .start-shortcuts {
     display: none;
   }
 
-  /* Fullscreen mode is desktop-only — hide the toggle button on mobile. */
-  .fullscreen-toggle {
-    display: none;
-  }
-  
+
   .controls-section p {
     font-size: 0.75rem;
     margin: 0.2rem 0;
@@ -2613,36 +2498,81 @@ kbd {
 }
 
 /* Frequency Spectrum Bar — centered above the controls panel at every width.
-   Sits just above the panel; safe-area inset shifts it up on iOS for notch/home-bar.
-   The `bottom` transitions smoothly when the panel expands/collapses below. */
-.freq-spectrum-bar {
+   The outer .fsb-row is the fixed-positioned wrapper hosting the "all" orb
+   on the left, the bar pill in the middle, and the +/- count buttons on
+   the right. The bar itself is the natural-flow flex item in the middle. */
+.fsb-row {
   position: fixed;
   bottom: calc(60px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
-  width: min(500px, calc(100vw - 40px));
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
   z-index: 300;
+  pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
-  overflow: visible;
   transition:
     bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1),
     transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
+.fsb-row > * { pointer-events: auto; }
 
-/* When settings is open, slide the centered partials rail leftward by
-   half of the panel's footprint (320 width + 16 margin = 336, so half
-   = 168). Keeps it visually centered in the area NOT covered by the
-   panel. Skipped on mobile — the panel covers the whole width there. */
-#wrapper.settings-open .freq-spectrum-bar {
-  transform: translateX(calc(-50% - 168px));
+.freq-spectrum-bar {
+  position: relative;
+  width: min(500px, calc(100vw - 120px));
+  overflow: visible;
 }
-@media (max-width: 768px) {
-  #wrapper.settings-open .freq-spectrum-bar {
-    transform: translateX(-50%);
-  }
+
+/* Side adornments line up with the bar's frequency strip — not the
+   full spectrum component (which also includes the orb row up top).
+   Height matches BAR_LINE_HEIGHT (30) and the 4px bottom margin matches
+   the post-track padding inside .freq-spectrum-bar, so each side spans
+   the same vertical range as .fsb-track. */
+.fsb-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  margin-bottom: 4px;
 }
+.fsb-side-right {
+  flex-direction: row;
+  gap: 6px;
+}
+
+/* +/- count buttons — text only, glow on hover. */
+.fsb-count-btn {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  margin: 0;
+  font-family: monospace;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition: color 0.15s, text-shadow 0.15s;
+}
+.fsb-count-btn:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.98);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.7),
+               0 0 2px rgba(255, 255, 255, 0.9);
+}
+.fsb-count-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+/* Settings panel overlays the spectrum bar without shifting it — the
+   bar stays centered at its default position and the panel renders on
+   top. (Previously the bar slid left by half the panel's footprint so
+   it sat visually centered in the uncovered area; that behavior was
+   removed because the shift felt like the spectrum was being pushed
+   around when the user just wanted to peek at settings.) */
 
 .fsb-track {
   position: absolute;
@@ -3048,15 +2978,18 @@ kbd {
   gap: 3px;
   margin-bottom: 2px;
 }
-.kbd-range-labels {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+.kbd-range-text {
   font-variant-numeric: tabular-nums;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.3px;
   color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+.kbd-range-sep {
+  margin: 0 4px;
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 500;
 }
 .kbd-range-bar {
   position: relative;
@@ -3071,7 +3004,6 @@ kbd {
   height: 100%;
   background: rgba(255, 255, 255, 0.55);
   border-radius: 2px;
-  min-width: 2px;
 }
 
 /* Generic right-aligned control group used inside every kbd-tray row —
@@ -3147,7 +3079,7 @@ kbd {
 }
 
 .kbd-octave-btn {
-  min-width: 26px;
+  width: 30px;
   height: 22px;
   padding: 0 6px;
   background: rgba(255, 255, 255, 0.08);
@@ -3163,20 +3095,20 @@ kbd {
   align-items: center;
   justify-content: center;
   letter-spacing: 0.4px;
+  box-sizing: border-box;
+  flex: none;
 }
 .kbd-octave-btn:hover {
   background: rgba(255, 255, 255, 0.16);
 }
 
-/* Octave shift buttons stack the arrow over a small key-letter caption
-   ("Z" under ↓, "X" under ↑) — surfaces the computer-keyboard binding
-   without a separate labels toggle. */
+/* Octave shift buttons — share the .kbd-octave-btn size (30 × 22) with
+   the zoom +/− buttons so the two control pairs read as the same shape.
+   When Settings → Keyboard → Key labels is on, a small "Z" / "X" caption
+   renders inline next to the arrow; otherwise the arrow sits alone,
+   centered by the base button's flex centering. */
 .kbd-octave-shift {
-  flex-direction: column;
-  min-width: 30px;
-  height: 36px;
-  padding: 2px 6px;
-  gap: 1px;
+  gap: 4px;
 }
 .kbd-octave-shift .kbd-octave-arrow {
   font-size: 13px;
@@ -3254,6 +3186,49 @@ kbd {
   background: rgba(255, 255, 255, 0.30);
 }
 
+/* Voice-count pill — a single rounded slab with [−  N  +] laid out
+   inline. The −/+ are real buttons but rendered flat (no individual bg
+   or border) so the whole row reads as one combined control. */
+.kbd-voice-pill {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 2px 4px;
+  gap: 4px;
+}
+.kbd-voice-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+.kbd-voice-btn:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+.kbd-voice-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.kbd-voice-num {
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.4px;
+  min-width: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 .kbd-input-toggle,
 .kbd-tray-close {
   background: rgba(255, 255, 255, 0.06);
@@ -3295,9 +3270,10 @@ kbd {
   height: 100%;
   /* Top padding has to clear the color-dot row — `.key-dot` is parked
      at top: -10px relative to each key, so anything less than ~14 px
-     here clips the dots into the tray edge. Right-side gutter trimmed
-     now that the mapping pickers moved out of the tray. */
-  padding: 16px 12px 6px 12px;
+     here clips the dots into the tray edge. Side padding gives the
+     keys breathing room from the tray edges and hosts the off-screen
+     arrow indicators in its gutters. */
+  padding: 16px 10px 6px 10px;
   box-sizing: border-box;
 }
 
@@ -3307,42 +3283,75 @@ kbd {
   height: 100%;
 }
 
+/* Outer wrapper. Positions the key column, hosts the QWERTY-letter and
+   color-dot children, and is the React event target. All visual surface
+   (bg, border, activation overlay) lives on the inner .osk-key-shape so
+   whites can clip-path themselves into a piano "T" without also
+   clipping the dot (which sits above the keyboard) or the letter.
+   pointer-events: none means only the (clipped) shape receives hits —
+   clicks outside a white's T pass through to whichever key is actually
+   rendered at that point. Width is overridden inline for whites that
+   extend into adjacent black-key columns. */
 .osk-key {
   position: absolute;
   top: 0;
-  cursor: pointer;
+  width: calc(100% / var(--key-count));
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* Visible surface for each key. Whites get an inline clip-path (built
+   in OnScreenKeyboard.jsx) carving out the T-shape — head between
+   adjacent blacks, full-width bottom strip extending half a column
+   into every adjacent black. Blacks have no clip-path and just fill
+   the parent's top 62%. */
+.osk-key-shape {
+  position: absolute;
+  inset: 0;
   box-sizing: border-box;
   border-radius: 0 0 1px 1px;
+  cursor: pointer;
+  pointer-events: auto;
   transition: border-color 0.06s linear;
 }
 
 /* All keys are dark — flat, non-skeumorphic. Whites are slightly lighter
    than blacks so the piano layout still reads at a glance, but neither
-   approaches actual white. Press activation fills the key with the slot
-   color (see ::after rule below). */
+   approaches actual white. Press activation fills the shape with the
+   slot color (see ::after rule below). */
 .osk-white {
-  width: calc(100% / var(--white-count));
   height: 100%;
+}
+.osk-white .osk-key-shape {
   /* Tray bg is rgba(15,15,15,0.92) ≈ #0f0f0f, so whites need enough gap
      above that to read as visibly distinct surfaces. #5a5a5a keeps the
      dark theme but the keys clearly sit above the tray and the QWERTY
      labels on top stay legible. */
   background: #5a5a5a;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-bottom-color: rgba(255, 255, 255, 0.55);
-  border-top: none;
-  z-index: 1;
+  /* No side or top borders — adjacent whites visually merge into a
+     single continuous bottom strip. The 1px seam between two whites
+     under a black is created by a 0.5px shrinkage built into each
+     white's clip-path on both bottom corners; the dark tray bg shows
+     through the 1px gap as a piano-style seam line. */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.55);
 }
 
 .osk-black {
   height: 62%;
+  /* Lift blacks above whites in the stacking order so each black's
+     box-shadow casts symmetrically over BOTH adjacent whites'
+     bottom-strip extensions. Without this, DOM order (chromatic)
+     puts the right-hand white above the black, and the shadow on
+     that side gets covered. */
+  z-index: 1;
+}
+.osk-black .osk-key-shape {
   /* Blacks should still be visibly darker than whites — picked so the
      piano stripe pattern reads at a glance even in the dark theme. */
   background: #0a0a0a;
   border: 1px solid rgba(255, 255, 255, 0.35);
   border-top: none;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  z-index: 2;
 }
 
 /* Mapping-silent keys (jump-mode out-of-scale, or black keys in white-only
@@ -3350,18 +3359,22 @@ kbd {
    events still fire — voice manager just no-ops on these keys. */
 .osk-key.silent {
   filter: brightness(0.45) saturate(0.5);
+}
+.osk-key.silent .osk-key-shape {
   cursor: default;
 }
-.osk-key.silent::after {
+.osk-key.silent .osk-key-shape::after {
   display: none;
 }
 
 /* Activation overlay — slot-color tint while a voice is sounding.
-   --glow-alpha is set per frame from the voice's envelope amp
-   (boosted in OnScreenKeyboard.jsx so sustain peaks at ~1). Caps at
-   ~0.6 alpha so the press reads as a clear colored fill but never a
-   fully saturated flash. */
-.osk-key::after {
+   --glow-alpha is set per frame on .osk-key (inherits down to the
+   shape) from the voice's envelope amp (boosted in OnScreenKeyboard.jsx
+   so sustain peaks at ~1). Caps at ~0.6 alpha so the press reads as a
+   clear colored fill but never a fully saturated flash. The overlay
+   inherits the shape's clip-path, so a played white lights up its
+   entire T — including the bits under each adjacent black. */
+.osk-key-shape::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -3383,7 +3396,11 @@ kbd {
    transposed copy) get a larger dot via `.key-dot.is-drone`. */
 .key-dot {
   position: absolute;
-  left: 50%;
+  /* For whites that extend asymmetrically into adjacent black columns,
+     the element-box center is offset from the OWN column center.
+     --own-center (set inline in JSX) places the dot above the own
+     column; falls back to 50% for blacks and unextended whites. */
+  left: var(--own-center, 50%);
   top: -10px;
   width: 5px;
   height: 5px;
@@ -3469,7 +3486,9 @@ kbd {
    light. */
 .key-letter {
   position: absolute;
-  left: 50%;
+  /* Tracks the OWN column center (not the element-box center) for
+     asymmetric white-key Ts; see .key-dot above. */
+  left: var(--own-center, 50%);
   bottom: 13px;
   transform: translateX(-50%);
   font-size: 10px;
@@ -3493,14 +3512,8 @@ kbd {
    tray height so they don't get hidden behind it. Listed explicitly
    rather than via a wholesale `bottom += var(...)` because each element
    has its own bottom origin (some include safe-area inset, some don't). */
-#wrapper.kbd-tray-open .freq-spectrum-bar {
+#wrapper.kbd-tray-open .fsb-row {
   bottom: calc(60px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
-}
-#wrapper.kbd-tray-open.expanded-mode .freq-spectrum-bar {
-  bottom: calc(254px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
-}
-#wrapper.kbd-tray-open.fullscreen-mode .freq-spectrum-bar {
-  bottom: calc(20px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
 }
 #wrapper.kbd-tray-open .osc-controls-panel {
   bottom: calc(8px + var(--kbd-tray-h));
@@ -3510,12 +3523,9 @@ kbd {
 #wrapper.kbd-tray-open .hydra-panel {
   bottom: calc(16px + var(--kbd-tray-h));
 }
-#wrapper.kbd-tray-open .fullscreen-freq-list {
-  bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
-}
-#wrapper.kbd-tray-open .mixer-panel {
-  bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
-}
+/* Mixer panel kbd-tray + mobile positioning now lives on the
+   .left-stack wrapper above — the mixer itself is a normal-flow
+   block inside that stack and inherits its positioning. */
 
 /* ─── Hydra ─────────────────────────────────────────────────────────── */
 
@@ -3668,7 +3678,8 @@ kbd {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.14);
 }
-.hydra-sketch-card.user {
+.hydra-sketch-card.user,
+.hydra-sketch-card.builtin {
   flex-direction: row;
   align-items: center;
   padding: 0;
@@ -3973,56 +3984,6 @@ kbd {
    settings panel (which slides over the top when open). Lower z-index
    than settings / patches / hydra panels so any modal-style panel
    covers it cleanly when summoned. */
-.freq-rail {
-  position: fixed;
-  top: 64px;
-  right: 16px;
-  bottom: 16px;
-  width: 320px;
-  background: rgba(20, 20, 25, 0.72);
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(10px);
-  z-index: 50;
-  padding: 12px 14px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow-y: auto;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.85);
-  transition:
-    bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    right 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-#wrapper.kbd-tray-open .freq-rail {
-  bottom: calc(16px + var(--kbd-tray-h));
-}
-
-/* Shift the freq rail out from under the settings panel so the user can
-   read both. Settings panel is 320px + 16px right margin = clear at
-   right: 352px. Matches settings-panel's slide easing. */
-#wrapper.settings-open .freq-rail {
-  right: calc(16px + 320px + 16px);
-}
-
-.freq-rail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 0 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.freq-rail-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.7);
-}
-
 .freq-rail-grid-header {
   display: grid;
   grid-template-columns: 28px 1fr 1fr 1fr;
@@ -4035,79 +3996,131 @@ kbd {
   color: rgba(255, 255, 255, 0.35);
 }
 
-.freq-rail-rows {
+.tuning-rows {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
-.freq-rail-row {
-  display: grid;
-  grid-template-columns: 28px 1fr 1fr 1fr;
-  gap: 6px;
-  align-items: center;
-  padding: 1px 0;
-  position: relative;
-}
-
-/* Slot color stripe at the row's left edge. */
-.freq-rail-row::before {
+/* Patch-cable connector — links Root above to the selected anchor
+   row below. A U-shape opening to the right: a horizontal stub at
+   top "plugs into" the Root field's left edge, the vertical line
+   runs down the rail, and a matching stub at the bottom plugs into
+   the anchor row. Light gray instead of the slot color so the cable
+   reads as a structural cue (which row is the root) rather than a
+   per-slot color highlight. Uses --anchor-idx set inline on
+   .tuning-panel — each row is 26px + 2px gap = 28px tall. */
+.tuning-rows::before {
   content: '';
   position: absolute;
   left: -8px;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  background: var(--osc-color, transparent);
-  border-radius: 1px;
-  opacity: 0.55;
+  top: -20px;
+  width: 8px;
+  height: calc(20px + var(--anchor-idx, 0) * 28px + 13px);
+  border-left: 1.25px solid rgba(255, 255, 255, 0.55);
+  border-top: 1.25px solid rgba(255, 255, 255, 0.55);
+  border-bottom: 1.25px solid rgba(255, 255, 255, 0.55);
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+  opacity: 0.75;
+  pointer-events: none;
 }
 
-.freq-rail-slot {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.65);
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 3px 0;
-  cursor: pointer;
-  font-family: inherit;
-  text-align: center;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+/* Tuning row — laid out like the mixer rows: marker | Hz | Ratio |
+   Note+Cents | ↑ | ↓. Mono font, slot color picked up via --osc-color.
+   The marker doubles as the anchor toggle (button) so it visually
+   reads as a clickable "D1 / D2 / ..." chip in the row color. The
+   octave-shift buttons live to the right of the note (relocated from
+   the mixer's drone-row cluster). */
+.freq-rail-row {
+  display: grid;
+  grid-template-columns: 30px 68px 46px 70px 22px 23px;
+  justify-content: start;
+  gap: 4px;
+  align-items: center;
+  height: 26px;
+  padding: 0 2px;
+  color: var(--osc-color, rgba(255, 255, 255, 0.85));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
 }
-.freq-rail-slot:hover {
-  border-color: rgba(255, 255, 255, 0.4);
+
+/* Octave-shift button — borderless, fixed 22 × 20 footprint shared
+   between the row's ↓ ↑ and the Root's /2 ×2 so /2 and ×2 are the
+   same width as each other and column-line up with the row arrows
+   above and below. */
+.freq-rail-octave-btn {
+  width: 22px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.freq-rail-octave-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
   color: #fff;
 }
-.freq-rail-slot.anchor {
-  background: var(--osc-color, rgba(255, 255, 255, 0.25));
-  border-color: var(--osc-color, rgba(255, 255, 255, 0.4));
-  color: #000;
+
+.freq-rail-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--osc-color, rgba(255, 255, 255, 0.75));
+  height: 20px;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: color 0.15s ease, opacity 0.15s ease;
+  opacity: 0.7;
+}
+.freq-rail-marker:hover {
+  color: #fff;
+  opacity: 1;
+}
+.freq-rail-marker.anchor {
+  background: transparent;
+  color: var(--osc-color, #fff);
+  opacity: 1;
 }
 
 .freq-rail-input {
   width: 100%;
   background: transparent;
   border: none;
-  border-bottom: 1px solid transparent;
   color: #fff;
-  font-family: 'Menlo', 'Consolas', monospace;
-  font-size: 11px;
-  padding: 3px 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  padding: 2px 0;
   outline: none;
-  transition: border-color 0.15s ease;
   min-width: 0;
   box-sizing: border-box;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 .freq-rail-input:hover:not(:disabled) {
-  border-bottom-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 3px;
 }
 .freq-rail-input:focus {
-  border-bottom-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
 }
 .freq-rail-input.invalid {
-  border-bottom-color: #ff4136;
   color: #ff8174;
 }
 .freq-rail-input:disabled {
@@ -4130,20 +4143,23 @@ kbd {
 
 .freq-rail-note {
   display: flex;
-  flex-direction: column;
-  font-family: 'Menlo', 'Consolas', monospace;
-  font-size: 11px;
-  line-height: 1.15;
+  align-items: baseline;
+  gap: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  line-height: 1;
   color: rgba(255, 255, 255, 0.75);
-  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
   min-width: 0;
 }
 .freq-rail-note-name {
   color: #fff;
+  font-weight: 600;
 }
 .freq-rail-note-cents {
-  font-size: 9px;
-  color: rgba(255, 255, 255, 0.5);
+  opacity: 0.55;
+  font-weight: 500;
 }
 
 /* Footer: root frequency editor, align + undo action buttons.
@@ -4158,71 +4174,143 @@ kbd {
   gap: 10px;
 }
 
+/* Root field — column grid mirrors the tuning row so the Hz input
+   AND the note display column-align with their per-slot equivalents
+   below. Column 3 (60px) is the row's ratio column; the Root has no
+   ratio (it's 1/1) so an empty placeholder fills that column. The
+   note column is `auto` so the /2 + ×2 buttons sit right next to
+   the note text instead of being pushed to the panel's right edge. */
 .freq-rail-root {
   display: grid;
-  grid-template-columns: 42px 1fr 22px;
+  grid-template-columns: 32px 61px 53px 70px 22px 22px;
+  justify-content: start;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .freq-rail-root-label {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.55);
+  padding-left: 0;
 }
 .freq-rail-root-input {
-  font-size: 13px;
-  padding: 4px 4px;
+  font-size: 14px;
+  padding: 2px 0;
+  width: 100%;
 }
 .freq-rail-root-unit {
-  font-size: 10px;
+  font-size: 11px;
   color: rgba(255, 255, 255, 0.4);
-  font-family: 'Menlo', 'Consolas', monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+/* Root's /2 and ×2 buttons now share the .freq-rail-octave-btn class
+   with the per-row ↓ ↑, so all four sit in 22 × 20 cells and column-
+   align top-to-bottom. The old .freq-rail-root-octave style is gone. */
 
 .freq-rail-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: 8px;
 }
 .freq-rail-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.85);
-  padding: 6px 8px;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: rgba(255, 255, 255, 0.95);
+  padding: 4px 8px;
   border-radius: 5px;
   font-family: inherit;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.3px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 .freq-rail-action:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.2);
   color: #fff;
 }
 .freq-rail-action:active:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.26);
 }
 .freq-rail-action:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
+/* In-memory save slots — chips that recall the captured frequency state
+   with a smooth glide. The strip only renders when at least one save
+   exists, so the footer height stays compact in the empty case. */
+.freq-rail-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.freq-rail-slot {
+  display: inline-flex;
+  align-items: stretch;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  overflow: hidden;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.freq-rail-slot:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.freq-rail-slot-name {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.freq-rail-slot-name:hover {
+  color: #fff;
+}
+.freq-rail-slot-input {
+  background: rgba(0, 0, 0, 0.25);
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 8px;
+  max-width: 110px;
+  outline: none;
+}
+.freq-rail-slot-delete {
+  background: transparent;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.freq-rail-slot-delete:hover {
+  background: rgba(255, 80, 80, 0.18);
+  color: #fff;
+}
+
 /* Spectrum analyzer — FFT of the master bus, log freq axis. Lives at
-   the bottom of the freq rail so the user can correlate active drone
-   notes (rows above) with the energy actually leaving the master. */
+   the bottom of the settings panel so the user can correlate active
+   drone notes (controls above) with the energy actually leaving the
+   master. */
 .spectrum-analyzer {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -4271,18 +4359,157 @@ kbd {
   opacity: 0.4;
   cursor: default;
 }
-/* Canvas bleeds outside the freq-rail's side padding so the spectrum
-   occupies the full panel width, then rounds into the panel's bottom
-   corners so it reads as a single surface (not a card-on-card). */
+/* Canvas bleeds outside the settings-section's 16px side padding so the
+   spectrum occupies the full panel width, reading as a single surface
+   rather than a card-on-card. */
 .spectrum-canvas {
-  width: calc(100% + 28px);
-  margin: 0 -14px -14px;
+  width: calc(100% + 32px);
+  margin: 0 -16px 0;
   height: 140px;
   display: block;
   background: rgba(0, 0, 0, 0.35);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+}
+
+.dissonance-meter {
+  width: calc(100% + 32px);
+  margin: 0 -16px;
+  padding: 6px 16px 8px;
+  background: rgba(0, 0, 0, 0.35);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dissonance-meter-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dissonance-meter-fill.amp {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.85) 100%);
+}
+.dissonance-meter-fill.sat {
+  background: linear-gradient(90deg, #74e0a4 0%, #ffb84d 50%, #ff5a3c 100%);
+}
+.dissonance-meter-fill.loud {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.85) 100%);
+}
+.dissonance-meter-fill.cent {
+  background: linear-gradient(90deg, #6b4ea8 0%, #c578d6 50%, #ffb84d 100%);
+}
+.dissonance-meter-fill.flux {
+  background: linear-gradient(90deg, #5cc8ff 0%, #74e0a4 100%);
+}
+.dissonance-meter-fill.dens {
+  background: linear-gradient(90deg, #4a3a8c 0%, #8a5fff 50%, #ff6bd6 100%);
+}
+.dissonance-meter-fill.aura {
+  background: linear-gradient(90deg, #ffd86b 0%, #fff3c2 70%, #ffffff 100%);
+  box-shadow: 0 0 6px rgba(255, 220, 130, 0.55);
+}
+.dissonance-meter-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+}
+.dissonance-meter-slider-label {
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+}
+.dissonance-meter-slider {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.dissonance-meter-slider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 1px;
+}
+.dissonance-meter-slider::-moz-range-track {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 1px;
+}
+.dissonance-meter-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffd86b;
+  margin-top: -4px;
+  cursor: pointer;
+}
+.dissonance-meter-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffd86b;
+  border: none;
+  cursor: pointer;
+}
+.dissonance-meter-slider-value {
+  color: rgba(255, 255, 255, 0.65);
+  flex-shrink: 0;
+  min-width: 24px;
+  text-align: right;
+}
+.dissonance-meter-curve {
+  display: block;
+  width: 100%;
+  height: 110px;
+  margin-top: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+}
+.dissonance-meter-value.cent {
+  min-width: 56px;
+}
+.dissonance-meter-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  font-variant-numeric: tabular-nums;
+}
+.dissonance-meter-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+.dissonance-meter-value {
+  color: rgba(255, 255, 255, 0.85);
+  min-width: 22px;
+}
+.dissonance-meter-beat {
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.45);
+}
+.dissonance-meter-track {
+  position: relative;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.dissonance-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: linear-gradient(90deg, #5cc8ff 0%, #ffb84d 60%, #ff5a3c 100%);
+  transition: width 60ms linear;
 }
 
 /* Hide on narrow viewports — the rail would crowd the scope and

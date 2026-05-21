@@ -100,6 +100,7 @@ export default function KeyboardTray({
   kbdVoiceCount,
   onKbdVoiceCountChange,
   oscillatorCount = 12,
+  showKeyLabels = false,
 }) {
   // MIDI note that letter offset 0 ('A') triggers. Seeded from the
   // current lowest drone if tuning has spun up (typical after audio
@@ -172,10 +173,9 @@ export default function KeyboardTray({
               className="kbd-range-row"
               title={`Keyboard range: ${lowHz.toFixed(1)} Hz – ${highHz.toFixed(1)} Hz`}
             >
-              <div className="kbd-range-labels">
-                <span>{formatHz(lowHz)}</span>
-                <span>{formatHz(highHz)}</span>
-              </div>
+              <span className="kbd-range-text">
+                {formatHz(lowHz)}hz <span className="kbd-range-sep">↔</span> {formatHz(highHz)}hz
+              </span>
               <div className="kbd-range-bar" aria-hidden="true">
                 <div
                   className="kbd-range-bar-fill"
@@ -196,7 +196,7 @@ export default function KeyboardTray({
               title={`Transpose down ${stepSize} semitones (Z)`}
             >
               <span className="kbd-octave-arrow">↓</span>
-              <span className="kbd-octave-key">Z</span>
+              {showKeyLabels && <span className="kbd-octave-key">Z</span>}
             </button>
             <button
               type="button"
@@ -206,7 +206,7 @@ export default function KeyboardTray({
               title={`Transpose up ${stepSize} semitones (X)`}
             >
               <span className="kbd-octave-arrow">↑</span>
-              <span className="kbd-octave-key">X</span>
+              {showKeyLabels && <span className="kbd-octave-key">X</span>}
             </button>
           </div>
         </div>
@@ -240,15 +240,16 @@ export default function KeyboardTray({
         <OnScreenKeyboard
           kbdRoot={kbdRoot}
           octaveCount={keyboardZoom}
+          showKeyLabels={showKeyLabels}
         />
       </div>
       <div className="kbd-tray-right">
         <div className="kbd-hold-row">
-          <span className="kbd-hold-caption">voices</span>
-          <div className="kbd-row-controls">
+          <span className="kbd-hold-caption">voice count</span>
+          <div className="kbd-voice-pill">
             <button
               type="button"
-              className="kbd-octave-btn"
+              className="kbd-voice-btn"
               onClick={() => onKbdVoiceCountChange?.(clampVoices((kbdVoiceCount ?? 2) - 1))}
               aria-label="Fewer voices"
               title="Fewer keyboard voices"
@@ -256,16 +257,12 @@ export default function KeyboardTray({
             >
               −
             </button>
-            <span
-              className="kbd-octave-label"
-              style={{ minWidth: 14, textAlign: 'center' }}
-              aria-live="polite"
-            >
+            <span className="kbd-voice-num" aria-live="polite">
               {kbdVoiceCount ?? 2}
             </span>
             <button
               type="button"
-              className="kbd-octave-btn"
+              className="kbd-voice-btn"
               onClick={() => onKbdVoiceCountChange?.(clampVoices((kbdVoiceCount ?? 2) + 1))}
               aria-label="More voices"
               title="More keyboard voices"

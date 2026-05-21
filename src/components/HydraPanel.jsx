@@ -289,6 +289,22 @@ export default function HydraPanel({
       </section>
 
       <section className="hydra-section">
+        <h5 className="hydra-section-title">Built-ins</h5>
+        {BUILTIN_SKETCHES.map((s) => (
+          <div key={s.id} className="hydra-sketch-card builtin">
+            <button
+              type="button"
+              className="hydra-sketch-load"
+              onClick={() => handleLoad(s)}
+              title={s.description}
+            >
+              <span className="hydra-sketch-name">{s.name}</span>
+            </button>
+          </div>
+        ))}
+      </section>
+
+      <section className="hydra-section">
         <h5 className="hydra-section-title">Yours</h5>
         {userSketches.length === 0 ? (
           <p className="hydra-empty">

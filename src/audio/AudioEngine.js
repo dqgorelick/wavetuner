@@ -54,6 +54,9 @@ class AudioEngine {
     this.spectrumAnalyserR = null;
     this.isInitialized = false;
     this.isPaused = false;
+    // Drone bus on/off — independent of pause. Effective drone audio
+    // requires droneEnabled && !isPaused (see _applyDroneBusGain).
+    this.droneEnabled = true;
     
     // Dynamic oscillator management
     this.oscillatorCount = 4;
@@ -420,6 +423,9 @@ class AudioEngine {
 
     this.isInitialized = true;
     this.isPaused = false;
+    // Sync drone bus to whatever droneEnabled was set to before init
+    // (e.g. a patch load that ran before the user clicked "Start").
+    this._applyDroneBusGain();
 
     // Fire one frequency-change notification so the Tuning singleton
     // (and any other addFrequencyListener subscriber) recomputes the
@@ -564,9 +570,16 @@ class AudioEngine {
    * BEFORE droneFoldShaper. Splits the original combined master gain
    * so the shaper's input clamp ([-1, 1]) doesn't introduce hard
    * clipping when many drones sum past unity.
+   *
+   * HEADROOM (0..1) is a fixed additional attenuation that keeps the
+   * predicted peak amplitude below the saturator's knee at default
+   * volumes. 0.7 ≈ 3 dB headroom; the user can compensate via master
+   * volume if they want hotter signal back. Without it, 4 drones at
+   * vol 0.5 sum to ~1.4 peak which drives tanh saturation noticeably.
    */
   _getDroneCountScale() {
-    return 1.0 / Math.sqrt(this.oscillatorCount / 2);
+    const HEADROOM = 0.7;
+    return HEADROOM / Math.sqrt(this.oscillatorCount / 2);
   }
 
   /**
@@ -867,12 +880,25 @@ class AudioEngine {
    */
   _droneTargetGain(i) {
     if (this.mutedStates[i]) return 0;
-    return (this.volumeValues[i] || 0.5) * droneEnvelope.sustain;
+    return (this.volumeValues[i] || 0.5) * droneEnvelope.sustain * this._stereoEqualLoudnessScale();
+  }
+
+  /**
+   * Equal-loudness compensation when switching from LR mode (signal in
+   * one channel) to stereo mode (same level in BOTH channels). Stereo
+   * perceived loudness ≈ sqrt(L² + R²); with both channels at amp the
+   * total reads √2 louder than lr. Scaling each side by 1/√2 keeps the
+   * perceived loudness equal across modes. Applied at every drone gain
+   * target site (primary, partner, partials).
+   */
+  _stereoEqualLoudnessScale() {
+    return droneStereo.mode === 'stereo' ? 1 / Math.sqrt(2) : 1;
   }
 
   /**
    * Steady-state gain target for the partner oscillator: same as the
-   * primary in 'stereo' mode, 0 in 'lr' mode (silent partner).
+   * primary in 'stereo' mode (already includes the equal-loudness
+   * scale via _droneTargetGain), 0 in 'lr' mode (silent partner).
    */
   _dronePartnerTargetGain(i) {
     if (droneStereo.mode !== 'stereo') return 0;
@@ -906,7 +932,7 @@ class AudioEngine {
    *  in one gesture from existing UI without losing per-partial state. */
   _partialTargetGain(partial) {
     if (partial.muted) return 0;
-    return (partial.vol || 0) * droneEnvelope.sustain;
+    return (partial.vol || 0) * droneEnvelope.sustain * this._stereoEqualLoudnessScale();
   }
 
   _partialPartnerTargetGain(partial) {
@@ -1809,7 +1835,7 @@ class AudioEngine {
     }
 
     const t = this.audioContext.currentTime;
-    const target = clampedVol * droneEnvelope.sustain;
+    const target = clampedVol * droneEnvelope.sustain * this._stereoEqualLoudnessScale();
     this.gainNodes[index].gain.setTargetAtTime(target, t, 0.016);
     if (this.gainNodesR[index]) {
       const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
@@ -1866,7 +1892,7 @@ class AudioEngine {
         this.preMuteVolumes[i] = clampedVol;
         continue;
       }
-      const target = clampedVol * sustain;
+      const target = clampedVol * sustain * this._stereoEqualLoudnessScale();
       this.gainNodes[i].gain.setTargetAtTime(target, t, 0.016);
       if (this.gainNodesR[i]) {
         const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
@@ -2232,6 +2258,10 @@ class AudioEngine {
    * Spacebar / pause-button are wired here. The full-master fadeIn /
    * fadeOut methods are still used by routing + device changes (those
    * mute everything for the duration of the change).
+   *
+   * Pause is independent of droneEnabled — pausing fades drones out
+   * regardless, and unpausing restores them to whatever droneEnabled
+   * was set to (so a drone-off state survives a pause/unpause cycle).
    */
   togglePlayPause() {
     if (!this.isInitialized) return;
@@ -2242,31 +2272,51 @@ class AudioEngine {
 
   pauseDrones() {
     if (!this.isInitialized || this.isPaused) return;
-    const t = this.audioContext.currentTime;
-    this.droneBusGain.gain.cancelScheduledValues(t);
-    const cur = this.droneBusGain.gain.value;
-    this.droneBusGain.gain.setValueAtTime(Math.max(cur, 0.001), t);
-    this.droneBusGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
-    this.droneBusGain.gain.setValueAtTime(0, t + 0.3);
     this.isPaused = true;
+    this._applyDroneBusGain();
   }
 
   unpauseDrones() {
     if (!this.isInitialized || !this.isPaused) return;
-    const t = this.audioContext.currentTime;
-    // Ramp drone bus back up.
-    this.droneBusGain.gain.cancelScheduledValues(t);
-    this.droneBusGain.gain.setValueAtTime(0.001, t);
-    this.droneBusGain.gain.exponentialRampToValueAtTime(1, t + 0.5);
+    this.isPaused = false;
     // Defensive: if something muted masterGain to 0 (e.g. a device
     // change called fadeOut and the user is now manually unpausing),
     // restore master to user volume so sound actually returns.
+    const t = this.audioContext.currentTime;
     if (this.masterGainNode.gain.value < 0.01) {
       this.masterGainNode.gain.cancelScheduledValues(t);
       this.masterGainNode.gain.setValueAtTime(0.001, t);
       this.masterGainNode.gain.exponentialRampToValueAtTime(this.masterVolumeUser, t + 0.5);
     }
-    this.isPaused = false;
+    this._applyDroneBusGain();
+  }
+
+  // Drone-on toggle — independent of pause. The visible drone button
+  // controls this; pressing it while paused just updates the latent
+  // state so the drone is (or isn't) audible on the next unpause.
+  setDroneEnabled(on) {
+    const next = !!on;
+    if (this.droneEnabled === next) return;
+    this.droneEnabled = next;
+    if (this.isInitialized) this._applyDroneBusGain();
+  }
+
+  // Ramp the drone bus gain to match the AND of droneEnabled & !isPaused.
+  // Single source of truth so the two booleans can change in any order
+  // without leaving the gain stuck.
+  _applyDroneBusGain() {
+    if (!this.isInitialized) return;
+    const t = this.audioContext.currentTime;
+    const shouldPlay = this.droneEnabled && !this.isPaused;
+    this.droneBusGain.gain.cancelScheduledValues(t);
+    const cur = this.droneBusGain.gain.value;
+    this.droneBusGain.gain.setValueAtTime(Math.max(cur, 0.001), t);
+    if (shouldPlay) {
+      this.droneBusGain.gain.exponentialRampToValueAtTime(1, t + 0.5);
+    } else {
+      this.droneBusGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+      this.droneBusGain.gain.setValueAtTime(0, t + 0.3);
+    }
   }
   
   /**

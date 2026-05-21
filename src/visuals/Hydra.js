@@ -21,6 +21,7 @@
  */
 
 import HydraSynth from 'hydra-synth';
+import { audioFeatures } from '../audio/AudioFeatures';
 
 let instance = null;
 let lastError = null;
@@ -52,10 +53,20 @@ export function startHydra({ canvas, sourceCanvas, width, height }) {
     width: w,
     height: h,
     autoLoop: true,
+    // highp eliminates time/coordinate stepping at large values. Paired
+    // with the half-float framebuffer patch (see patches/), the feedback
+    // chain runs with enough precision to kill the 8-bit color banding
+    // that mediump + RGBA8 produced.
+    precision: 'highp',
   });
   if (sourceCanvas && window.s0) {
     try { window.s0.init({ src: sourceCanvas }); } catch (e) { lastError = e; }
   }
+  // Expose audio features under `audio` so sketches can do
+  //   .scale(() => 1 + audio.dissonance * 0.5)
+  // without any extra setup. The object reference is stable across
+  // frames; the scope's animation loop mutates its fields in place.
+  window.audio = audioFeatures;
   return instance;
 }
 

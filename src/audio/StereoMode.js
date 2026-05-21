@@ -169,6 +169,6 @@ class StereoMode {
 //     L≠R width by default — that's the more interesting voice setup.
 //     Master detune 1 Hz — keyboard voices are transient so the spread
 //     reads clearly even at gentle widths.
-export const droneStereo = new StereoMode({ detuneHz: 0.5 });
-export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 1 });
+export const droneStereo = new StereoMode({ detuneHz: 1 });
+export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 1.5 });
 export default StereoMode;

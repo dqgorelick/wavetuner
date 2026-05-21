@@ -22,7 +22,6 @@ export default function StartScreen({ onStart }) {
             <p><kbd>Shift</kbd> + <kbd>1-4+</kbd> — Mute/unmute oscillator</p>
             <p><kbd>Shift</kbd> + drag — Fine-tune frequency</p>
             <p><kbd>Space</kbd> — Play/Pause</p>
-            <p><kbd>F</kbd> — Toggle fullscreen</p>
             <p><kbd>ESC</kbd> — Release all oscillators</p>
           </div>
         </div>

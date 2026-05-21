@@ -5,21 +5,11 @@ import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { OFFSET_TO_LETTER } from '../hooks/useComputerKeyboard';
 import palette from '../theme/palette';
 
-// Standard piano-keyboard layout within an octave.
-//   Whites at semitone offsets 0,2,4,5,7,9,11
-//   Blacks at 1,3,6,8,10
-const WHITE_OFFSETS = [0, 2, 4, 5, 7, 9, 11];
-const BLACK_OFFSETS = [1, 3, 6, 8, 10];
-const WHITE_OFFSET_SET = new Set(WHITE_OFFSETS);
-
-// Black key as a fraction of one white key's width. Real pianos are ~0.6;
-// 0.6 reads cleanly at our key sizes.
-const BLACK_KEY_WIDTH_FRAC = 0.6;
-// Where the black key's left edge sits inside the preceding white key,
-// expressed as a fraction of the white key's width. 0.7 places the black
-// key straddling the white-to-white boundary at ~70% across the lower
-// white key.
-const BLACK_KEY_LEFT_OFFSET = 0.7;
+// Which semitone offsets within a kbdRoot-anchored octave read as black
+// keys. Used purely for visual styling — every key is now an equal-width
+// column, but blacks are drawn shorter + darker so the piano stripe
+// pattern still reads.
+const BLACK_OFFSET_SET = new Set([1, 3, 6, 8, 10]);
 
 // Default v1 mapping until the picker (phase 6) lands: chromatic + fill.
 // Every key fires; degree = (midi - root) mod N, octave = floor of same.
@@ -38,7 +28,7 @@ function midiToDegreeOctave(midi) {
  * per-frame DOM update (no React state on the hot path — same pattern
  * the existing oscilloscope uses).
  */
-export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2 }) {
+export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKeyLabels = false }) {
   const containerRef = useRef(null);
   const keyRefs = useRef(new Map()); // midi → element
   const leftArrowRef = useRef(null);
@@ -69,42 +59,81 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2 }) {
   const VISIBLE_TOP_OFFSET_ZOOM_1 = 17;  // exclusive — high E peek above kbdRoot
   const letterStartMidi = kbdRoot;
   const sidePad = octaveCount <= 1 ? 0 : (octaveCount - 1) * 6;
-  const startMidi = octaveCount <= 1 ? kbdRoot : kbdRoot - sidePad;
-  const endMidi = octaveCount <= 1
+  let startMidi = octaveCount <= 1 ? kbdRoot : kbdRoot - sidePad;
+  let endMidi = octaveCount <= 1
     ? kbdRoot + VISIBLE_TOP_OFFSET_ZOOM_1
     : kbdRoot + 12 + sidePad;
+  // Never leave a black note hanging at either edge. At octaveCount=2
+  // the natural start lands on F# (-6 = black); even-numbered higher
+  // zooms repeat the problem. Mirror on the right for safety, though
+  // 11+sidePad currently always lands on a white. Extending by one
+  // semitone is enough since blacks never sit adjacent.
+  if (octaveCount > 1) {
+    const startOff = ((startMidi - kbdRoot) % 12 + 12) % 12;
+    if (BLACK_OFFSET_SET.has(startOff)) startMidi -= 1;
+    const lastOff = ((endMidi - 1 - kbdRoot) % 12 + 12) % 12;
+    if (BLACK_OFFSET_SET.has(lastOff)) endMidi += 1;
+  }
 
-  const { whites, blacks, totalWhites } = useMemo(() => {
+  const { keys, totalKeys } = useMemo(() => {
     const visibleStart = startMidi;
     const visibleEnd = endMidi;
-    // Iterate enough kbdRoot-rooted octaves to cover the visible span,
-    // then drop anything outside [visibleStart, visibleEnd). Going
-    // semitone-by-semitone within each octave keeps the whites/blacks
-    // in MIDI order so `whiteIndex` and `whiteAfter` come out monotonic.
-    const minOct = Math.floor((visibleStart - kbdRoot) / 12);
-    const maxOct = Math.ceil((visibleEnd - kbdRoot) / 12);
-    const whites = [];
-    const blacks = [];
-    let whiteIndex = 0;
-    // -1 means "no white visible yet" — a black key at the leftmost
-    // partial-octave edge gets that and ends up positioned slightly
-    // off the left edge (overhanging into the gutter), which reads as
-    // "more keys exist below the view".
-    let lastWhiteIndex = -1;
-    for (let oct = minOct; oct < maxOct; oct++) {
-      for (let off = 0; off < 12; off++) {
-        const midi = kbdRoot + oct * 12 + off;
-        if (midi < visibleStart || midi >= visibleEnd) continue;
-        if (WHITE_OFFSET_SET.has(off)) {
-          whites.push({ midi, whiteIndex });
-          lastWhiteIndex = whiteIndex;
-          whiteIndex += 1;
-        } else {
-          blacks.push({ midi, whiteAfter: lastWhiteIndex });
+    // Every visible semitone gets its own equal-width column. The
+    // chromatic index is just the offset from visibleStart, so all dots
+    // above the keys end up evenly spaced. White vs black is a styling
+    // tag anchored to kbdRoot (so the QWERTY 'A' key always appears as
+    // a visual C, regardless of which pitch the scale maps it to).
+    //
+    // For each white key we also record whether the adjacent semitones
+    // (above and below) are visible blacks. Those flags drive the
+    // piano-shaped "T" each white renders as: the bottom strip extends
+    // half a column into every adjacent black so adjacent whites read
+    // as a single continuous surface beneath the blacks.
+    const keys = [];
+    for (let midi = visibleStart; midi < visibleEnd; midi++) {
+      const off = ((midi - kbdRoot) % 12 + 12) % 12;
+      const isBlack = BLACK_OFFSET_SET.has(off);
+      // For each visible side:
+      //   ext{Left,Right}      — adjacent IS a visible black → widen
+      //                          the bottom strip by 0.5 col into it.
+      //   topSeam{Left,Right}  — adjacent IS a visible white (E/F,
+      //                          B/C boundary) → shrink the own-column
+      //                          edge by 0.5px so the seam line runs
+      //                          all the way through, matching the
+      //                          bottom strip's gap.
+      // The two flags are mutually exclusive: a side is either black,
+      // white, or off-screen.
+      let extLeft = false;
+      let extRight = false;
+      let topSeamLeft = false;
+      let topSeamRight = false;
+      if (!isBlack) {
+        const leftMidi = midi - 1;
+        const rightMidi = midi + 1;
+        if (leftMidi >= visibleStart) {
+          const leftOff = ((leftMidi - kbdRoot) % 12 + 12) % 12;
+          const leftIsBlack = BLACK_OFFSET_SET.has(leftOff);
+          extLeft = leftIsBlack;
+          topSeamLeft = !leftIsBlack;
+        }
+        if (rightMidi < visibleEnd) {
+          const rightOff = ((rightMidi - kbdRoot) % 12 + 12) % 12;
+          const rightIsBlack = BLACK_OFFSET_SET.has(rightOff);
+          extRight = rightIsBlack;
+          topSeamRight = !rightIsBlack;
         }
       }
+      keys.push({
+        midi,
+        chromaticIndex: midi - visibleStart,
+        isBlack,
+        extLeft,
+        extRight,
+        topSeamLeft,
+        topSeamRight,
+      });
     }
-    return { whites, blacks, totalWhites: whiteIndex };
+    return { keys, totalKeys: keys.length };
   }, [startMidi, endMidi, kbdRoot]);
 
   // Per-key color update — sets BOTH the small dot's background AND a
@@ -137,14 +166,13 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2 }) {
           dot.classList.toggle('is-drone', dao.octave === 0);
         }
       };
-      for (const w of whites) updateOne(w.midi);
-      for (const b of blacks) updateOne(b.midi);
+      for (const k of keys) updateOne(k.midi);
     };
     refresh();
     const unsubTune = tuning.onChange(refresh);
     const unsubPalette = palette.onChange(refresh);
     return () => { unsubTune(); unsubPalette(); };
-  }, [whites, blacks]);
+  }, [keys]);
 
   // Per-frame glow update from the voice manager. Direct DOM mutation —
   // a setState in rAF would re-render React 60×/s for envelope curves.
@@ -286,40 +314,71 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2 }) {
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onPointerLeave={handlePointerUp}
-        style={{ '--white-count': totalWhites }}
+        style={{ '--key-count': totalKeys }}
       >
-      {whites.map((w) => {
-        // Always show the computer-keyboard letter overlay. The CSS
-        // tones it down so it sits quietly under the active glow.
-        const letter = OFFSET_TO_LETTER[w.midi - letterStartMidi];
+      {keys.map((k) => {
+        // Optional QWERTY-key letter overlay (toggled in Settings). Off
+        // by default so the keyboard stays uncluttered for play; the CSS
+        // tones it down so it sits quietly under the active glow when on.
+        const letter = showKeyLabels
+          ? OFFSET_TO_LETTER[k.midi - letterStartMidi]
+          : null;
+
+        // Blacks stay one chromatic column wide at top 62%. Whites
+        // widen by half a column into every adjacent visible black
+        // and use clip-path on their inner shape to carve out the
+        // piano "T": narrow head between blacks, full-width bottom
+        // strip that reads as continuous white-key surface. The 0.5px
+        // shrinkage on each bottom corner leaves a 1px gap with the
+        // next white's clip-path, which shows the dark tray bg through
+        // as a thin seam line.
+        let keyStyle;
+        let shapeStyle = null;
+        if (k.isBlack) {
+          keyStyle = {
+            left: `calc(${k.chromaticIndex} * (100% / var(--key-count)))`,
+          };
+        } else {
+          const leftExt = k.extLeft ? 0.5 : 0;
+          const rightExt = k.extRight ? 0.5 : 0;
+          const widthCols = 1 + leftExt + rightExt;
+          const leftCols = k.chromaticIndex - leftExt;
+          const ownStartPct = (leftExt / widthCols) * 100;
+          const ownEndPct = ((leftExt + 1) / widthCols) * 100;
+          const ownCenterPct = (ownStartPct + ownEndPct) / 2;
+          // Top-portion own-column edges shrink by 0.5px on any side
+          // where the adjacent semitone is also a white (E/F, B/C),
+          // so the seam runs unbroken from top to bottom. Sides
+          // bordering a black don't shrink — the black key itself
+          // already provides the visual separator at the top.
+          const ownStartStr = k.topSeamLeft
+            ? `calc(${ownStartPct.toFixed(4)}% + 0.5px)`
+            : `${ownStartPct.toFixed(4)}%`;
+          const ownEndStr = k.topSeamRight
+            ? `calc(${ownEndPct.toFixed(4)}% - 0.5px)`
+            : `${ownEndPct.toFixed(4)}%`;
+          keyStyle = {
+            left: `calc(${leftCols} * (100% / var(--key-count)))`,
+            width: `calc(${widthCols} * (100% / var(--key-count)))`,
+            // Letter + dot follow the OWN column center, not the
+            // element-box center (which drifts for asymmetric Ts).
+            '--own-center': `${ownCenterPct.toFixed(4)}%`,
+          };
+          shapeStyle = {
+            clipPath: `polygon(${ownStartStr} 0%, ${ownEndStr} 0%, ${ownEndStr} 62%, calc(100% - 0.5px) 62%, calc(100% - 0.5px) 100%, calc(0% + 0.5px) 100%, calc(0% + 0.5px) 62%, ${ownStartStr} 62%)`,
+          };
+        }
+
         return (
           <div
-            key={w.midi}
-            ref={setKeyRef(w.midi)}
-            className="osk-key osk-white"
-            style={{ left: `calc(${w.whiteIndex} * (100% / var(--white-count)))` }}
-            onPointerDown={(e) => handlePointerDown(e, w.midi)}
-            onPointerEnter={(e) => handlePointerEnter(e, w.midi)}
+            key={k.midi}
+            ref={setKeyRef(k.midi)}
+            className={`osk-key ${k.isBlack ? 'osk-black' : 'osk-white'}`}
+            style={keyStyle}
+            onPointerDown={(e) => handlePointerDown(e, k.midi)}
+            onPointerEnter={(e) => handlePointerEnter(e, k.midi)}
           >
-            {letter && <span className="key-letter">{letter}</span>}
-            <span className="key-dot" />
-          </div>
-        );
-      })}
-      {blacks.map((b) => {
-        const letter = OFFSET_TO_LETTER[b.midi - letterStartMidi];
-        return (
-          <div
-            key={b.midi}
-            ref={setKeyRef(b.midi)}
-            className="osk-key osk-black"
-            style={{
-              left: `calc((${b.whiteAfter} + ${BLACK_KEY_LEFT_OFFSET}) * (100% / var(--white-count)))`,
-              width: `calc(${BLACK_KEY_WIDTH_FRAC} * (100% / var(--white-count)))`,
-            }}
-            onPointerDown={(e) => handlePointerDown(e, b.midi)}
-            onPointerEnter={(e) => handlePointerEnter(e, b.midi)}
-          >
+            <div className="osk-key-shape" style={shapeStyle} />
             {letter && <span className="key-letter">{letter}</span>}
             <span className="key-dot" />
           </div>

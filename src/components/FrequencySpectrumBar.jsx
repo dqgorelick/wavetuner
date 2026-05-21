@@ -3,6 +3,7 @@ import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
+import GlobalDetuneOrb from './GlobalDetuneOrb';
 
 const FREQ_MIN = 0.1;
 const FREQ_MAX = 20000;
@@ -271,11 +272,10 @@ function FrequencySpectrumBar({
   // serve primarily as a tuning interface for the keyboard, so we
   // shouldn't surprise-restart drone playback when the user nudges one.
   suppressAutoUnmute = false,
-  // Fullscreen mode renders orbs at half visual size via CSS scale(0.5).
-  // The bounding box stays full-size for click targets, but collision
-  // resolution should match the smaller visual or otherwise the orbs
-  // get pushed off their freq markers.
-  compactDots = false,
+  // Side-adornment hooks: the "all" orb sits to the left, +/- oscillator
+  // count buttons to the right of the spectrum-bar pill.
+  onOscillatorCountChange,
+  maxOscillators = 10,
 }) {
   // Subscribe to theme changes so JSX re-renders when the user flips
   // palette in settings — every osc-color lookup below reads live from
@@ -506,8 +506,8 @@ function FrequencySpectrumBar({
     [frequencies, barWidth, range.logMin, range.logMax]
   );
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, compactDots ? DOT_SIZE / 2 : DOT_SIZE),
-    [freqXs, compactDots]
+    () => resolveCollisions(freqXs, DOT_SIZE),
+    [freqXs]
   );
 
   const getSensitivity = () =>
@@ -861,6 +861,9 @@ function FrequencySpectrumBar({
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (isEditableTarget(e.target)) return;
+      // Bail on Cmd/Ctrl/Alt so OS-level chords (Cmd+Tab, Cmd+1, etc.)
+      // don't trigger grabs or mute toggles.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === 'Shift') {
         setShiftHeld(true);
         return;
@@ -920,6 +923,10 @@ function FrequencySpectrumBar({
           <div className="fsb-edge-zone-line fsb-edge-zone-line-right" aria-hidden="true" />
         </>
       )}
+      <div className="fsb-row" style={{ height: TOTAL_HEIGHT }}>
+      <div className="fsb-side fsb-side-left">
+        <GlobalDetuneOrb />
+      </div>
       <div
         className="freq-spectrum-bar"
         ref={containerRef}
@@ -957,18 +964,11 @@ function FrequencySpectrumBar({
       </div>
 
 
-      {/* Line endpoints in compact (fullscreen) mode have to compensate for
-          the orb / ghost CSS transform: scale(0.5) with transform-origin
-          50% 100%. That transform shifts each visual circle DOWN by
-          DOT_SIZE/4 from its bounding-box center, and shrinks its visual
-          radius from DOT_SIZE/2 to DOT_SIZE/4. Without this compensation
-          the tether terminates above the now-smaller orb instead of at
-          its edge. */}
       {(() => {
-        const homeY = compactDots ? DOT_CENTER_Y + DOT_SIZE / 4 : DOT_CENTER_Y;
-        const homeR = compactDots ? DOT_SIZE / 4 : DOT_SIZE / 2;
-        const ghostYOffset = compactDots ? DOT_SIZE / 4 : 0;
-        const ghostR = compactDots ? DOT_SIZE / 4 : DOT_SIZE / 2;
+        const homeY = DOT_CENTER_Y;
+        const homeR = DOT_SIZE / 2;
+        const ghostYOffset = 0;
+        const ghostR = DOT_SIZE / 2;
         return (
           <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
             {frequencies.map((_, i) => {
@@ -1065,8 +1065,8 @@ function FrequencySpectrumBar({
         const color = palette.oscColor(i, oscillatorCount);
         const isDragging = draggingDots.has(i);
         const isGrabbed = grabbedOscs.has(i);
-        // "Boosted" = externally marked active (fader fine-tune, fullscreen
-        // selection) while the dot is not currently being dragged/grabbed
+        // "Boosted" = externally marked active (fader fine-tune selection)
+        // while the dot is not currently being dragged/grabbed
         // from the bar. Gives the home orb the same bright, glowy treatment
         // the drag ghost has — so the user can see which osc they're
         // affecting from another control.
@@ -1169,6 +1169,25 @@ function FrequencySpectrumBar({
           );
         })}
 
+      </div>
+      <div className="fsb-side fsb-side-right">
+        <button
+          type="button"
+          className="fsb-count-btn"
+          onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+          disabled={oscillatorCount <= 2}
+          title="Remove oscillator"
+          aria-label="Remove oscillator"
+        >−</button>
+        <button
+          type="button"
+          className="fsb-count-btn"
+          onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+          disabled={oscillatorCount >= maxOscillators}
+          title="Add oscillator"
+          aria-label="Add oscillator"
+        >+</button>
+      </div>
       </div>
     </>
   );

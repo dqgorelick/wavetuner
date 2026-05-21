@@ -12,8 +12,7 @@ import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
-import FullscreenFreqList from './components/FullscreenFreqList';
-import FrequencyManagerPanel from './components/FrequencyManager';
+import { TuningPanel } from './components/FrequencyManager';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
@@ -208,6 +207,10 @@ const VIZ_MODES = [
 function App() {
   const [isStarted, setIsStarted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  // Drone-bus on/off — independent of pause. Lets the user disable
+  // drones without surrendering the global play/pause, and survives a
+  // pause/unpause cycle (resume restores whichever state was set).
+  const [droneEnabled, setDroneEnabled] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPatchesOpen, setIsPatchesOpen] = useState(false);
   // Hydra mode: when on, the hydra-synth canvas overlays the
@@ -220,6 +223,22 @@ function App() {
   const [isHydraEnabled, setIsHydraEnabled] = useState(true);
   const [isHydraPanelOpen, setIsHydraPanelOpen] = useState(false);
   const hydraCanvasRef = useRef(null);
+  // Mixer visibility toggle — persisted so the user's preference survives
+  // reloads. The MIXER button in OscillatorControls flips this.
+  const [isMixerOpen, setIsMixerOpen] = useState(() => {
+    try { return localStorage.getItem('mixerOpen') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('mixerOpen', isMixerOpen ? '1' : '0'); } catch { /* ignore */ }
+  }, [isMixerOpen]);
+
+  // Tuning panel visibility — persisted. Toggled by the TUNING button.
+  const [isTuningOpen, setIsTuningOpen] = useState(() => {
+    try { return localStorage.getItem('tuningOpen') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('tuningOpen', isTuningOpen ? '1' : '0'); } catch { /* ignore */ }
+  }, [isTuningOpen]);
 
   // Boot/teardown Hydra when the enable toggle flips. Source the
   // oscilloscope's canvas via its known id (stable, no ref plumbing)
@@ -326,8 +345,6 @@ function App() {
       return next;
     });
   }, []);
-  // 'simple' (default compact strip) | 'expanded' (full panel) | 'fullscreen' (only scope+spectrum)
-  const [uiMode, setUiMode] = useState('simple');
   // Keyboard tray (slim ~50 px strip rolling up from the bottom). Lifted
   // to App so the wrapper can pick up a `kbd-tray-open` class — that
   // class shifts every bottom-anchored fixed element up by the tray's
@@ -372,6 +389,16 @@ function App() {
   // spawns a fresh voice ramping from 0. Kbd-only knob.
   const [kbdRepressMode, setKbdRepressMode] = useState('toggle');
   useEffect(() => { keyboardVoiceManager.setKbdRepressMode(kbdRepressMode); }, [kbdRepressMode]);
+
+  // On-screen keyboard QWERTY-letter overlay — off by default so the keys
+  // stay uncluttered for play; toggled in Settings. Persisted under
+  // "showKbdLabels".
+  const [showKbdLabels, setShowKbdLabels] = useState(() => {
+    try { return localStorage.getItem('showKbdLabels') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('showKbdLabels', showKbdLabels ? '1' : '0'); } catch { /* ignore */ }
+  }, [showKbdLabels]);
   // MIDI-input gate — when off, incoming MIDI messages are dropped at
   // the source (MidiInput._handleMessage). Computer-keyboard and
   // on-screen play paths are unaffected. The keyboard *bus* itself
@@ -836,22 +863,8 @@ function App() {
     setIsHelpOpen(false);
   }, []);
 
-  // Remember the last non-fullscreen mode so toggling fullscreen returns
-  // the user to whichever panel state they came from (simple or expanded).
-  const previousModeRef = useRef('simple');
-  const toggleFullscreen = useCallback(() => {
-    setUiMode((prev) => {
-      if (prev === 'fullscreen') return previousModeRef.current;
-      previousModeRef.current = prev;
-      return 'fullscreen';
-    });
-  }, []);
-
-  // (F-key fullscreen shortcut removed — `f` is reserved for the keyboard's
-  // computer-key input. Fullscreen still toggles via the on-screen button.)
-
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''} ${uiMode}-mode${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -859,7 +872,6 @@ function App() {
       )}
 
       <Oscilloscope
-        uiMode={uiMode}
         staticMode={staticMode}
         staticPeriods={staticPeriods}
         staticLineWidth={staticLineWidth}
@@ -881,54 +893,41 @@ function App() {
             onActiveChange={setActiveOscs}
             extraActive={fineTuningOscs}
             suppressAutoUnmute={isKbdTrayOpen}
-            compactDots={uiMode === 'fullscreen'}
-          />
-          {uiMode === 'fullscreen' && (
-            <FullscreenFreqList
-              oscillatorCount={oscillatorCount}
-              isPaused={isPaused}
-              onPausedChange={setIsPaused}
-            />
-          )}
-          {/* Frequency manager rail — temporarily hidden while the
-              left-side relocation + spectrum extraction + save/load
-              patch integration is in progress. Re-enable by flipping
-              the guard to `uiMode !== 'fullscreen'` once the new
-              layout lands. */}
-          {false && (
-            <FrequencyManagerPanel
-              oscillatorCount={oscillatorCount}
-              onAlign={handleAlign}
-              isAligning={isAligning}
-            />
-          )}
-          <Mixer
-            oscillatorCount={oscillatorCount}
-            minOscillators={2}
+            onOscillatorCountChange={handleOscillatorCountChange}
             maxOscillators={maxOscillators}
-            onSlotsChange={syncStateFromEngine}
           />
+          {(isMixerOpen || isTuningOpen) && (
+            <div className="left-stack">
+              {isMixerOpen && (
+                <Mixer
+                  oscillatorCount={oscillatorCount}
+                  minOscillators={2}
+                  maxOscillators={maxOscillators}
+                  onSlotsChange={syncStateFromEngine}
+                />
+              )}
+              {isTuningOpen && (
+                <TuningPanel
+                  oscillatorCount={oscillatorCount}
+                  onAlign={handleAlign}
+                  isAligning={isAligning}
+                />
+              )}
+            </div>
+          )}
 
           <OscillatorControls
             oscillatorCount={oscillatorCount}
-            maxOscillators={maxOscillators}
-            onShare={handleShare}
-            onShowHelp={handleShowHelp}
-            fineTuneEnabled={fineTuneEnabled}
-            onFineTuneToggle={handleFineTuneToggle}
-            onOscillatorCountChange={handleOscillatorCountChange}
-            activeOscs={activeOscs}
-            uiMode={uiMode}
-            onModeChange={setUiMode}
-            onFineTuningChange={handleFineTuningChange}
             isKbdTrayOpen={isKbdTrayOpen}
             onKbdTrayToggle={() => setIsKbdTrayOpen((v) => !v)}
-            kbdHoldOn={kbdHoldOn}
-            onKbdHoldToggle={() => setKbdHoldOn((v) => !v)}
             isPaused={isPaused}
             onPausedChange={setIsPaused}
-            currentPatch={currentPatch}
-            onRevertToPatch={handleRevertToPatch}
+            droneEnabled={droneEnabled}
+            onDroneEnabledChange={setDroneEnabled}
+            isMixerOpen={isMixerOpen}
+            onMixerToggle={() => setIsMixerOpen((v) => !v)}
+            isTuningOpen={isTuningOpen}
+            onTuningToggle={() => setIsTuningOpen((v) => !v)}
           />
           <button
             className="help-toggle"
@@ -1052,22 +1051,6 @@ function App() {
               <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
             </svg>
           </button>
-          <button
-            className="fullscreen-toggle"
-            onClick={toggleFullscreen}
-            title={uiMode === 'fullscreen' ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-            aria-label={uiMode === 'fullscreen' ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            <svg viewBox="0 0 24 24" className="button-icon">
-              {uiMode === 'fullscreen' ? (
-                /* collapse: arrows pointing inward */
-                <path d="M9 9H5v2h6V5H9v4zm-4 6h4v4h2v-6H5v2zm10 4h2v-4h4v-2h-6v6zm2-10V5h-2v6h6V9h-4z" />
-              ) : (
-                /* expand: arrows pointing outward */
-                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
-              )}
-            </svg>
-          </button>
           <SettingsPanel
             isOpen={isSettingsOpen}
             onClose={handleSettingsToggle}
@@ -1095,6 +1078,8 @@ function App() {
             onSaturationDriveChange={handleSaturationDriveChange}
             kbdRepressMode={kbdRepressMode}
             onKbdRepressModeChange={setKbdRepressMode}
+            showKbdLabels={showKbdLabels}
+            onShowKbdLabelsChange={setShowKbdLabels}
             jiLimit={jiLimit}
             onJiLimitChange={handleJiLimitChange}
           />
@@ -1108,6 +1093,7 @@ function App() {
             kbdVoiceCount={kbdVoiceCount}
             onKbdVoiceCountChange={setKbdVoiceCount}
             oscillatorCount={oscillatorCount}
+            showKeyLabels={showKbdLabels}
           />
         </>
       )}

@@ -119,62 +119,24 @@ const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released }) {
   );
 });
 
-// Buttons cluster for a drone primary row. Clone now adds a partial
-// (was: cloneOscillator). Octave shifts the slot's base freq; partials
-// follow via ratio so the whole stack transposes together. Remove drops
-// the slot (plus all its partials — engine handles the tear-down).
-const PrimaryButtons = memo(function PrimaryButtons({ slot, canRemove, onSlotsChange }) {
+// Buttons cluster for a drone primary row. Only the mute toggle
+// remains in the mixer — octave shifts moved into the tuning panel,
+// next to the per-slot Hz/ratio inputs.
+const PrimaryButtons = memo(function PrimaryButtons({ slot }) {
   const stopPointer = (e) => e.stopPropagation();
 
-  const handleRemove = () => {
-    if (!canRemove) return;
-    keyboardVoiceManager.releaseAll();
-    audioEngine.removeOscillatorAt(slot);
-    onSlotsChange?.();
-  };
-  const handleClone = () => {
-    // Repurposed: add a partial under this slot instead of spawning a
-    // new top-level slot. No onSlotsChange — oscillator count hasn't
-    // moved, and partial state is polled directly from the engine.
-    audioEngine.addPartial(slot);
-  };
-  const handleOctave = (factor) => {
-    const cur = audioEngine.getFrequency(slot);
-    if (!Number.isFinite(cur)) return;
-    const next = Math.max(0.1, Math.min(20000, cur * factor));
-    audioEngine.setFrequency(slot, next);
+  const handleMute = () => {
+    audioEngine.toggleMute(slot);
   };
 
   return (
-    <div className="mixer-row-buttons" onPointerDown={stopPointer}>
+    <div className="mixer-row-buttons mixer-row-buttons-voice" onPointerDown={stopPointer}>
       <button
         type="button"
-        className="mixer-btn"
-        onClick={handleClone}
-        title="Add a partial under this drone"
-        aria-label="Add partial"
-      >+</button>
-      <button
-        type="button"
-        className="mixer-btn"
-        onClick={() => handleOctave(2)}
-        title="Up an octave"
-        aria-label="Octave up"
-      >↑</button>
-      <button
-        type="button"
-        className="mixer-btn"
-        onClick={() => handleOctave(0.5)}
-        title="Down an octave"
-        aria-label="Octave down"
-      >↓</button>
-      <button
-        type="button"
-        className="mixer-btn mixer-btn-remove"
-        onClick={handleRemove}
-        disabled={!canRemove}
-        title="Remove this drone (and its partials)"
-        aria-label="Remove drone"
+        className="mixer-btn mixer-btn-mute"
+        onClick={handleMute}
+        title="Mute this drone"
+        aria-label="Mute drone"
       >×</button>
     </div>
   );
@@ -235,7 +197,7 @@ const PartialButtons = memo(function PartialButtons({ slot, partialIndex }) {
   );
 });
 
-function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
+function Mixer({ oscillatorCount }) {
   useTheme(); // re-render on theme flip so palette.oscColor swaps correctly
 
   // RAF-driven snapshot of mixer rows.
@@ -258,20 +220,29 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
         const freqs = audioEngine.getAllFrequencies();
         const vols100 = audioEngine.getAllVolumes(); // 0-100
         const muted = audioEngine.getAllMutedStates();
+        // Global drone on/off — the "Turn drones off" button in the
+        // oscillator controls flips this without touching per-slot
+        // mutedStates. When it's off the mixer hides every drone (and
+        // its partials) since none of them are audible; voices remain
+        // because they ride a separate bus.
+        const droneBusOff = audioEngine.droneEnabled === false;
         const nextRows = [];
         for (let i = 0; i < oscillatorCount; i++) {
-          // Every slot is rendered, even silent or muted — the mixer is
-          // the user's roster of drones, so dropping a row when vol hits
-          // 0 (or on mute) would surprise them and force a trip to the
-          // spectrum bar to re-enable. Muted/zero rows still surface
-          // the buttons + fader so the user can recover from the mixer.
+          // Only audible drones appear in the mixer. Muting a single
+          // drone (× in its button cluster) removes its row; flipping
+          // the global drone toggle off removes all of them. Re-enabling
+          // happens via the spectrum bar (per-slot) or the drone toggle
+          // (global). Volume === 0 is NOT the same as muted: a silent-
+          // but-unmuted row still renders so the user can find and
+          // raise it. Partials of a hidden drone are dropped with it.
           const baseFreq = freqs[i] ?? 0;
           const v100 = vols100[i] ?? 0;
           const isMuted = !!muted[i];
-          // Partials first in DOM so column-reverse puts the primary on
-          // top of its partials. Always show every extra of an audible
-          // primary — even silent/muted ones — so the user can re-enable
-          // without re-finding the row.
+          if (droneBusOff || isMuted) continue;
+          // Partials first in DOM so column-reverse puts the primary
+          // on top of its partials. Always show every extra of an
+          // audible primary — even silent/muted ones — so the user
+          // can re-enable without re-finding the row.
           const extras = audioEngine.getExtraPartials(i);
           for (const p of extras) {
             nextRows.push({
@@ -316,6 +287,7 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
             freq: v.freq,
             amp: v.amp,
             target,
+            midiNote: v.midiNote,
             source: v.source,
             released: v.released,
           });
@@ -344,11 +316,9 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
                 className={`mixer-row mixer-row-drone ${muted ? 'muted' : ''}`}
                 style={{ '--mixer-color': color }}
               >
-                <span className="mixer-dot" />
-                <span className="mixer-label">
-                  <span className="mixer-freq">{formatFreq(freq)}</span>
-                  <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
-                </span>
+                <span className="mixer-marker">D{slot + 1}</span>
+                <span className="mixer-freq">{formatFreq(freq)}</span>
+                <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
                 <span className="mixer-source-tag mixer-source-tag-empty" />
                 <Fader
                   dataAttrs={{ 'data-osc-index': slot }}
@@ -357,11 +327,7 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
                   color={color}
                   released={false}
                 />
-                <PrimaryButtons
-                  slot={slot}
-                  canRemove={oscillatorCount > minOscillators}
-                  onSlotsChange={onSlotsChange}
-                />
+                <PrimaryButtons slot={slot} />
               </div>
             );
           }
@@ -377,10 +343,8 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
               style={{ '--mixer-color': color }}
             >
               <span className="mixer-dot mixer-dot-partial" />
-              <span className="mixer-label">
-                <span className="mixer-freq">{formatFreq(freq)}</span>
-                <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
-              </span>
+              <span className="mixer-freq">{formatFreq(freq)}</span>
+              <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
               <span className="mixer-source-tag mixer-source-tag-ratio">{formatRatio(ratio)}</span>
               <Fader
                 dataAttrs={{
@@ -396,23 +360,25 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
             </div>
           );
         })}
-        {voices.map(({ id, slot, freq, amp, target, source, released }) => {
+        {voices.map(({ id, slot, freq, amp, target, midiNote, source, released }) => {
           const color = palette.oscColor(slot, oscillatorCount);
           const note = freqToNote(freq);
           const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
-          const tag = source === 'kbd' ? 'KBD' : 'MIDI';
+          const handleVoiceMute = (e) => {
+            e.stopPropagation();
+            if (released) return;
+            keyboardVoiceManager.releaseNote(midiNote, source);
+          };
           return (
             <div
               key={`voice-${id}`}
               className={`mixer-row mixer-row-voice ${released ? 'released' : ''}`}
               style={{ '--mixer-color': color }}
             >
-              <span className="mixer-dot" />
-              <span className="mixer-label">
-                <span className="mixer-freq">{formatFreq(freq)}</span>
-                <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
-              </span>
-              <span className="mixer-source-tag" aria-label={`source ${tag}`}>{tag}</span>
+              <span className="mixer-marker">{source === 'kbd' ? `K${slot + 1}` : 'MIDI'}</span>
+              <span className="mixer-freq">{formatFreq(freq)}</span>
+              <span className="mixer-note">{note.note}{note.octave}<span className="mixer-cents">{cents}</span></span>
+              <span className="mixer-source-tag mixer-source-tag-empty" />
               <Fader
                 dataAttrs={{
                   'data-voice-id': id,
@@ -423,7 +389,19 @@ function Mixer({ oscillatorCount, minOscillators = 2, onSlotsChange }) {
                 color={color}
                 released={released}
               />
-              <span className="mixer-row-buttons mixer-row-buttons-empty" />
+              <div
+                className="mixer-row-buttons mixer-row-buttons-voice"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className="mixer-btn mixer-btn-mute"
+                  onClick={handleVoiceMute}
+                  disabled={released}
+                  title="Release this voice"
+                  aria-label="Release voice"
+                >×</button>
+              </div>
             </div>
           );
         })}

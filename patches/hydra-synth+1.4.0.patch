@@ -1,0 +1,69 @@
+diff --git a/node_modules/hydra-synth/src/hydra-synth.js b/node_modules/hydra-synth/src/hydra-synth.js
+index 8dd2a3d..7ab9cae 100644
+--- a/node_modules/hydra-synth/src/hydra-synth.js
++++ b/node_modules/hydra-synth/src/hydra-synth.js
+@@ -250,16 +250,21 @@ class HydraRenderer {
+     this.regl = regl({
+     //  profile: true,
+       canvas: this.canvas,
+-      pixelRatio: 1//,
+-      // extensions: [
+-      //   'oes_texture_half_float',
+-      //   'oes_texture_half_float_linear'
+-      // ],
+-      // optionalExtensions: [
+-      //   'oes_texture_float',
+-      //   'oes_texture_float_linear'
+-     //]
+-   })
++      pixelRatio: 1,
++      // Required for type:'half float' FBOs in output.js — without these
++      // the framebuffer creation throws at startup. ext_color_buffer_half_float
++      // is what lets us render INTO a half-float texture (the others just
++      // allow sampling).
++      extensions: [
++        'oes_texture_half_float',
++        'oes_texture_half_float_linear',
++        'ext_color_buffer_half_float'
++      ],
++      optionalExtensions: [
++        'oes_texture_float',
++        'oes_texture_float_linear'
++      ]
++    })
+ 
+     // This clears the color buffer to black and the depth buffer to 1
+     this.regl.clear({
+diff --git a/node_modules/hydra-synth/src/output.js b/node_modules/hydra-synth/src/output.js
+index f0a0448..9ef6eda 100755
+--- a/node_modules/hydra-synth/src/output.js
++++ b/node_modules/hydra-synth/src/output.js
+@@ -14,13 +14,26 @@ var Output = function ({ regl, precision, label = "", width, height}) {
+   this.init()
+   this.pingPongIndex = 0
+ 
+-  // for each output, create two fbos for pingponging
++  // for each output, create two fbos for pingponging.
++  // type: 'half float' = RGBA16F instead of the default uint8 (RGBA8).
++  // Kills 8-bit color banding in feedback chains where small per-frame
++  // differences (scale 0.99, decaying trails, etc.) would otherwise round
++  // to the same integer and get stuck. Requires the
++  // oes_texture_half_float + ext_color_buffer_half_float regl extensions
++  // (enabled in hydra-synth.js _initRegl).
+   this.fbos = (Array(2)).fill().map(() => this.regl.framebuffer({
+     color: this.regl.texture({
+       mag: 'nearest',
+       width: width,
+       height: height,
+-      format: 'rgba'
++      format: 'rgba',
++      type: 'half float',
++      // wrap: 'repeat' makes feedback (src(o0)) tile when scaled past
++      // the frame edge instead of smearing the edge pixels outward.
++      // Default regl wrap is 'clamp' which gives the stretched-top/bottom
++      // look. 'mirror' is also valid for kaleid-style mirroring.
++      wrapS: 'repeat',
++      wrapT: 'repeat'
+     }),
+     depthStencil: false
+   }))

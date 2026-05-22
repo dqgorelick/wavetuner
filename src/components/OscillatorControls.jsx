@@ -108,15 +108,31 @@ function OscillatorControls({
 
   return (
     <div className="osc-controls-panel">
-      <div
-        className={`osc-grid-wrap${droneEnabled ? '' : ' drone-off'}`}
-        style={{ '--cols': oscillatorCount }}
-      >
-        {/* Single visible row: Play / KBD / Drone / per-osc mutes. The
-            per-osc cells slide behind the drone button when drones are
-            off. Frequency readouts + per-osc octave shifts moved out of
-            this panel (frequencies live in the freq-rail; root ×2 / /2
-            lives next to the Root field there). */}
+      {/* Drone tray — slides open whenever drones are enabled. Holds the
+          per-osc mute squares (small, outlined when off, lit with osc
+          color when on). Closed when droneEnabled is false; pointer
+          events are suppressed via the open class so the squares can't
+          be clicked while collapsed. */}
+      <div className={`drone-tray${droneEnabled ? ' open' : ''}`}>
+        {oscillators.map((osc) => {
+          const muted = mutedOscillators[osc.index] || false;
+          return (
+            <button
+              key={`m-${osc.index}`}
+              type="button"
+              className={`drone-tray-cell ${muted ? 'off' : 'on'}`}
+              style={{ '--cell-color': osc.color }}
+              onClick={() => handleMuteToggle(osc.index)}
+              title={muted ? `Unmute ${osc.label}` : `Mute ${osc.label}`}
+              aria-pressed={!muted}
+              tabIndex={droneEnabled ? 0 : -1}
+            >
+              {osc.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="osc-grid-wrap">
         <div className="osc-grid-row bottom-row">
           <div className="grid-cell bottom-cell-wrap osc-play-col">
             <button
@@ -161,25 +177,6 @@ function OscillatorControls({
               <span className="bottom-toggle-label">drone</span>
             </button>
           </div>
-          {oscillators.map((osc, i) => {
-            const muted = mutedOscillators[osc.index] || false;
-            return (
-              <div
-                key={`m-${osc.index}`}
-                className="grid-cell bottom-cell-wrap osc-num-cell"
-                style={{ '--cell-color': osc.color, '--osc-idx': i }}
-              >
-                <button
-                  className={`bottom-cell bottom-mute ${muted ? 'muted' : ''}`}
-                  onClick={() => handleMuteToggle(osc.index)}
-                  title={muted ? 'Unmute' : 'Mute'}
-                  aria-pressed={!muted}
-                >
-                  {osc.label}
-                </button>
-              </div>
-            );
-          })}
           <div className="grid-cell bottom-cell-wrap osc-mixer-col">
             <button
               type="button"

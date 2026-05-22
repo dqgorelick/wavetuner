@@ -20,8 +20,7 @@ import Mixer from './components/Mixer';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
 import HydraOverlay from './components/HydraOverlay';
-import { startHydra, stopHydra, evalHydra } from './visuals/Hydra';
-import { BUILTIN_SKETCHES, DEFAULT_SKETCH_ID } from './visuals/hydraSketches';
+import { startVisuals, stopVisuals, selectSketch, setVfxParams, DEFAULT_SKETCH_ID } from './visuals/backend';
 import { getAutosave, setAutosave } from './patches/storage';
 import { applyPatch, applyPatchSmooth, preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
@@ -86,6 +85,10 @@ function getInitialStateFromURL() {
   const kbdCurve = parseCurve(params.get('kCurve'));
   const tRaw = (params.get('t') || '').toLowerCase();
   const theme = tRaw === 'classic' || tRaw === 'duo' ? tRaw : null;
+  // Visual-effect sliders (Feedback scale / blend). null when absent
+  // so defaults apply.
+  const vfxScale = parseFloatInRange(params.get('vs'), 0, 3);
+  const vfxBlend = parseFloatInRange(params.get('vb'), 0, 1);
 
   let base = { count: 4, frequencies: null, volumes: null, routing: null };
 
@@ -115,7 +118,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme };
+  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme, vfxScale, vfxBlend };
 }
 
 // Compute once at module load
@@ -247,7 +250,7 @@ function App() {
   // tick to size to its parent before Hydra reads its dimensions.
   useEffect(() => {
     if (!isHydraEnabled) {
-      stopHydra();
+      stopVisuals();
       return undefined;
     }
     let cancelled = false;
@@ -256,9 +259,8 @@ function App() {
       const overlayCanvas = hydraCanvasRef.current;
       const sourceCanvas = document.getElementById('scope');
       if (!overlayCanvas || !sourceCanvas) return;
-      startHydra({ canvas: overlayCanvas, sourceCanvas });
-      const defaultSketch = BUILTIN_SKETCHES.find(s => s.id === DEFAULT_SKETCH_ID);
-      if (defaultSketch) evalHydra(defaultSketch.code);
+      startVisuals({ canvas: overlayCanvas, sourceCanvas });
+      selectSketch(DEFAULT_SKETCH_ID);
     }, 50);
     return () => { cancelled = true; clearTimeout(id); };
   }, [isHydraEnabled]);
@@ -324,6 +326,18 @@ function App() {
   // / richer drift; lower = crisper figures (especially at high freqs).
   // Default 6 reads as "a few clean cycles" across the audible range.
   const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? 13);
+  // Visual-effect feedback sliders. Drive the shader's u_extraScale /
+  // u_extraBlend uniforms and Hydra's `window.vfx.scale` / `.blend`
+  // globals. Defaults match the Feedback-chromatic preset constants so
+  // the panel boots with a visible effect. The oscilloscope drag also
+  // writes through these setters — the slider knobs visibly scrub.
+  const [vfxScale, setVfxScale] = useState(INITIAL_URL_STATE.vfxScale ?? 1.05);
+  const [vfxBlend, setVfxBlend] = useState(INITIAL_URL_STATE.vfxBlend ?? 0.23);
+  useEffect(() => { setVfxParams(vfxScale, vfxBlend); }, [vfxScale, vfxBlend]);
+  const handleVfxDrag = useCallback((scale, blend) => {
+    setVfxScale(scale);
+    setVfxBlend(blend);
+  }, []);
   // Visualizer source is now hardcoded per mode in Oscilloscope.jsx
   // (Circle + Face → audio, Hilbert + Standing-line → synth) — no
   // user-facing toggle.
@@ -447,27 +461,49 @@ function App() {
     setThemeState(palette.theme);
   }, []);
 
-  // JI ratio limit for the frequency rail's nearest-ratio readout.
-  // Mirrors frequencyManager.limit; setter pushes back into the
+  // Tuning system for the frequency rail's nearest-candidate readout,
+  // Align targets, and per-row ↑/↓ stepping. Mirrors
+  // frequencyManager.tuningSystem; setter pushes back into the
   // singleton so the rail picks it up.
-  const [jiLimit, setJiLimit] = useState(frequencyManager.limit);
-  const handleJiLimitChange = useCallback((n) => {
-    frequencyManager.setLimit(n);
-    setJiLimit(frequencyManager.limit);
+  const [tuningSystem, setTuningSystemState] = useState(frequencyManager.tuningSystem);
+  const handleTuningSystemChange = useCallback((key) => {
+    frequencyManager.setTuningSystem(key);
+    setTuningSystemState(frequencyManager.tuningSystem);
   }, []);
 
-  // Align button — glides every drone to its nearest JI target. Lives
-  // in the frequency rail's footer now; App owns the busy state so a
-  // mid-glide click doesn't double-trigger the gliding scheduler.
+  // Align button — glides every drone to its nearest target in the
+  // active tuning system. App owns the busy state so a mid-glide click
+  // doesn't double-trigger the gliding scheduler. Load shares this
+  // state — only one of Align / Load can be in-flight at a time.
   const [isAligning, setIsAligning] = useState(false);
   const handleAlign = useCallback(() => {
     if (!audioEngine.initialized) return;
-    const targets = audioEngine.computeJustIntonationTargets(tuneVarianceHz);
+    const targets = audioEngine.computeJustIntonationTargets(tuneVarianceHz, {
+      systemKey: frequencyManager.tuningSystem,
+      anchorSlot: frequencyManager.anchorSlot,
+    });
     setIsAligning(true);
     audioEngine.glideToFrequencies(targets, Math.round(tuneGlideSec * 1000), () => {
       setIsAligning(false);
     });
   }, [tuneVarianceHz, tuneGlideSec]);
+
+  // Load button — lays the voices out as the active system's
+  // canonical scale (1/1 stays at the anchor; un-muted siblings get
+  // the next scale degrees). Distinct from Align: Align preserves
+  // shape (snap each voice to nearest), Load rewrites the shape to
+  // the system's characteristic sound.
+  const handleLoad = useCallback(() => {
+    if (!audioEngine.initialized) return;
+    const targets = audioEngine.computeLoadTargets({
+      systemKey: frequencyManager.tuningSystem,
+      anchorSlot: frequencyManager.anchorSlot,
+    });
+    setIsAligning(true);
+    audioEngine.glideToFrequencies(targets, Math.round(tuneGlideSec * 1000), () => {
+      setIsAligning(false);
+    });
+  }, [tuneGlideSec]);
 
   // Mobile caps the oscillator count at 4 — but ONLY on iOS, where the
   // Web Audio backend is the bottleneck (Safari struggles with 10+ live
@@ -683,6 +719,10 @@ function App() {
     queryParts.push(`dEnv=${encEnv(droneEnvelope)}`);
     queryParts.push(`kEnv=${encEnv(keyboardEnvelope)}`);
     queryParts.push(`cy=${vizCycles}`);
+    // Feedback sliders. Skipped when at the default values so URLs
+    // stay clean for users who never opened the panel.
+    if (Math.abs(vfxScale - 1.05) > 0.005) queryParts.push(`vs=${vfxScale.toFixed(2)}`);
+    if (Math.abs(vfxBlend - 0.23) > 0.005) queryParts.push(`vb=${vfxBlend.toFixed(2)}`);
     // Wave shape + fold per pool. Skip when at default (0) to keep
     // URLs short for users who never touched the sliders.
     if (droneWave.position > 0)    queryParts.push(`dWave=${droneWave.position.toFixed(2)}`);
@@ -748,7 +788,7 @@ function App() {
     } else {
       alert('URL updated! Copy it from your browser address bar to share.');
     }
-  }, [vizCycles]);
+  }, [vizCycles, vfxScale, vfxBlend]);
 
   const handleSettingsToggle = useCallback(() => {
     setIsSettingsOpen(prev => !prev);
@@ -864,7 +904,7 @@ function App() {
   }, []);
 
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''}${droneEnabled ? ' drone-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -882,6 +922,7 @@ function App() {
         vizLineWidth={vizLineWidth}
         vizOutline={vizOutline}
         vizRotation={vizRotation}
+        onVfxDrag={handleVfxDrag}
       />
       <HydraOverlay ref={hydraCanvasRef} visible={isHydraEnabled} />
 
@@ -896,23 +937,28 @@ function App() {
             onOscillatorCountChange={handleOscillatorCountChange}
             maxOscillators={maxOscillators}
           />
-          {(isMixerOpen || isTuningOpen) && (
+          {isTuningOpen && (
             <div className="left-stack">
-              {isMixerOpen && (
-                <Mixer
-                  oscillatorCount={oscillatorCount}
-                  minOscillators={2}
-                  maxOscillators={maxOscillators}
-                  onSlotsChange={syncStateFromEngine}
-                />
-              )}
-              {isTuningOpen && (
-                <TuningPanel
-                  oscillatorCount={oscillatorCount}
-                  onAlign={handleAlign}
-                  isAligning={isAligning}
-                />
-              )}
+              <TuningPanel
+                oscillatorCount={oscillatorCount}
+                onOscillatorCountChange={handleOscillatorCountChange}
+                maxOscillators={maxOscillators}
+                onAlign={handleAlign}
+                onLoad={handleLoad}
+                isAligning={isAligning}
+                tuningSystem={tuningSystem}
+                onTuningSystemChange={handleTuningSystemChange}
+              />
+            </div>
+          )}
+          {isMixerOpen && (
+            <div className="right-stack">
+              <Mixer
+                oscillatorCount={oscillatorCount}
+                minOscillators={2}
+                maxOscillators={maxOscillators}
+                onSlotsChange={syncStateFromEngine}
+              />
             </div>
           )}
 
@@ -984,6 +1030,10 @@ function App() {
             onVizCyclesChange={setVizCycles}
             vizRotation={vizRotation}
             onVizRotationChange={setVizRotation}
+            vfxScale={vfxScale}
+            onVfxScaleChange={setVfxScale}
+            vfxBlend={vfxBlend}
+            onVfxBlendChange={setVfxBlend}
           />
           {(() => {
             const activeViz = VIZ_MODES.find((m) => m.id === vizMode) || VIZ_MODES[0];
@@ -1080,8 +1130,6 @@ function App() {
             onKbdRepressModeChange={setKbdRepressMode}
             showKbdLabels={showKbdLabels}
             onShowKbdLabelsChange={setShowKbdLabels}
-            jiLimit={jiLimit}
-            onJiLimitChange={handleJiLimitChange}
           />
           <KeyboardTray
             isOpen={isKbdTrayOpen}

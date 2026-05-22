@@ -2,8 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { keymap } from '@codemirror/view';
-import { evalHydra } from '../visuals/Hydra';
-import { BUILTIN_SKETCHES, DEFAULT_SKETCH_ID } from '../visuals/hydraSketches';
+import {
+  evalUserCode,
+  selectSketch,
+  getSketches,
+  supportsLiveCode,
+  DEFAULT_SKETCH_ID,
+} from '../visuals/backend';
 import { listUserSketches, saveSketch, deleteSketch } from '../visuals/hydraStorage';
 
 function VizSlider({ label, value, min, max, step, format, onChange, title }) {
@@ -35,7 +40,7 @@ function VizSlider({ label, value, min, max, step, format, onChange, title }) {
  *   - Hush button → silence Hydra (keeps the canvas, just stops output)
  *   - Save button → prompt for name, persist to localStorage
  *
- * Errors from `evalHydra` surface in a small status bar below the
+ * Errors from `evalUserCode` surface in a small status bar below the
  * editor so a typo doesn't silently fail.
  */
 export default function HydraPanel({
@@ -53,10 +58,15 @@ export default function HydraPanel({
   onVizCyclesChange,
   vizRotation,
   onVizRotationChange,
+  vfxScale,
+  onVfxScaleChange,
+  vfxBlend,
+  onVfxBlendChange,
 }) {
+  const sketches = useMemo(() => getSketches(), []);
   const defaultCode = useMemo(
-    () => BUILTIN_SKETCHES.find(s => s.id === DEFAULT_SKETCH_ID)?.code || '',
-    []
+    () => sketches.find(s => s.id === DEFAULT_SKETCH_ID)?.code || '',
+    [sketches]
   );
   const [code, setCode] = useState(defaultCode);
   const codeRef = useRef(code);
@@ -70,23 +80,14 @@ export default function HydraPanel({
   useEffect(() => { if (isOpen) refreshUserSketches(); }, [isOpen, refreshUserSketches]);
 
   const panelRef = useRef(null);
-  // ESC closes; click-outside closes (matches PatchesPanel pattern).
+  // ESC closes. Click-outside is intentionally NOT a close trigger —
+  // the user often interacts with the scope (drag → vfx sliders) while
+  // the panel is open and watches the sliders move.
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    const onDocDown = (e) => {
-      if (!panelRef.current) return;
-      if (panelRef.current.contains(e.target)) return;
-      if (e.target.closest?.('.hydra-toggle')) return;
-      onClose();
-    };
     document.addEventListener('keydown', onKey);
-    const id = setTimeout(() => document.addEventListener('mousedown', onDocDown), 0);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      clearTimeout(id);
-      document.removeEventListener('mousedown', onDocDown);
-    };
+    return () => document.removeEventListener('keydown', onKey);
   }, [isOpen, onClose]);
 
   const runCode = useCallback(() => {
@@ -94,7 +95,7 @@ export default function HydraPanel({
       setStatus({ kind: 'error', text: 'Hydra is not enabled — toggle it on first.' });
       return;
     }
-    const result = evalHydra(codeRef.current);
+    const result = evalUserCode(codeRef.current);
     if (result.ok) setStatus({ kind: 'ok', text: 'Sketch evaluated.' });
     else setStatus({ kind: 'error', text: result.error });
   }, [isRunning]);
@@ -128,8 +129,18 @@ export default function HydraPanel({
   }, [refreshUserSketches]);
 
   const handleLoad = useCallback((sketch) => {
-    setCode(sketch.code);
-    setStatus({ kind: 'idle', text: `Loaded "${sketch.name}". Cmd-Enter to run.` });
+    // Switch the backend immediately so a preset click "just runs" in
+    // both Hydra and shader modes. In the Hydra build we also seed the
+    // editor with the source so the user can tweak it; in the shader
+    // build the editor is hidden and `sketch.code` is undefined anyway.
+    selectSketch(sketch.id);
+    if (sketch.code !== undefined) setCode(sketch.code);
+    setStatus({
+      kind: 'idle',
+      text: supportsLiveCode
+        ? `Loaded "${sketch.name}". Cmd-Enter to run again.`
+        : `Running "${sketch.name}".`,
+    });
   }, []);
 
   const handleDelete = useCallback((id, name) => {
@@ -289,8 +300,32 @@ export default function HydraPanel({
       </section>
 
       <section className="hydra-section">
+        <h5 className="hydra-section-title">Feedback</h5>
+        <VizSlider
+          label="Scale"
+          value={vfxScale}
+          min={0}
+          max={3}
+          step={0.01}
+          format={(v) => v.toFixed(2)}
+          onChange={onVfxScaleChange}
+          title="How much the previous frame zooms before being added back. 0 disables the feedback layer. Drag on the oscilloscope to scrub this and Blend together."
+        />
+        <VizSlider
+          label="Blend"
+          value={vfxBlend}
+          min={0}
+          max={1}
+          step={0.01}
+          format={(v) => v.toFixed(2)}
+          onChange={onVfxBlendChange}
+          title="How strongly the feedback layer mixes in. 0 = no feedback; 1 = doubled feedback. Also drag-scrubable from the oscilloscope."
+        />
+      </section>
+
+      <section className="hydra-section">
         <h5 className="hydra-section-title">Built-ins</h5>
-        {BUILTIN_SKETCHES.map((s) => (
+        {sketches.map((s) => (
           <div key={s.id} className="hydra-sketch-card builtin">
             <button
               type="button"

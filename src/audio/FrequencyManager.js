@@ -27,7 +27,12 @@
  */
 
 import audioEngine from './AudioEngine';
-import { SUPPORTED_LIMITS, DEFAULT_LIMIT } from './jiRatios';
+import {
+  SUPPORTED_SYSTEMS,
+  DEFAULT_SYSTEM,
+  TUNING_SYSTEMS,
+  stepCandidate,
+} from './jiRatios';
 
 // Drift tolerance for locked-ratio detection. Above ±1¢, we consider
 // the slot to have been dragged off its locked ratio and unlock it.
@@ -43,10 +48,18 @@ const SNAPSHOT_DEBOUNCE_MS = 350;
 // Maximum history depth — older snapshots fall off the bottom.
 const UNDO_LIMIT = 30;
 
-// Glide duration (ms) when recalling a saved state. Matches
+// Maximum number of named save slots. When full, the oldest slot is
+// dropped to make room for the new save — keeps the UI grid (4×2)
+// from overflowing while still allowing rapid iterative saves.
+const SAVE_LIMIT = 8;
+
+// Default glide duration (ms) when recalling a saved state. Matches
 // applyPatchSmooth's SMOOTH_GLIDE_MS so save-recalls feel like the
-// "return to patch" gesture.
-const RECALL_GLIDE_MS = 800;
+// "return to patch" gesture out of the box. User-tunable via
+// setRecallGlideMs() (the slider beneath the save chips in the
+// tuning panel; 0 ms = instant snap).
+const DEFAULT_RECALL_GLIDE_MS = 800;
+const MAX_RECALL_GLIDE_MS = 10000;
 
 class FrequencyManager {
   constructor() {
@@ -55,7 +68,7 @@ class FrequencyManager {
     this._listeners = new Set();
     this._slotRatios = new Map(); // slot → { n, d }; absent = free
     this._anchorSlot = 0;
-    this._limit = DEFAULT_LIMIT;
+    this._tuningSystem = DEFAULT_SYSTEM;
     this._lastAnchorHz = 0;
     this._inPropagation = false;
 
@@ -69,6 +82,7 @@ class FrequencyManager {
     // In-memory named save slots. Lost on reload by design.
     this._saveSlots = [];
     this._saveSeq = 0;           // monotonic counter for auto-names
+    this._recallGlideMs = DEFAULT_RECALL_GLIDE_MS;
 
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
 
@@ -76,7 +90,15 @@ class FrequencyManager {
   }
 
   get anchorSlot() { return this._anchorSlot; }
-  get limit() { return this._limit; }
+  get tuningSystem() { return this._tuningSystem; }
+  // Back-compat alias — old callers read `.limit` for the numeric
+  // 5/7/11. Maps the new system keys back to those numbers when
+  // possible, falls back to 5 for non-JI systems (since the UI that
+  // reads this is for prime-limit display only).
+  get limit() {
+    const map = { '5-limit': 5, '7-limit': 7, '11-limit': 11 };
+    return map[this._tuningSystem] || 5;
+  }
 
   isAnchor(slot) { return slot === this._anchorSlot; }
 
@@ -113,12 +135,48 @@ class FrequencyManager {
     this._fire();
   }
 
-  setLimit(limit) {
-    if (!SUPPORTED_LIMITS.includes(limit)) return;
-    if (limit === this._limit) return;
-    this._limit = limit;
+  setTuningSystem(key) {
+    if (!SUPPORTED_SYSTEMS.includes(key)) return;
+    if (key === this._tuningSystem) return;
+    this._tuningSystem = key;
     this._scheduleSnapshot();
     this._fire();
+  }
+
+  // Back-compat: old callers passing 5/7/11. Maps to the equivalent
+  // -limit system key.
+  setLimit(limit) {
+    const map = { 5: '5-limit', 7: '7-limit', 11: '11-limit' };
+    const key = map[limit];
+    if (key) this.setTuningSystem(key);
+  }
+
+  /**
+   * Step a slot to the next / previous candidate in the active tuning
+   * system. `direction` is +1 (↑) or -1 (↓). For rational systems the
+   * slot is locked to the new (n, d); for 12-TET the slot's Hz is set
+   * to the candidate's cents value without creating a rational lock
+   * (TET notes don't have a clean small-integer ratio).
+   */
+  stepSlotRatio(slot, direction) {
+    if (slot === this._anchorSlot) return; // anchor is 1/1 — no neighbors
+    if (!audioEngine.initialized) return;
+    const anchorHz = audioEngine.getFrequency(this._anchorSlot);
+    if (!Number.isFinite(anchorHz) || anchorHz <= 0) return;
+    const curHz = audioEngine.getFrequency(slot);
+    if (!Number.isFinite(curHz) || curHz <= 0) return;
+    const currentRatio = curHz / anchorHz;
+    const next = stepCandidate(currentRatio, this._tuningSystem, direction);
+    if (!next) return;
+    if (next.n != null && next.d != null) {
+      // Rational candidate — lock the ratio so it tracks anchor moves.
+      this._slotRatios.set(slot, { n: next.n, d: next.d });
+      audioEngine.setFrequency(slot, anchorHz * next.ratio);
+    } else {
+      // TET-style candidate — set Hz directly, drop any rational lock.
+      this._slotRatios.delete(slot);
+      audioEngine.setFrequency(slot, anchorHz * next.ratio);
+    }
   }
 
   /**
@@ -244,6 +302,7 @@ class FrequencyManager {
       snapshot: this._takeSnapshot(),
     };
     this._saveSlots.push(slot);
+    if (this._saveSlots.length > SAVE_LIMIT) this._saveSlots.shift();
     this._fire();
     return id;
   }
@@ -265,8 +324,27 @@ class FrequencyManager {
       if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
     }
     this._redoStack = [];
-    this._applySnapshotSmooth(slot.snapshot, RECALL_GLIDE_MS);
+    this._applySnapshotSmooth(slot.snapshot, this._recallGlideMs);
     return true;
+  }
+
+  get recallGlideMs() {
+    return this._recallGlideMs;
+  }
+
+  /**
+   * Set the glide duration (ms) used when recalling a saved state.
+   * Clamped to [0, MAX_RECALL_GLIDE_MS]. Fires change so the slider
+   * UI re-reads the value (and any other listeners observe the new
+   * setting).
+   */
+  setRecallGlideMs(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, n));
+    if (clamped === this._recallGlideMs) return;
+    this._recallGlideMs = clamped;
+    this._fire();
   }
 
   deleteSlot(id) {
@@ -289,7 +367,7 @@ class FrequencyManager {
       frequencies: audioEngine.getAllFrequencies(),
       slotRatios: new Map(this._slotRatios),
       anchorSlot: this._anchorSlot,
-      limit: this._limit,
+      tuningSystem: this._tuningSystem,
     };
   }
 
@@ -299,7 +377,10 @@ class FrequencyManager {
     try {
       this._anchorSlot = snap.anchorSlot;
       this._slotRatios = new Map(snap.slotRatios);
-      this._limit = snap.limit;
+      // Tolerate legacy snapshots stored as numeric `limit`.
+      this._tuningSystem = snap.tuningSystem
+        || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])
+        || DEFAULT_SYSTEM;
       const count = audioEngine.getOscillatorCount();
       for (let i = 0; i < Math.min(count, snap.frequencies.length); i++) {
         audioEngine.setFrequency(i, snap.frequencies[i]);
@@ -326,7 +407,9 @@ class FrequencyManager {
     this._inUndoRestore = true;
     this._anchorSlot = snap.anchorSlot;
     this._slotRatios = new Map(snap.slotRatios);
-    this._limit = snap.limit;
+    this._tuningSystem = snap.tuningSystem
+      || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])
+      || DEFAULT_SYSTEM;
 
     const count = audioEngine.getOscillatorCount();
     const targets = snap.frequencies.slice(0, count);
@@ -346,7 +429,7 @@ class FrequencyManager {
 
   _snapshotsEqual(a, b) {
     if (a.anchorSlot !== b.anchorSlot) return false;
-    if (a.limit !== b.limit) return false;
+    if (a.tuningSystem !== b.tuningSystem) return false;
     if (a.frequencies.length !== b.frequencies.length) return false;
     for (let i = 0; i < a.frequencies.length; i++) {
       if (Math.abs(a.frequencies[i] - b.frequencies[i]) > 1e-4) return false;

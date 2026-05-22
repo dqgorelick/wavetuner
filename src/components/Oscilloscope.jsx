@@ -784,6 +784,11 @@ export default function Oscilloscope({
   // (+45°), −1 = mirror diamond (−45°). Diamond modes scale by 1/√2
   // so the figure stays within the original scope bounds.
   vizRotation = 0,
+  // Drag-on-scope → Feedback sliders. App owns the slider state and
+  // passes this callback; the pointer handlers below compute the slider
+  // values from the drag position so the gesture and the sliders stay
+  // visibly synced.
+  onVfxDrag,
 }) {
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -916,7 +921,15 @@ export default function Oscilloscope({
       // Bottom-reserved strip = ~top-of-orbs (135 px). The expanded and
       // fullscreen UI modes were removed, so this is a constant.
       const BOTTOM_RESERVED = 135;
-      const usableHeight = Math.max(0, height - BOTTOM_RESERVED);
+      // Keyboard tray, when open, occludes another --kbd-tray-h (120 px)
+      // below that. Read from the #wrapper class so we don't have to
+      // thread a prop through every Oscilloscope ancestor. Subtract
+      // both from usableHeight so the trace (drawStatic) and the
+      // Lissajous scope (drawXY) center in the visible region rather
+      // than the geometric viewport center.
+      const wrapper = document.getElementById('wrapper');
+      const kbdTrayH = wrapper && wrapper.classList.contains('kbd-tray-open') ? 120 : 0;
+      const usableHeight = Math.max(0, height - BOTTOM_RESERVED - kbdTrayH);
       const staticStyle = staticModeRef.current;
       const sampleRate = audioEngine.audioContext
         ? audioEngine.audioContext.sampleRate
@@ -1134,7 +1147,7 @@ export default function Oscilloscope({
 
     // Start animation loop
     drawScope();
-    
+
     // Cleanup
     return () => {
       window.removeEventListener('resize', resizeCanvas);
@@ -1143,7 +1156,55 @@ export default function Oscilloscope({
       }
     };
   }, []);
-  
+
+  // Drag-on-scope → Feedback sliders. Maps the viewport-relative drag
+  // position into the slider ranges (scale 0..3, blend 0..1) and pushes
+  // them through the App-supplied callback so React state and the panel
+  // sliders stay in sync. Pointer capture lets the drag continue if the
+  // user moves off the canvas mid-drag.
+  const onVfxDragRef = useRef(onVfxDrag);
+  useEffect(() => { onVfxDragRef.current = onVfxDrag; }, [onVfxDrag]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const applyFromEvent = (e) => {
+      const cb = onVfxDragRef.current;
+      if (!cb) return;
+      const w = window.innerWidth || 1;
+      const h = window.innerHeight || 1;
+      const scale = Math.max(0, Math.min(3, (e.clientX / w) * 3));
+      const blend = Math.max(0, Math.min(1, e.clientY / h));
+      cb(scale, blend);
+    };
+    const onPointerDown = (e) => {
+      // Ignore secondary buttons so right-clicks don't hijack the drag.
+      if (e.button !== undefined && e.button !== 0) return;
+      try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      applyFromEvent(e);
+      e.preventDefault();
+    };
+    const onPointerMove = (e) => {
+      // Only update while the canvas is actually capturing this pointer
+      // (mid-drag). Hovering without pressing should not scrub the
+      // sliders.
+      if (!canvas.hasPointerCapture?.(e.pointerId)) return;
+      applyFromEvent(e);
+    };
+    const onPointerUp = (e) => {
+      try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    };
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, []);
+
   return (
     <div className="oscilloscope-container">
       <canvas ref={canvasRef} id="scope" />

@@ -114,18 +114,38 @@ export const audioFeatures = {
 };
 
 // Always expose on window so devtools can inspect (and Hydra sketches
-// not booted through startHydra can still reference `audio.dissonance`).
+// not booted through startVisuals can still reference `audio.dissonance`).
+// The per-second tick log is opt-in via `?audioLog=1` or by setting
+// `window.__AUDIO_LOG = true` — otherwise it floods the console
+// (especially under Vite HMR, which re-evaluates this module on every
+// edit and would otherwise pile up duplicate intervals).
 if (typeof window !== 'undefined') {
   window.audio = audioFeatures;
-  let lastTick = 0;
-  audioFeatures.__log = setInterval(() => {
-    const dt = audioFeatures.tick - lastTick;
-    lastTick = audioFeatures.tick;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[audio] tick+${dt}/s amp=${audioFeatures.amp.toFixed(3)} sat=${audioFeatures.saturation.toFixed(3)} loud=${audioFeatures.loudness.toFixed(3)} diss=${audioFeatures.dissonance.toFixed(3)} dens=${audioFeatures.density.toFixed(3)} aura=${audioFeatures.aura.toFixed(3)} cent=${audioFeatures.centroid.toFixed(0)}Hz flux=${audioFeatures.flux.toFixed(3)} pairs=${audioFeatures.pairs} beat=${audioFeatures.beating.toFixed(2)}Hz`
-    );
-  }, 1000);
+  // Clear any prior interval left over from a previous HMR pass before
+  // deciding whether to start a new one.
+  if (window.__audioLogInterval) {
+    clearInterval(window.__audioLogInterval);
+    window.__audioLogInterval = null;
+  }
+  const wantLog = (() => {
+    try {
+      if (window.__AUDIO_LOG === true) return true;
+      const q = new URLSearchParams(window.location.search);
+      return q.get('audioLog') === '1';
+    } catch { return false; }
+  })();
+  if (wantLog) {
+    let lastTick = 0;
+    window.__audioLogInterval = setInterval(() => {
+      const dt = audioFeatures.tick - lastTick;
+      lastTick = audioFeatures.tick;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[audio] tick+${dt}/s amp=${audioFeatures.amp.toFixed(3)} sat=${audioFeatures.saturation.toFixed(3)} loud=${audioFeatures.loudness.toFixed(3)} diss=${audioFeatures.dissonance.toFixed(3)} dens=${audioFeatures.density.toFixed(3)} aura=${audioFeatures.aura.toFixed(3)} cent=${audioFeatures.centroid.toFixed(0)}Hz flux=${audioFeatures.flux.toFixed(3)} pairs=${audioFeatures.pairs} beat=${audioFeatures.beating.toFixed(2)}Hz`
+      );
+    }, 1000);
+    audioFeatures.__log = window.__audioLogInterval;
+  }
 }
 
 // FFT scratch buffers. Allocated once on first call; reused every frame

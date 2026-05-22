@@ -165,10 +165,20 @@ class StereoMode {
 //   - Drone stays in 'lr' (preserves the legacy hard-pan look that users
 //     expect on first load). Master detune 0.5 Hz — subtle warmth on the
 //     held bed without obvious beating.
-//   - Keyboard starts in 'stereo' so pressing a key gives the dual-osc
-//     L≠R width by default — that's the more interesting voice setup.
-//     Master detune 1 Hz — keyboard voices are transient so the spread
-//     reads clearly even at gentle widths.
+//   - Computer keyboard starts in 'stereo' so pressing a key gives the
+//     dual-osc L≠R width by default — that's the more interesting voice
+//     setup. Master detune 1.5 Hz — keyboard voices are transient so the
+//     spread reads clearly even at gentle widths.
+//   - MIDI also starts in 'stereo' with the same detune as kbd, but is
+//     a separate StereoMode instance so the mixer can toggle MIDI's pan
+//     mode independently from the computer keyboard.
 export const droneStereo = new StereoMode({ detuneHz: 1 });
 export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 1.5 });
+export const midiStereo = new StereoMode({ mode: 'stereo', detuneHz: 1.5 });
+
+/** Pick the StereoMode instance that owns a given voice source. */
+export function stereoForSource(source) {
+  return source === 'midi' ? midiStereo : keyboardStereo;
+}
+
 export default StereoMode;

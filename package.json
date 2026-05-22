@@ -6,7 +6,9 @@
   "homepage": "https://dqgorelick.github.io/wavetuner/",
   "scripts": {
     "dev": "vite",
+    "dev:shader": "VITE_VISUAL_BACKEND=shader vite",
     "build": "vite build",
+    "build:shader": "VITE_VISUAL_BACKEND=shader vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "postinstall": "patch-package"

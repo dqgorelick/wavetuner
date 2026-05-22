@@ -1,5 +1,5 @@
 import { forwardRef, useEffect } from 'react';
-import { setHydraResolution } from '../visuals/Hydra';
+import { setVisualResolution } from '../visuals/backend';
 
 /**
  * The canvas hydra-synth renders into. Mounted as a sibling of the
@@ -33,7 +33,7 @@ const HydraOverlay = forwardRef(function HydraOverlay({ visible }, ref) {
       // Rebuild Hydra's render targets to match. Cheap when size is
       // unchanged anyway, but gating on `changed` avoids the cost
       // (regl framebuffer reallocation) on every observer tick.
-      if (changed) setHydraResolution(w, h);
+      if (changed) setVisualResolution(w, h);
     };
     sizeToParent();
 

@@ -7,7 +7,8 @@
 import { droneEnvelope } from './Envelope';
 import { droneWave } from './Wave';
 import { droneFold, keyboardFold } from './Fold';
-import { droneStereo, keyboardStereo } from './StereoMode';
+import { droneStereo, keyboardStereo, midiStereo } from './StereoMode';
+import { getCandidates, getSystem, DEFAULT_SYSTEM, canonicalRatioForVoice } from './jiRatios';
 
 // Topology-change ramp for adding/removing drone slots via the count
 // control. Decoupled from droneEnvelope on purpose — see
@@ -66,14 +67,42 @@ class AudioEngine {
     // User-controllable master volume multiplier (0..1). Multiplies on top of
     // the count-based clipping scaler in _getScaledMasterGain so fade-in/out
     // and oscillator add/remove transitions naturally honor it.
-    this.masterVolumeUser = 1.0;
+    // 0.75 default leaves headroom over post-master saturation so transient
+    // peaks (e.g. constructive interference on close-tuned drones) don't
+    // clip the destination on first launch.
+    this.masterVolumeUser = 0.75;
+    this._masterMuted = false;
+    this._preMuteMaster = 0.75;
 
-    // Keyboard pool's own bus controls. `_kbdVolume` is the user slider;
-    // `_kbdEnabled` is the on/off switch. Effective bus gain is the
-    // product (0 when disabled). _kbdEffectiveGain() returns the live
-    // value for the audio node.
-    this._kbdVolume = 0.75;
+    // Keyboard pool's own bus controls. `_kbdEnabled` is the on/off
+    // switch (sets keyboardBusGain to 1.0 or 0 to fade held voices).
+    // Per-source user volume now lives on kbdBusGain / midiBusGain
+    // (see below); _kbdVolume is kept for API back-compat but no longer
+    // affects audio.
+    this._kbdVolume = 1.0;
     this._kbdEnabled = true;
+
+    // Per-source bus gains. Range 0..2 (unity at midpoint, +1..+2 boost
+    // zone on the right half). With droneEnvelope.sustain=1.0 and the
+    // HEADROOM stripped from _getDroneCountScale, the engine now hits
+    // unity loudness at slider 1.0 for both drone and kbd source — so
+    // these bus knobs default to 1.0 and exist for user preference
+    // rather than asymmetry compensation. The MIDI bus stays at 1.0
+    // by default too; MIDI's keyboardEnvelope.sustain=0.4 is left as
+    // a deliberate musical choice (notes decay after attack), and
+    // users who want louder held MIDI lift this knob.
+    this._droneUserGainValue = 1.0;
+    this._kbdUserGainValue = 1.0;
+    this._midiUserGainValue = 1.0;
+    this.droneUserGain = null;
+    this.kbdBusGain = null;
+    this.midiBusGain = null;
+    this._droneBusMuted = false;
+    this._kbdBusMuted = false;
+    this._midiBusMuted = false;
+    this._preMuteDroneBus = this._droneUserGainValue;
+    this._preMuteKbdBus = this._kbdUserGainValue;
+    this._preMuteMidiBus = this._midiUserGainValue;
 
     // Master-bus soft limiter / saturator. Inserted between
     // masterGainNode and the visualizer splitter so peaks past unity
@@ -190,15 +219,19 @@ class AudioEngine {
 
   /**
    * Returns the audio bus the keyboard pool should hang itself off:
-   * the live AudioContext + the keyboardBusGain (which then feeds
-   * masterGainNode). The keyboard pool connects HERE so its volume +
-   * on/off can be controlled independently from the drone pool.
+   * the live AudioContext + the per-source bus gain. Voices route to
+   * `kbdBusGain` (computer keyboard) or `midiBusGain` (MIDI), each of
+   * which then feeds the shared `keyboardBusGain` → fold → master path.
    * Both fields are null before initialize() has been called.
    */
-  getAudioBus() {
+  getAudioBus({ source = 'midi' } = {}) {
+    let bus;
+    if (source === 'kbd') bus = this.kbdBusGain;
+    else if (source === 'midi') bus = this.midiBusGain;
+    else bus = this.keyboardBusGain;
     return {
       audioContext: this.audioContext,
-      masterGainNode: this.keyboardBusGain,
+      masterGainNode: bus || this.keyboardBusGain,
     };
   }
   
@@ -250,6 +283,7 @@ class AudioEngine {
     // them — values from URL state are preserved.
     droneStereo.resizeCurve(this.oscillatorCount);
     keyboardStereo.resizeCurve(this.oscillatorCount);
+    midiStereo.resizeCurve(this.oscillatorCount);
 
     // Pre-size phase arrays; per-osc values are finalized in
     // _createSingleOscillator once audioContext.currentTime is known.
@@ -287,11 +321,23 @@ class AudioEngine {
     this.droneBusGain = this.audioContext.createGain();
     this.droneBusGain.gain.setValueAtTime(1, this.audioContext.currentTime);
 
-    // Keyboard bus — parallel branch. Voice pool routes here instead of
-    // straight to masterGain so the keyboard can have its own volume +
-    // on/off without touching drones.
+    // Keyboard bus — parallel branch. The bus itself only carries the
+    // on/off enable gate (0 or 1). Per-source user volume lives one
+    // step upstream on kbdBusGain / midiBusGain (created below), which
+    // both feed into this sum point.
     this.keyboardBusGain = this.audioContext.createGain();
     this.keyboardBusGain.gain.setValueAtTime(this._kbdEffectiveGain(), this.audioContext.currentTime);
+
+    // Per-source user gain stages. kbd voices land on kbdBusGain, midi
+    // voices on midiBusGain; both feed the shared keyboardBusGain sum
+    // point so they share the keyboard fold/enable path. Default 1.0,
+    // user-adjustable 0..2 from the mixer for testing balance.
+    this.kbdBusGain = this.audioContext.createGain();
+    this.kbdBusGain.gain.setValueAtTime(this._kbdUserGainValue, this.audioContext.currentTime);
+    this.midiBusGain = this.audioContext.createGain();
+    this.midiBusGain.gain.setValueAtTime(this._midiUserGainValue, this.audioContext.currentTime);
+    this.kbdBusGain.connect(this.keyboardBusGain);
+    this.midiBusGain.connect(this.keyboardBusGain);
 
     // Per-pool wavefolder. Inserted right after each pool's bus gain,
     // before master, so it sees the post-bus signal but doesn't
@@ -349,16 +395,22 @@ class AudioEngine {
     this.channelGains[1].connect(this.stereoMerger, 0, 1); // Right
 
 
+    // Per-source drone user gain (post-fold, pre-master). 0..2 from the
+    // mixer; default 1.0 keeps existing balance.
+    this.droneUserGain = this.audioContext.createGain();
+    this.droneUserGain.gain.setValueAtTime(this._droneUserGainValue, this.audioContext.currentTime);
+
     //                                              ┌→ droneFoldDry ─┐
-    // stereoMerger → droneBusGain → droneCountScale ┤                ├→ masterGainNode
+    // stereoMerger → droneBusGain → droneCountScale ┤                ├→ droneUserGain → masterGainNode
     //                                              └→ shaper → wet ─┘
     this.stereoMerger.connect(this.droneBusGain);
     this.droneBusGain.connect(this.droneCountScale);
     this.droneCountScale.connect(this.droneFoldDry);
     this.droneCountScale.connect(this.droneFoldShaper);
     this.droneFoldShaper.connect(this.droneFoldWet);
-    this.droneFoldDry.connect(this.masterGainNode);
-    this.droneFoldWet.connect(this.masterGainNode);
+    this.droneFoldDry.connect(this.droneUserGain);
+    this.droneFoldWet.connect(this.droneUserGain);
+    this.droneUserGain.connect(this.masterGainNode);
 
     //                  ┌→ keyboardFoldDry ─┐
     // keyboardBusGain ─┤                    ├→ masterGainNode
@@ -409,7 +461,7 @@ class AudioEngine {
     
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;
-    console.log('Max output channels available:', this.outputChannelCount);
+    console.debug('Max output channels available:', this.outputChannelCount);
     
     // Create initial oscillators with default routing
     this._createOscillators();
@@ -481,29 +533,15 @@ class AudioEngine {
         if (info.kind === 'mode') {
           // detuneHzAt() returns 0 in lr — recompute offsets first so
           // the primary's freq goes back to nominal when leaving stereo
-          // and back to (offset/2) when entering. Then re-route and
-          // ramp partner gain in/out.
+          // and back to (offset/2) when entering. Then perform a
+          // click-free reroute: every drone gain (primary + partner +
+          // partials) ramps to 0, the disconnect/reconnect happens
+          // during silence, and gains ramp back to their post-switch
+          // targets. Without this, _connectDroneToChannels' abrupt
+          // disconnect() snaps the signal to 0 mid-waveform and
+          // produces an audible click on every L|R ↔ L+R toggle.
           this._applyDroneDetuneCurve();
-          const t = this.audioContext.currentTime;
-          for (let i = 0; i < this.oscillatorCount; i++) {
-            this._connectDroneToChannels(i);
-            if (this.gainNodesR[i]) {
-              this.gainNodesR[i].gain.setTargetAtTime(this._dronePartnerTargetGain(i), t, 0.05);
-            }
-            // Reconnect extras + ramp their partner gain just like the
-            // primary path. Stereo mode flip needs both — the routing
-            // target swaps (lr uses routingMap, stereo always goes L)
-            // and the partner becomes audible/silent.
-            const partials = this.extraPartials[i];
-            if (partials) {
-              for (const p of partials) {
-                this._connectPartialToChannels(i, p);
-                if (p._gainR) {
-                  p._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(p), t, 0.05);
-                }
-              }
-            }
-          }
+          this._clickFreeDroneRouteSwap();
         } else if (info.kind === 'detune' || info.kind === 'curve') {
           this._applyDroneDetuneCurve();
         }
@@ -566,20 +604,22 @@ class AudioEngine {
   }
 
   /**
-   * Count-based clip-prevention attenuator applied at droneCountScale
-   * BEFORE droneFoldShaper. Splits the original combined master gain
-   * so the shaper's input clamp ([-1, 1]) doesn't introduce hard
-   * clipping when many drones sum past unity.
+   * Count-based normalization for the drone bus, applied at
+   * droneCountScale BEFORE droneFoldShaper.
    *
-   * HEADROOM (0..1) is a fixed additional attenuation that keeps the
-   * predicted peak amplitude below the saturator's knee at default
-   * volumes. 0.7 ≈ 3 dB headroom; the user can compensate via master
-   * volume if they want hotter signal back. Without it, 4 drones at
-   * vol 0.5 sum to ~1.4 peak which drives tanh saturation noticeably.
+   * Returns 1.0 (no attenuation). A single drone at slider 1.0 should
+   * land at unity loudness so it matches a kbd voice at peak — and
+   * the user picks how many drones to layer and how loud to set each
+   * slider. Multi-drone summing past unity is caught by the post-
+   * master saturator (musical soft-clip) rather than by silently
+   * attenuating each drone here, which made a single audible drone in
+   * a 4-slot config quieter than a kbd voice for no obvious reason.
+   * The gain stage is kept in the graph (droneCountScale stays
+   * connected) so we can re-introduce normalization later if multi-
+   * drone summing turns out to need it.
    */
   _getDroneCountScale() {
-    const HEADROOM = 0.7;
-    return HEADROOM / Math.sqrt(this.oscillatorCount / 2);
+    return 1.0;
   }
 
   /**
@@ -655,6 +695,9 @@ class AudioEngine {
   setMasterVolume(value) {
     const clamped = Math.max(0, Math.min(1, value));
     this.masterVolumeUser = clamped;
+    // Dragging the master fader auto-unmutes — matches the per-bus
+    // mute behavior so the user doesn't have to click unmute first.
+    this._masterMuted = false;
     // Master node now carries ONLY user volume; count-scale lives on
     // droneCountScale and is updated independently when oscillator
     // count changes.
@@ -694,6 +737,106 @@ class AudioEngine {
     if (!this.isInitialized || !this.keyboardBusGain) return;
     const t = this.audioContext.currentTime;
     this.keyboardBusGain.gain.setTargetAtTime(this._kbdEffectiveGain(), t, 0.05);
+  }
+
+  /**
+   * Per-source test bus gains. Range 0..2 (1.0 = unity), exposed as
+   * sliders in the Mixer so we can dial in relative loudness between
+   * drone / kbd / midi without restructuring the engine. Each setter
+   * ramps via setTargetAtTime to avoid clicks.
+   *
+   * Dragging the slider while the bus is muted unmutes it — matches
+   * the drone mute behavior so the user doesn't have to manually
+   * unmute before adjusting.
+   */
+  setDroneBusGain(value) {
+    const clamped = Math.max(0, Math.min(2, value));
+    this._droneUserGainValue = clamped;
+    this._droneBusMuted = false;
+    if (this.isInitialized && this.droneUserGain) {
+      this.droneUserGain.gain.setTargetAtTime(clamped, this.audioContext.currentTime, 0.03);
+    }
+  }
+  getDroneBusGain() { return this._droneUserGainValue; }
+  isDroneBusMuted() { return this._droneBusMuted; }
+  toggleDroneBusMute() {
+    this._droneBusMuted = !this._droneBusMuted;
+    if (this.isInitialized && this.droneUserGain) {
+      const target = this._droneBusMuted ? 0 : this._droneUserGainValue;
+      this.droneUserGain.gain.setTargetAtTime(target, this.audioContext.currentTime, 0.03);
+    }
+  }
+
+  setKbdBusGain(value) {
+    const clamped = Math.max(0, Math.min(2, value));
+    this._kbdUserGainValue = clamped;
+    this._kbdBusMuted = false;
+    if (this.isInitialized && this.kbdBusGain) {
+      this.kbdBusGain.gain.setTargetAtTime(clamped, this.audioContext.currentTime, 0.03);
+    }
+  }
+  getKbdBusGain() { return this._kbdUserGainValue; }
+  isKbdBusMuted() { return this._kbdBusMuted; }
+  toggleKbdBusMute() {
+    this._kbdBusMuted = !this._kbdBusMuted;
+    if (this.isInitialized && this.kbdBusGain) {
+      const target = this._kbdBusMuted ? 0 : this._kbdUserGainValue;
+      this.kbdBusGain.gain.setTargetAtTime(target, this.audioContext.currentTime, 0.03);
+    }
+  }
+
+  setMidiBusGain(value) {
+    const clamped = Math.max(0, Math.min(2, value));
+    this._midiUserGainValue = clamped;
+    this._midiBusMuted = false;
+    if (this.isInitialized && this.midiBusGain) {
+      this.midiBusGain.gain.setTargetAtTime(clamped, this.audioContext.currentTime, 0.03);
+    }
+  }
+  getMidiBusGain() { return this._midiUserGainValue; }
+  isMidiBusMuted() { return this._midiBusMuted; }
+  toggleMidiBusMute() {
+    this._midiBusMuted = !this._midiBusMuted;
+    if (this.isInitialized && this.midiBusGain) {
+      const target = this._midiBusMuted ? 0 : this._midiUserGainValue;
+      this.midiBusGain.gain.setTargetAtTime(target, this.audioContext.currentTime, 0.03);
+    }
+  }
+
+  /** Master mute toggle. Mirrors setMasterVolume's existing 0..1 range
+   *  but ramps to 0 (mute) or back to the stored masterVolumeUser
+   *  (unmute) without overwriting the user's set value. */
+  isMasterMuted() { return this._masterMuted; }
+  toggleMasterMute() {
+    this._masterMuted = !this._masterMuted;
+    if (this.isInitialized && this.masterGainNode) {
+      const target = this._masterMuted ? 0 : this.masterVolumeUser;
+      this.masterGainNode.gain.setTargetAtTime(target, this.audioContext.currentTime, 0.05);
+    }
+  }
+
+  /**
+   * Read instantaneous post-master peak across L+R. Reads the existing
+   * analyserNode1/2 time-domain buffers (already wired post-saturation)
+   * and returns max(|sample|) on each channel plus the overall peak.
+   * Returns zeros until the audio graph is initialized.
+   */
+  getMasterPeakLevels() {
+    if (!this.isInitialized || !this.analyserNode1 || !this.analyserNode2) {
+      return { peakL: 0, peakR: 0, peak: 0 };
+    }
+    this.analyserNode1.getFloatTimeDomainData(this.timeData1);
+    this.analyserNode2.getFloatTimeDomainData(this.timeData2);
+    let pL = 0;
+    let pR = 0;
+    const n = this.timeData1.length;
+    for (let i = 0; i < n; i++) {
+      const a = Math.abs(this.timeData1[i]);
+      const b = Math.abs(this.timeData2[i]);
+      if (a > pL) pL = a;
+      if (b > pR) pR = b;
+    }
+    return { peakL: pL, peakR: pR, peak: Math.max(pL, pR) };
   }
 
   /**
@@ -885,14 +1028,25 @@ class AudioEngine {
 
   /**
    * Equal-loudness compensation when switching from LR mode (signal in
-   * one channel) to stereo mode (same level in BOTH channels). Stereo
-   * perceived loudness ≈ sqrt(L² + R²); with both channels at amp the
-   * total reads √2 louder than lr. Scaling each side by 1/√2 keeps the
-   * perceived loudness equal across modes. Applied at every drone gain
-   * target site (primary, partner, partials).
+   * one channel) to stereo mode (same level in BOTH channels).
+   *
+   * The textbook -3 dB (1/√2) compensation is correct for uncorrelated
+   * signals, but stereo drones run two slightly-detuned oscillators
+   * that are PARTIALLY correlated — and listener binaural integration
+   * makes centered/spread continuous tones perceptually louder than
+   * the equal-power math predicts. Empirically, 1/√2 leaves stereo
+   * audibly louder than lr at matched slider settings; 0.5 (-6 dB,
+   * equal-amplitude pan law) brings them into rough parity for the
+   * drone case. Applied at every drone gain target site (primary,
+   * partner, partials).
+   *
+   * Kbd voices have their own stereo compensation inline in
+   * KeyboardVoiceManager.noteOn — see the `peak = isStereo ? ...`
+   * line. Kept separate because percussive/transient voices align
+   * better with the standard -3 dB rule than continuous drones do.
    */
   _stereoEqualLoudnessScale() {
-    return droneStereo.mode === 'stereo' ? 1 / Math.sqrt(2) : 1;
+    return droneStereo.mode === 'stereo' ? 0.5 : 1;
   }
 
   /**
@@ -1097,6 +1251,81 @@ class AudioEngine {
   }
 
   /**
+   * Click-free drone route-swap for an L|R ↔ L+R mode change.
+   *
+   * _connectDroneToChannels' disconnect()/connect() pair is synchronous
+   * and abrupt: at audible gain, snapping the signal off (even for a
+   * single sample) reads as a click. Solution: fade every drone gain
+   * (primary + partner + partials, both channels) down to 0, schedule
+   * the routing swap to happen after the audio thread has reached
+   * silence, then fade back to the post-switch target. Two 25 ms
+   * ramps + a small JS handoff keeps the total transition under
+   * ~70 ms — well under perceptual threshold — and the silent reroute
+   * eliminates the click entirely.
+   */
+  _clickFreeDroneRouteSwap() {
+    if (!this.audioContext) return;
+    const RAMP_S = 0.025;
+    const ctx = this.audioContext;
+    const t = ctx.currentTime;
+
+    // Collect every drone-side gain node with a getter for its
+    // post-switch target. The target is read AFTER the mode flip
+    // (which has already happened by the time this runs), so the
+    // values reflect the new routing and stereo-loudness scaling.
+    const gains = [];
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      const slot = i;
+      if (this.gainNodes[i]) {
+        gains.push({ node: this.gainNodes[i], target: () => this._droneTargetGain(slot) });
+      }
+      if (this.gainNodesR[i]) {
+        gains.push({ node: this.gainNodesR[i], target: () => this._dronePartnerTargetGain(slot) });
+      }
+      const partials = this.extraPartials[i] || [];
+      for (const p of partials) {
+        if (p._gain) {
+          gains.push({ node: p._gain, target: () => this._partialTargetGain(p) });
+        }
+        if (p._gainR) {
+          gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p) });
+        }
+      }
+    }
+
+    // Fade everyone to 0 over the ramp window.
+    for (const { node } of gains) {
+      node.gain.cancelScheduledValues(t);
+      node.gain.setValueAtTime(node.gain.value, t);
+      node.gain.linearRampToValueAtTime(0, t + RAMP_S);
+    }
+
+    // After the fade-down completes on the audio thread, do the
+    // disconnect/reconnect (silent) and ramp back to new targets.
+    // setTimeout is JS-timed so it may fire slightly late, but that
+    // just extends silence — the audio is guaranteed at 0 by the
+    // linear ramp on the audio clock, so the reroute is click-free
+    // either way.
+    setTimeout(() => {
+      if (!this.audioContext) return;
+      const tAfter = this.audioContext.currentTime;
+      for (let i = 0; i < this.oscillatorCount; i++) {
+        this._connectDroneToChannels(i);
+        const partials = this.extraPartials[i] || [];
+        for (const p of partials) {
+          this._connectPartialToChannels(i, p);
+        }
+      }
+      for (const { node, target } of gains) {
+        const t1 = target();
+        node.gain.cancelScheduledValues(tAfter);
+        node.gain.setValueAtTime(0, tAfter);
+        node.gain.linearRampToValueAtTime(t1, tAfter + RAMP_S);
+      }
+    }, RAMP_S * 1000 + 5);
+  }
+
+  /**
    * Recompute every drone's detune offset from droneStereo.detuneCurve
    * × droneStereo.detuneHz and ramp each oscillator to its new
    * frequency. Called when either the master Hz scale or the curve
@@ -1146,6 +1375,7 @@ class AudioEngine {
         // so adding a drone doesn't surprise-detune anything.
         droneStereo.resizeCurve(newCount);
         keyboardStereo.resizeCurve(newCount);
+        midiStereo.resizeCurve(newCount);
 
         for (let i = oldCount; i < newCount; i++) {
           // Restore the most-recently-removed slot if available; otherwise
@@ -1245,6 +1475,7 @@ class AudioEngine {
         // Truncate the curves to match the new slot count.
         droneStereo.resizeCurve(newCount);
         keyboardStereo.resizeCurve(newCount);
+        midiStereo.resizeCurve(newCount);
       }
 
       // Update master gain scaling to prevent clipping
@@ -1355,6 +1586,7 @@ class AudioEngine {
       // Same with the per-pool detune curves.
       droneStereo.removeCurveAt(index);
       keyboardStereo.removeCurveAt(index);
+      midiStereo.removeCurveAt(index);
 
       this.oscillatorCount -= 1;
 
@@ -1393,6 +1625,7 @@ class AudioEngine {
       // a per-slot detune for the new node.
       droneStereo.resizeCurve(this.oscillatorCount);
       keyboardStereo.resizeCurve(this.oscillatorCount);
+      midiStereo.resizeCurve(this.oscillatorCount);
 
       this._createSingleOscillator(newIndex, true /* withFade */);
       this._updateMasterGainScaling();
@@ -1902,94 +2135,138 @@ class AudioEngine {
   }
 
   /**
-   * 7-limit just-intonation ratios within one octave, in ascending order.
-   * Extends the classical 5-limit major scale (the iOS port) with the
-   * "pleasing ratios outside Western scales": subminor/supermajor 3rds,
-   * septimal tritone, harmonic 7th, minor-key intervals, and a diatonic
-   * semitone. 15 ratios across the octave → ~60-90¢ decision boundaries in
-   * log-space nearest-neighbor, so Tune rarely yanks an osc far from where
-   * it already lived.
-   */
-  static JUST_RATIOS = [
-    1.0,          // 1/1    0¢    unison
-    16.0 / 15.0,  //        112¢  diatonic semitone (minor 2nd)
-    9.0 / 8.0,    //        204¢  whole tone (major 2nd)
-    7.0 / 6.0,    //        267¢  septimal subminor 3rd
-    6.0 / 5.0,    //        316¢  minor 3rd
-    5.0 / 4.0,    //        386¢  major 3rd
-    9.0 / 7.0,    //        435¢  septimal supermajor 3rd
-    4.0 / 3.0,    //        498¢  perfect 4th
-    7.0 / 5.0,    //        583¢  septimal tritone
-    3.0 / 2.0,    //        702¢  perfect 5th
-    8.0 / 5.0,    //        814¢  minor 6th
-    5.0 / 3.0,    //        884¢  major 6th
-    7.0 / 4.0,    //        969¢  harmonic 7th (barbershop / blues 7th)
-    9.0 / 5.0,    //        1018¢ minor 7th
-    15.0 / 8.0,   //        1088¢ major 7th
-    2.0,          // 2/1    1200¢ octave — same pitch as 1/1 of the next
-                  //        octave up; included so a near-octave osc (e.g.
-                  //        ratio 1.985) rounds up to 2/1 instead of down to
-                  //        15/8 (floor-octave trap otherwise).
-  ];
-
-  /**
    * Compute per-oscillator target frequencies that snap each non-fundamental
-   * oscillator to the nearest 7-limit JI ratio relative to the lowest un-muted
-   * oscillator. Octave-preserving and log-space nearest-neighbor. Pure
+   * oscillator to the nearest candidate in the chosen tuning system, relative
+   * to the anchor slot (or lowest un-muted osc as fallback). Octave-preserving
+   * for octave-reducing systems; absolute for the harmonic series. Pure
    * function — returns targets without touching audio state.
    *
    * @param {number} varianceHz  Random ±Hz detune added per osc after snapping
    *                             (matches iOS alignVariance). 0 = pure JI.
    */
-  computeJustIntonationTargets(varianceHz = 0) {
+  computeJustIntonationTargets(varianceHz = 0, opts = {}) {
     const out = this.frequencyValues.slice();
-    const ratios = AudioEngine.JUST_RATIOS;
-    // Fundamental = lowest un-muted oscillator by frequency. Fall back to the
-    // lowest overall if every osc is muted so the button still does something.
+    const { systemKey = DEFAULT_SYSTEM, anchorSlot = null } = opts;
+    const sys = getSystem(systemKey);
+    const candidates = getCandidates(systemKey);
+    if (!candidates || candidates.length === 0) return out;
+
+    // Fundamental: explicit anchorSlot if provided (FrequencyManager's
+    // 1/1 reference). Otherwise fall back to lowest un-muted, then
+    // lowest overall — keeps the button useful when called without
+    // anchor context (e.g. legacy code paths).
     let fundamentalIdx = -1;
-    let fundamentalFreq = Infinity;
-    for (let i = 0; i < this.oscillatorCount; i++) {
-      if (this.mutedStates[i]) continue;
-      if (this.frequencyValues[i] < fundamentalFreq) {
-        fundamentalFreq = this.frequencyValues[i];
-        fundamentalIdx = i;
-      }
-    }
-    if (fundamentalIdx === -1) {
+    if (anchorSlot != null && anchorSlot >= 0 && anchorSlot < this.oscillatorCount
+        && this.frequencyValues[anchorSlot] > 0 && !this.mutedStates[anchorSlot]) {
+      fundamentalIdx = anchorSlot;
+    } else {
+      let lowest = Infinity;
       for (let i = 0; i < this.oscillatorCount; i++) {
-        if (this.frequencyValues[i] < fundamentalFreq) {
-          fundamentalFreq = this.frequencyValues[i];
-          fundamentalIdx = i;
+        if (this.mutedStates[i]) continue;
+        if (this.frequencyValues[i] < lowest) { lowest = this.frequencyValues[i]; fundamentalIdx = i; }
+      }
+      if (fundamentalIdx === -1) {
+        for (let i = 0; i < this.oscillatorCount; i++) {
+          if (this.frequencyValues[i] < lowest) { lowest = this.frequencyValues[i]; fundamentalIdx = i; }
         }
       }
     }
-    if (fundamentalIdx === -1 || fundamentalFreq <= 0) return out;
+    const fundamentalFreq = fundamentalIdx >= 0 ? this.frequencyValues[fundamentalIdx] : 0;
+    if (!(fundamentalFreq > 0)) return out;
 
-    // Simple nearest-neighbor: each non-root osc snaps to whichever ratio in
-    // the table is closest in log space, at its current octave. Duplicate
-    // collapses (two oscs landing on the same pitch) are allowed — if the
-    // inputs were already near each other, stacking is the natural result.
     for (let i = 0; i < this.oscillatorCount; i++) {
       if (i === fundamentalIdx) continue;
       const f = this.frequencyValues[i];
       if (f <= 0) continue;
-      const ratio = f / fundamentalFreq;
-      const octave = Math.floor(Math.log2(ratio));
-      const normalized = ratio / Math.pow(2, octave); // [1, 2)
-      const logNorm = Math.log2(normalized);
+      const inputCents = 1200 * Math.log2(f / fundamentalFreq);
 
-      let bestRatio = ratios[0];
-      let bestDist = Math.abs(Math.log2(ratios[0]) - logNorm);
-      for (let j = 1; j < ratios.length; j++) {
-        const d = Math.abs(Math.log2(ratios[j]) - logNorm);
-        if (d < bestDist) { bestDist = d; bestRatio = ratios[j]; }
+      let targetCents;
+      if (sys.octaveReduced) {
+        // Nearest candidate within the current octave, preserving the
+        // octave the osc lives in. Duplicate collapses (two oscs on the
+        // same pitch) are allowed — if the inputs were already near
+        // each other, stacking is the natural result.
+        const octave = Math.floor(inputCents / 1200);
+        const reducedCents = inputCents - octave * 1200;
+        let bestCents = candidates[0].cents;
+        let bestDist = Math.abs(bestCents - reducedCents);
+        for (let j = 1; j < candidates.length; j++) {
+          const d = Math.abs(candidates[j].cents - reducedCents);
+          if (d < bestDist) { bestDist = d; bestCents = candidates[j].cents; }
+        }
+        const wrapDist = Math.abs(1200 - reducedCents);
+        let octAdj = 0;
+        if (wrapDist < bestDist) { bestCents = 0; octAdj = 1; }
+        targetCents = bestCents + (octave + octAdj) * 1200;
+      } else {
+        // Harmonic series — snap to nearest absolute candidate, no
+        // octave shift.
+        let bestCents = candidates[0].cents;
+        let bestDist = Math.abs(bestCents - inputCents);
+        for (let j = 1; j < candidates.length; j++) {
+          const d = Math.abs(candidates[j].cents - inputCents);
+          if (d < bestDist) { bestDist = d; bestCents = candidates[j].cents; }
+        }
+        targetCents = bestCents;
       }
 
-      let target = fundamentalFreq * bestRatio * Math.pow(2, octave);
-      if (varianceHz > 0) {
-        target += (Math.random() * 2 - 1) * varianceHz;
-      }
+      let target = fundamentalFreq * Math.pow(2, targetCents / 1200);
+      if (varianceHz > 0) target += (Math.random() * 2 - 1) * varianceHz;
       out[i] = Math.max(0.001, Math.min(20000, target));
+    }
+    return out;
+  }
+
+  /**
+   * Compute per-oscillator target frequencies that lay out the active
+   * voices as a *canonical scale* in the chosen tuning system. The
+   * anchor slot keeps its Hz (= 1/1). Other un-muted slots get the
+   * canonical scale's 2nd, 3rd, … degree in slot-index order. Muted
+   * slots are skipped (their current Hz is preserved). Voices past
+   * the scale length octave-extend for octave-reducing systems and
+   * climb further into the overtone series for the harmonic system.
+   *
+   * Used by the Load button — distinct from Align: Align preserves
+   * the rough shape of the current tuning by snapping each voice to
+   * its *nearest* candidate; Load rewrites the shape to the system's
+   * canonical "this is what this system sounds like" scale.
+   *
+   * @param {Object} opts
+   * @param {string} opts.systemKey   Tuning system key (e.g. '5-limit')
+   * @param {number} opts.anchorSlot  Slot whose Hz is treated as 1/1
+   */
+  computeLoadTargets(opts = {}) {
+    const out = this.frequencyValues.slice();
+    const { systemKey = DEFAULT_SYSTEM, anchorSlot = 0 } = opts;
+    const sys = getSystem(systemKey);
+    if (!sys || !sys.canonical || sys.canonical.length === 0) return out;
+
+    const anchorHz = (anchorSlot >= 0 && anchorSlot < this.oscillatorCount)
+      ? this.frequencyValues[anchorSlot]
+      : 0;
+    if (!(anchorHz > 0)) return out;
+
+    // Build the ordered list of un-muted slots, anchor first. Anchor
+    // gets degree 0 (= 1/1) so its Hz is preserved; the rest receive
+    // consecutive scale degrees in slot-index order.
+    const orderedSlots = [anchorSlot];
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      if (i === anchorSlot) continue;
+      if (this.mutedStates[i]) continue;
+      orderedSlots.push(i);
+    }
+
+    for (let degreeIdx = 0; degreeIdx < orderedSlots.length; degreeIdx++) {
+      const slot = orderedSlots[degreeIdx];
+      if (degreeIdx === 0) {
+        // Anchor stays exactly where it is — this is "1/1" by definition.
+        out[slot] = anchorHz;
+        continue;
+      }
+      const ratio = canonicalRatioForVoice(systemKey, degreeIdx);
+      if (ratio == null) continue;
+      const target = anchorHz * ratio;
+      out[slot] = Math.max(0.001, Math.min(20000, target));
     }
     return out;
   }

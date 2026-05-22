@@ -121,10 +121,22 @@ class Envelope {
 // Per-pool defaults: drones lean toward longer A/R for swell-y character;
 // keyboard leans snappier for playability. Both user-tunable from the
 // Settings panel.
+//
+// Drones don't actually have a meaningful envelope segment — they run
+// continuously — so `sustain` here is just the steady-state level
+// multiplier applied at every drone gain target site (_droneTargetGain
+// et al). Holding it at 1.0 means the slider's 0..1 value lands
+// directly at the per-drone gain node; multi-drone summing is handled
+// downstream by droneCountScale, and absolute level is bounded by the
+// master + post-master saturator. Previously 0.7 to bake in headroom,
+// but that meant "slider 1.0" never reached unity loudness — the per-
+// source bus knobs in the Mixer then had to compensate, which was a
+// double accounting of headroom. The fair geometry is sustain=1.0
+// here, no HEADROOM in droneCountScale, master fader for level.
 export const droneEnvelope = new Envelope({
   attack: 0.3,
   decay: 0.2,
-  sustain: 0.7,
+  sustain: 1.0,
   release: 0.5,
 });
 // MIDI-keyboard envelope — full ADSR, velocity-sensitive sustain.

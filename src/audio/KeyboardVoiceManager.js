@@ -26,7 +26,7 @@ import audioEngine from './AudioEngine';
 import tuning from './Tuning';
 import { keyboardEnvelope, computerKbdEnvelope } from './Envelope';
 import { keyboardWave } from './Wave';
-import { keyboardStereo } from './StereoMode';
+import { keyboardStereo, midiStereo, stereoForSource } from './StereoMode';
 
 // Pick the envelope that owns this source's attack/release shape. The
 // kbd source runs AR-only off its own envelope so it doesn't share
@@ -106,9 +106,15 @@ class KeyboardVoiceManager {
   //   - detune master / curve change: voices retune to the new
   //     curve[slot] × detuneHz. Live editing of the curve propagates
   //     to held voices so the user hears the shape immediately.
+  //
+  // We subscribe to BOTH the kbd-source and midi-source stereo
+  // instances. Each handler runs the same global resync (repan +
+  // retune all voices) — since each voice picks its own source's
+  // stereo controller inside those functions, MIDI voices ignore
+  // keyboardStereo changes and vice versa.
   _ensureWidthSubscribed() {
     if (this._widthUnsubscribe) return;
-    this._widthUnsubscribe = keyboardStereo.onChange((_inst, info) => {
+    const handle = (_inst, info) => {
       if (!info) return;
       if (info.kind === 'mode') {
         this._repanAllVoices();
@@ -116,7 +122,10 @@ class KeyboardVoiceManager {
       } else if (info.kind === 'detune' || info.kind === 'curve') {
         this._reapplyVoiceDetune();
       }
-    });
+    };
+    const unsubKbd = keyboardStereo.onChange(handle);
+    const unsubMidi = midiStereo.onChange(handle);
+    this._widthUnsubscribe = () => { unsubKbd(); unsubMidi(); };
   }
 
   /**
@@ -213,7 +222,7 @@ class KeyboardVoiceManager {
     if (!ctx) return;
     const now = ctx.currentTime;
     for (const voice of this.voices) {
-      const newDetune = keyboardStereo.detuneHzAt(voice.slot);
+      const newDetune = stereoForSource(voice._source).detuneHzAt(voice.slot);
       voice.detuneHz = newDetune;
       const raw = tuning.pitchForSlotAndOctave(voice.slot, voice.octave);
       if (raw === null) continue;
@@ -265,8 +274,9 @@ class KeyboardVoiceManager {
     for (const v of this.voices) {
       // Stereo voices use a ChannelMerger and have no panner — their
       // L/R split is baked into the topology. Only single-osc (lr)
-      // voices have a panner to retarget.
-      const target = keyboardStereo.mode === 'stereo'
+      // voices have a panner to retarget. Per-source stereo lookup so
+      // a kbd-mode flip doesn't repan held MIDI voices and vice versa.
+      const target = stereoForSource(v._source).mode === 'stereo'
         ? 0
         : this._panForDegree(v.degree);
       if (v.panner) {
@@ -472,7 +482,7 @@ class KeyboardVoiceManager {
       }
     }
 
-    const { audioContext: ctx, masterGainNode: dest } = audioEngine.getAudioBus();
+    const { audioContext: ctx, masterGainNode: dest } = audioEngine.getAudioBus({ source });
     if (!ctx || !dest) return null;
 
     const dao = tuning.degreeAndOctaveForMidi(midiNote);
@@ -503,11 +513,14 @@ class KeyboardVoiceManager {
       this._stealVoice();
     }
 
-    // Detune from keyboardStereo's curve — deterministic per slot. In
-    // stereo mode this becomes the L↑/R↓ spread (each side ±detune/2).
+    // Detune from this source's stereo curve — deterministic per slot.
+    // In stereo mode this becomes the L↑/R↓ spread (each side ±detune/2).
     // In lr mode the curve returns 0, so the voice plays clean tuning.
-    const detuneHz = keyboardStereo.detuneHzAt(slot);
-    const isStereo = keyboardStereo.mode === 'stereo';
+    // kbd and midi sources have their own StereoMode instances so the
+    // mixer can flip their pan modes independently.
+    const stereo = stereoForSource(source);
+    const detuneHz = stereo.detuneHzAt(slot);
+    const isStereo = stereo.mode === 'stereo';
 
     // Velocity → envelope peak. Captured on the voice so a later
     // sustain change can retarget held notes to peak·newSustain.

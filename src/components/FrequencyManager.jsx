@@ -6,20 +6,75 @@ import {
   extendOctaves,
   offsetToOpacity,
   EXACT_CENTS_TOLERANCE,
+  TUNING_SYSTEMS,
+  SUPPORTED_SYSTEMS,
+  getSystem,
 } from '../audio/jiRatios';
 import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const LETTER_TO_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 
 function freqToNote(freq) {
-  if (!Number.isFinite(freq) || freq <= 0) return { note: '--', octave: 0, cents: 0 };
+  if (!Number.isFinite(freq) || freq <= 0) return { note: '--', octave: 0, cents: 0, midi: 0 };
   const semitonesFromA4 = 12 * Math.log2(freq / 440);
   const midi = Math.round(69 + semitonesFromA4);
   const cents = Math.round((semitonesFromA4 - (midi - 69)) * 100);
   const idx = ((midi % 12) + 12) % 12;
   const octave = Math.floor(midi / 12) - 1;
-  return { note: NOTE_NAMES[idx], octave, cents };
+  return { note: NOTE_NAMES[idx], octave, cents, midi };
+}
+
+// Exact (unrounded) cents-off from the nearest 12-TET note. Used by
+// commit handlers so a "preserve cents" round-trip through the note
+// column doesn't accumulate rounding error.
+function freqToMidiAndCents(freq) {
+  if (!Number.isFinite(freq) || freq <= 0) return { midi: 0, centsExact: 0 };
+  const semitonesFromA4 = 12 * Math.log2(freq / 440);
+  const midi = Math.round(69 + semitonesFromA4);
+  const centsExact = (semitonesFromA4 - (midi - 69)) * 100;
+  return { midi, centsExact };
+}
+
+function midiToFreq(midi) {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// Parse note names: "C4", "C#4", "Db3", "Bb-1", "b5" (lowercase ok).
+// Returns MIDI number or null. Rejects MIDI < 0 or > 127.
+function parseNoteName(input) {
+  const s = (input || '').trim();
+  if (!s) return null;
+  const m = s.match(/^([A-Ga-g])([#b])?(-?\d+)$/);
+  if (!m) return null;
+  const letter = m[1].toUpperCase();
+  const acc = m[2];
+  const octave = parseInt(m[3], 10);
+  let pc = LETTER_TO_PC[letter];
+  if (acc === '#') pc += 1;
+  else if (acc === 'b') pc -= 1;
+  const midi = 12 * (octave + 1) + pc;
+  if (midi < 0 || midi > 127) return null;
+  return midi;
+}
+
+// Parse a cents value like "12", "+12", "-30.5", "100c", "100¢".
+// Returns the signed number or null. No range clamp here — the commit
+// handler decides what to do with values outside ±50.
+function parseCentsValue(input) {
+  const s = (input || '').trim();
+  if (!s) return null;
+  const m = s.match(/^([+-]?\d+(?:\.\d+)?)\s*(c|¢|cents?)?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatCentsValue(cents) {
+  if (!Number.isFinite(cents)) return '';
+  if (cents === 0) return '0';
+  return cents > 0 ? `+${cents}` : `${cents}`;
 }
 
 function formatHz(hz) {
@@ -125,25 +180,43 @@ function FrequencyRow({ slot, oscillatorCount }) {
     : 0;
   const isAnchor = frequencyManager.isAnchor(slot);
   const lockedRatio = frequencyManager.getRatio(slot); // {n,d} or null
-  const limit = frequencyManager.limit;
+  const tuningSystem = frequencyManager.tuningSystem;
   const color = palette.oscColor(slot, oscillatorCount);
 
   // The displayed ratio is either the locked one (if present), or the
-  // nearest candidate in the current limit set. The anchor is always
-  // exactly 1/1.
+  // nearest candidate in the current tuning system. The anchor is
+  // always exactly 1/1. `label` is what the Ratio column renders —
+  // a fraction for rational systems, "100¢" for 12-TET, "n" for the
+  // harmonic series.
   let ratioInfo = null;
   if (isAnchor) {
-    ratioInfo = { n: 1, d: 1, offsetCents: 0, halfGapPos: 50, halfGapNeg: 50 };
+    ratioInfo = {
+      n: 1, d: 1, label: '1/1',
+      offsetCents: 0, halfGapPos: 50, halfGapNeg: 50,
+      kind: 'ji',
+    };
   } else if (anchorHz > 0 && hz > 0) {
-    const nearest = nearestRatio(hz / anchorHz, limit);
+    const nearest = nearestRatio(hz / anchorHz, tuningSystem);
     if (nearest) {
-      const ext = extendOctaves(nearest.n, nearest.d, nearest.octave);
+      // Rational systems extend the (n, d) into the appropriate octave
+      // for display. TET candidates have no n/d — use the label as-is.
+      let displayN = nearest.n;
+      let displayD = nearest.d;
+      let label = nearest.label;
+      if (displayN != null && displayD != null) {
+        const ext = extendOctaves(displayN, displayD, nearest.octave);
+        displayN = ext.n;
+        displayD = ext.d;
+        label = displayD === 1 ? `${displayN}` : `${displayN}/${displayD}`;
+      }
       ratioInfo = {
-        n: ext.n,
-        d: ext.d,
+        n: displayN,
+        d: displayD,
+        label,
         offsetCents: nearest.offsetCents,
         halfGapPos: nearest.halfGapPos,
         halfGapNeg: nearest.halfGapNeg,
+        kind: nearest.kind,
       };
     }
   }
@@ -167,12 +240,37 @@ function FrequencyRow({ slot, oscillatorCount }) {
   }
 
   const note = freqToNote(hz);
+  const noteLabel = `${note.note}${note.octave}`;
   const centsLabel = note.cents === 0
     ? '0¢'
     : `${note.cents > 0 ? '+' : ''}${note.cents}¢`;
 
-  const handleAnchorClick = useCallback(() => {
+  // Marker click toggles mute (mirrors the drone-tray squares). Root
+  // reassignment moved to the inline radio in column 2.
+  const isMuted = audioEngine.initialized
+    ? !!(audioEngine.mutedStates && audioEngine.mutedStates[slot])
+    : false;
+  const handleMarkerClick = useCallback(() => {
+    if (audioEngine.initialized && audioEngine.toggleMute) {
+      audioEngine.toggleMute(slot);
+    }
+  }, [slot]);
+
+  // Root radio click — makes this slot the 1/1 reference. Re-uses the
+  // FrequencyManager's existing anchor machinery; locked ratios that
+  // no longer hold against the new anchor get cleared by the manager.
+  const handleRootClick = useCallback(() => {
     frequencyManager.setAnchorSlot(slot);
+  }, [slot]);
+
+  // Octave transpose helpers — only rendered on the root row, where
+  // they replace the candidate-step rocker. Routes through setRootHz
+  // which scales every slot proportionally (locks honored).
+  const handleOctave = useCallback((factor) => {
+    if (!audioEngine.initialized) return;
+    const cur = audioEngine.getFrequency(slot);
+    if (!Number.isFinite(cur) || cur <= 0) return;
+    frequencyManager.setRootHz(cur * factor);
   }, [slot]);
 
   const handleHzCommit = useCallback((hz) => {
@@ -183,24 +281,60 @@ function FrequencyRow({ slot, oscillatorCount }) {
     frequencyManager.setSlotRatio(slot, n, d);
   }, [slot]);
 
-  const handleOctave = useCallback((factor) => {
+  const handleStep = useCallback((direction) => {
+    frequencyManager.stepSlotRatio(slot, direction);
+  }, [slot]);
+
+  // Note column commit: transpose this slot to the typed note, keeping
+  // the current cents deviation so users typing a note name don't lose
+  // a microtonal offset they set earlier. For the anchor row this routes
+  // through setSlotHz → setRootHz, transposing every slot proportionally.
+  const handleNoteCommit = useCallback((midi) => {
     if (!audioEngine.initialized) return;
     const cur = audioEngine.getFrequency(slot);
-    if (!Number.isFinite(cur) || cur <= 0) return;
-    const next = Math.max(0.1, Math.min(20000, cur * factor));
-    audioEngine.setFrequency(slot, next);
+    if (!(cur > 0)) return;
+    const { centsExact } = freqToMidiAndCents(cur);
+    const newHz = midiToFreq(midi + centsExact / 100);
+    frequencyManager.setSlotHz(slot, newHz);
+  }, [slot]);
+
+  // Cents column commit: keep the currently-displayed note, set the
+  // deviation to the typed cents. Typing values outside ±50 are
+  // accepted — they just re-render as a different note + smaller cents.
+  const handleCentsCommit = useCallback((cents) => {
+    if (!audioEngine.initialized) return;
+    const cur = audioEngine.getFrequency(slot);
+    if (!(cur > 0)) return;
+    const { midi } = freqToMidiAndCents(cur);
+    const newHz = midiToFreq(midi + cents / 100);
+    frequencyManager.setSlotHz(slot, newHz);
   }, [slot]);
 
   return (
     <div className="freq-rail-row" style={{ '--osc-color': color }}>
+      {/* Marker square — toggles mute. Filled (drone-tray "on" style)
+          when this slot is audible, outlined when muted. */}
       <button
         type="button"
-        className={`freq-rail-marker${isAnchor ? ' anchor' : ''}`}
-        onClick={handleAnchorClick}
-        title={isAnchor ? 'Anchor slot (1/1)' : `Set slot ${slot + 1} as anchor`}
-        aria-pressed={isAnchor}
+        className={`freq-rail-marker${!isMuted ? ' anchor' : ''}`}
+        style={{ '--cell-color': color }}
+        onClick={handleMarkerClick}
+        title={isMuted ? `Unmute slot ${slot + 1}` : `Mute slot ${slot + 1}`}
+        aria-pressed={!isMuted}
       >
-        D{slot + 1}
+        {slot + 1}
+      </button>
+      {/* Root radio — single-select across all rows. Filled circle
+          means this slot is the 1/1. Click to reassign the root. */}
+      <button
+        type="button"
+        className={`freq-rail-root-radio${isAnchor ? ' on' : ''}`}
+        onClick={handleRootClick}
+        title={isAnchor ? 'Root (1/1)' : `Set slot ${slot + 1} as root`}
+        aria-pressed={isAnchor}
+        aria-label={`Root selector for slot ${slot + 1}`}
+      >
+        <span className="freq-rail-root-radio-dot" aria-hidden="true" />
       </button>
       <CellInput
         value={hz}
@@ -211,8 +345,8 @@ function FrequencyRow({ slot, oscillatorCount }) {
         title="Frequency in Hz"
       />
       <CellInput
-        value={ratioInfo ? { n: ratioInfo.n, d: ratioInfo.d } : null}
-        format={(r) => (r && r.d === 1 ? `${r.n}` : r ? `${r.n}/${r.d}` : '')}
+        value={ratioInfo}
+        format={(r) => (r ? r.label : '')}
         parse={parseRatio}
         onCommit={handleRatioCommit}
         className={`freq-rail-ratio${ratioExact ? ' exact' : ''}${lockedRatio ? ' locked' : ''}`}
@@ -221,86 +355,78 @@ function FrequencyRow({ slot, oscillatorCount }) {
           ? 'Anchor is always 1/1'
           : lockedRatio
             ? 'Locked ratio'
-            : 'Nearest JI ratio (type to lock)'}
+            : ratioInfo && ratioInfo.kind === 'tet'
+              ? 'Nearest 12-TET note — type a fraction to lock to JI'
+              : ratioInfo && ratioInfo.kind === 'harmonic'
+                ? 'Nearest harmonic — type a fraction to lock'
+                : 'Nearest ratio (type to lock)'}
         disabled={isAnchor}
       />
-      <div
-        className="freq-rail-note"
-        title={`${note.note}${note.octave} ${centsLabel}`}
-      >
-        <span className="freq-rail-note-name">{note.note}{note.octave}</span>
-        <span className="freq-rail-note-cents">{centsLabel}</span>
-      </div>
-      <button
-        type="button"
-        className="freq-rail-octave-btn"
-        onClick={() => handleOctave(0.5)}
-        title="Down an octave"
-        aria-label={`Octave down slot ${slot + 1}`}
-      >↓</button>
-      <button
-        type="button"
-        className="freq-rail-octave-btn"
-        onClick={() => handleOctave(2)}
-        title="Up an octave"
-        aria-label={`Octave up slot ${slot + 1}`}
-      >↑</button>
-    </div>
-  );
-}
-
-function RootField() {
-  const rootHz = audioEngine.initialized
-    ? audioEngine.getFrequency(frequencyManager.anchorSlot)
-    : 0;
-  const note = freqToNote(rootHz);
-  const centsLabel = note.cents === 0
-    ? '0¢'
-    : `${note.cents > 0 ? '+' : ''}${note.cents}¢`;
-  const handleCommit = useCallback((hz) => {
-    frequencyManager.setRootHz(hz);
-  }, []);
-  const shiftOctave = useCallback((factor) => {
-    if (!audioEngine.initialized) return;
-    const cur = audioEngine.getFrequency(frequencyManager.anchorSlot);
-    if (!Number.isFinite(cur) || cur <= 0) return;
-    frequencyManager.setRootHz(cur * factor);
-  }, []);
-  return (
-    <div className="freq-rail-root">
-      <label className="freq-rail-root-label">Root</label>
       <CellInput
-        value={rootHz}
-        format={formatHz}
-        parse={parseHz}
-        onCommit={handleCommit}
-        className="freq-rail-root-input"
-        title="Root frequency — typing here transposes every slot proportionally"
+        value={note.midi}
+        format={() => noteLabel}
+        parse={parseNoteName}
+        onCommit={handleNoteCommit}
+        className="freq-rail-note-name"
+        title={`Note (${noteLabel}) — type e.g. C4, F#3, Bb5`}
       />
-      {/* Empty placeholder occupying the ratio column so the note
-          column-aligns with the per-slot notes below. */}
-      <span aria-hidden="true" />
-      <div
-        className="freq-rail-note"
-        title={`${note.note}${note.octave} ${centsLabel}`}
-      >
-        <span className="freq-rail-note-name">{note.note}{note.octave}</span>
-        <span className="freq-rail-note-cents">{centsLabel}</span>
-      </div>
-      <button
-        type="button"
-        className="freq-rail-octave-btn"
-        onClick={() => shiftOctave(0.5)}
-        title="Halve root (down an octave) — transposes every slot"
-        aria-label="Halve root frequency"
-      >/2</button>
-      <button
-        type="button"
-        className="freq-rail-octave-btn"
-        onClick={() => shiftOctave(2)}
-        title="Double root (up an octave) — transposes every slot"
-        aria-label="Double root frequency"
-      >×2</button>
+      <CellInput
+        value={note.cents}
+        format={formatCentsValue}
+        parse={parseCentsValue}
+        onCommit={handleCentsCommit}
+        className="freq-rail-note-cents"
+        title={`Cents off ${noteLabel} (${centsLabel}) — type 0 to snap to ET`}
+      />
+      {/* Per-row pill in column 7. Two states:
+            • Root row: /2 and ×2 — transpose every slot proportionally.
+            • Non-root rows: ‹ › chevrons — step this slot through the
+              active tuning system's candidates.
+          Same .freq-rail-rocker pill styling either way so the column
+          stays visually consistent. */}
+      {isAnchor ? (
+        <div className="freq-rail-rocker" role="group" aria-label="Octave transpose">
+          <button
+            type="button"
+            className="freq-rail-rocker-btn freq-rail-rocker-btn-text"
+            onClick={() => handleOctave(0.5)}
+            title="Halve root — transpose every slot down an octave"
+            aria-label="Down an octave"
+          >/2</button>
+          <button
+            type="button"
+            className="freq-rail-rocker-btn freq-rail-rocker-btn-text"
+            onClick={() => handleOctave(2)}
+            title="Double root — transpose every slot up an octave"
+            aria-label="Up an octave"
+          >×2</button>
+        </div>
+      ) : (
+        <div className="freq-rail-rocker" role="group" aria-label={`Step slot ${slot + 1}`}>
+          <button
+            type="button"
+            className="freq-rail-rocker-btn"
+            onClick={() => handleStep(-1)}
+            title="Step to previous candidate in the active tuning system"
+            aria-label={`Previous candidate for slot ${slot + 1}`}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M10 3 L5 8 L10 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="freq-rail-rocker-btn"
+            onClick={() => handleStep(1)}
+            title="Step to next candidate in the active tuning system"
+            aria-label={`Next candidate for slot ${slot + 1}`}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M6 3 L11 8 L6 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -384,6 +510,23 @@ function useFreqVersion() {
     frequencyManager.ensureInitialSnapshot();
     return () => { unsubA(); unsubB(); };
   }, []);
+  // Mute changes don't fire the frequency listener (AudioEngine's
+  // toggleMute mutates mutedStates directly). Poll the array via rAF
+  // and bump version on any diff — mirrors what OscillatorControls
+  // already does. ~60Hz on an N=12 array of booleans is negligible.
+  useEffect(() => {
+    let raf;
+    let last = '';
+    const tick = () => {
+      if (audioEngine.initialized && audioEngine.mutedStates) {
+        const sig = audioEngine.mutedStates.join('');
+        if (sig !== last) { last = sig; setVersion((v) => v + 1); }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, []);
   useEffect(() => {
     frequencyManager.ensureInitialSnapshot();
   });
@@ -393,7 +536,21 @@ function useFreqVersion() {
 // plus the Align / Save / Undo / Redo actions and save-slot chips.
 // Lives in the left-stack alongside the mixer; toggled by the TUNING
 // button in OscillatorControls.
-export function TuningPanel({ oscillatorCount, onAlign, isAligning }) {
+//
+// The `tuningSystem` / `onTuningSystemChange` props are wired from
+// App.jsx so the parent owns canonical state — but FrequencyManager
+// (the singleton) is the source of truth. App's state just mirrors
+// it for the dropdown's controlled value.
+export function TuningPanel({
+  oscillatorCount,
+  onOscillatorCountChange,
+  maxOscillators = 12,
+  onAlign,
+  onLoad,
+  isAligning,
+  tuningSystem,
+  onTuningSystemChange,
+}) {
   useTheme();
   useFreqVersion();
 
@@ -427,9 +584,14 @@ export function TuningPanel({ oscillatorCount, onAlign, isAligning }) {
   const anchorColor = palette.oscColor(anchorSlot, oscillatorCount);
   const handleUndo = useCallback(() => { frequencyManager.undo(); }, []);
   const handleRedo = useCallback(() => { frequencyManager.redo(); }, []);
-  // Save button removed for now (the user wanted a less crowded action
-  // row). frequencyManager.saveCurrent() is still on the singleton so
-  // it can be re-wired to a future trigger / shortcut without changes.
+  const handleSave = useCallback(() => { frequencyManager.saveCurrent(); }, []);
+  // Slot cap mirrors the CSS grid (4 columns × 2 rows). Once full, the
+  // oldest save is dropped server-side; the Save button stays enabled
+  // so users can keep iterating.
+  const SAVE_LIMIT = 8;
+
+  const activeSystem = tuningSystem || frequencyManager.tuningSystem;
+  const activeSystemDef = getSystem(activeSystem);
 
   return (
     <>
@@ -439,19 +601,57 @@ export function TuningPanel({ oscillatorCount, onAlign, isAligning }) {
         aria-label="Tuning"
         style={{ '--anchor-idx': anchorSlot, '--anchor-color': anchorColor }}
       >
-        <RootField />
         <div className="tuning-rows">
           {Array.from({ length: oscillatorCount }, (_, i) => (
             <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} />
           ))}
         </div>
-        {slots.length > 0 && (
-          <div className="freq-rail-slots" role="list" aria-label="Saved states">
-            {slots.map((s) => (
-              <SaveSlotChip key={s.id} slot={s} />
-            ))}
+        {/* Footer — two columns, each with a small caption above its
+            control. Left: tuning system selector (mode the rows render
+            in). Right: drone count rocker (− N +), styled like the
+            per-row pill so it visually aligns. */}
+        <div className="tuning-footer">
+          <div className="tuning-footer-col">
+            <label className="tuning-footer-label" htmlFor="tuning-system-select">
+              system
+            </label>
+            <select
+              id="tuning-system-select"
+              className="tuning-system-select"
+              value={activeSystem}
+              onChange={(e) => onTuningSystemChange?.(e.target.value)}
+              title={activeSystemDef ? activeSystemDef.description : ''}
+            >
+              {SUPPORTED_SYSTEMS.map((key) => (
+                <option key={key} value={key}>{TUNING_SYSTEMS[key].label}</option>
+              ))}
+            </select>
           </div>
-        )}
+          <div className="tuning-footer-col">
+            <span className="tuning-footer-label">tunings</span>
+            <div className="freq-rail-rocker tuning-count-rocker" role="group" aria-label="Tuning count">
+              <button
+                type="button"
+                className="freq-rail-rocker-btn freq-rail-rocker-btn-text"
+                onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+                disabled={oscillatorCount <= 2}
+                title="Remove the highest tuning"
+                aria-label="Remove tuning"
+              >−</button>
+              <span className="tuning-count-num" aria-live="polite">
+                {oscillatorCount}
+              </span>
+              <button
+                type="button"
+                className="freq-rail-rocker-btn freq-rail-rocker-btn-text"
+                onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+                disabled={oscillatorCount >= maxOscillators}
+                title="Add a tuning"
+                aria-label="Add tuning"
+              >+</button>
+            </div>
+          </div>
+        </div>
       </div>
       {/* Action buttons render OUTSIDE the panel — as a sibling in the
           .left-stack flex column they appear directly below the panel
@@ -462,12 +662,27 @@ export function TuningPanel({ oscillatorCount, onAlign, isAligning }) {
           className="freq-rail-action"
           onClick={onAlign}
           disabled={isAligning || !onAlign}
-          title="Align — glide every drone to its nearest JI ratio (variance + glide time in Settings)"
+          title="Align — snap every drone to its nearest candidate in the active system (preserves rough shape)"
         >
           <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
             <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" />
           </svg>
           <span>Align</span>
+        </button>
+        <button
+          type="button"
+          className="freq-rail-action"
+          onClick={onLoad}
+          disabled={isAligning || !onLoad}
+          title="Load — lay voices out as the active system's canonical scale (root stays, others get the next degrees)"
+        >
+          {/* Down-arrow-into-tray icon: signals "load into rows". */}
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3v12" />
+            <path d="M7 10l5 5 5-5" />
+            <path d="M4 19h16" />
+          </svg>
+          <span>Load</span>
         </button>
         <button
           type="button"
@@ -495,6 +710,52 @@ export function TuningPanel({ oscillatorCount, onAlign, isAligning }) {
           </svg>
           <span>Redo</span>
         </button>
+        <button
+          type="button"
+          className="freq-rail-action"
+          onClick={handleSave}
+          title={slots.length >= SAVE_LIMIT
+            ? `Save current state — oldest of the ${SAVE_LIMIT} slots will be dropped`
+            : 'Save current state'}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+            <polyline points="17 21 17 13 7 13 7 21" />
+            <polyline points="7 3 7 8 15 8" />
+          </svg>
+          <span>Save</span>
+        </button>
+      </div>
+      {slots.length > 0 && (
+        <div className="freq-rail-slots" role="list" aria-label="Saved states">
+          {slots.map((s) => (
+            <SaveSlotChip key={s.id} slot={s} />
+          ))}
+        </div>
+      )}
+      <div
+        className="freq-rail-glide"
+        title="Glide duration applied when a saved state is recalled. 0 = instant snap."
+      >
+        <label className="freq-rail-glide-label" htmlFor="freq-rail-glide-slider">
+          glide
+        </label>
+        <input
+          id="freq-rail-glide-slider"
+          type="range"
+          min="0"
+          max="10"
+          step="0.1"
+          value={(frequencyManager.recallGlideMs / 1000).toFixed(1)}
+          onChange={(e) => {
+            frequencyManager.setRecallGlideMs(parseFloat(e.target.value) * 1000);
+          }}
+          className="freq-rail-glide-slider"
+          aria-label="Recall glide seconds"
+        />
+        <span className="freq-rail-glide-value">
+          {(frequencyManager.recallGlideMs / 1000).toFixed(1)}s
+        </span>
       </div>
     </>
   );

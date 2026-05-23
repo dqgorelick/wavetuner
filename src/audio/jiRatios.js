@@ -154,33 +154,90 @@ function generateHarmonicCandidates(maxN = 16) {
 // looking arbitrary. Voices beyond the scale length octave-extend for
 // octave-reducing systems; harmonic series just keeps climbing.
 //
+// Each system carries TWO canonical arrays — a 7-note (diatonic /
+// white-key) shape and a 12-note (chromatic) shape — selected at Load
+// time by the user's "notes" toggle. For systems where 12-note JI has
+// no single agreed form, the chromatic array reflects specific
+// curatorial choices (see comments per system).
+//
 // Shape: array of either { n, d } (rational systems) or { cents }
 // (12-TET — no clean fraction). The 1/1 / 0¢ degree must be first.
-const CANONICAL_5_LIMIT = [
+
+// 5-limit major scale (Ptolemy's intense diatonic).
+const CANONICAL_5_LIMIT_7 = [
   { n: 1, d: 1 }, { n: 9, d: 8 }, { n: 5, d: 4 }, { n: 4, d: 3 },
   { n: 3, d: 2 }, { n: 5, d: 3 }, { n: 15, d: 8 },
 ];
-const CANONICAL_7_LIMIT = [
+// 5-limit chromatic — "Ptolemaic" 12-tone JI. Tritone = 45/32 (sharp
+// side, per user choice); minor 7th = 9/5. Internally consistent but
+// contains a wolf somewhere — unavoidable in 5-limit 12-tone JI.
+const CANONICAL_5_LIMIT_12 = [
+  { n: 1, d: 1 }, { n: 16, d: 15 }, { n: 9, d: 8 }, { n: 6, d: 5 },
+  { n: 5, d: 4 }, { n: 4, d: 3 }, { n: 45, d: 32 }, { n: 3, d: 2 },
+  { n: 8, d: 5 }, { n: 5, d: 3 }, { n: 9, d: 5 }, { n: 15, d: 8 },
+];
+// 7-limit diatonic — swaps in 7/4 for the leading tone (septimal
+// minor 7th) so the system's defining ratio appears in the 7-note set.
+const CANONICAL_7_LIMIT_7 = [
   { n: 1, d: 1 }, { n: 9, d: 8 }, { n: 5, d: 4 }, { n: 4, d: 3 },
   { n: 3, d: 2 }, { n: 5, d: 3 }, { n: 7, d: 4 },
 ];
-const CANONICAL_11_LIMIT = [
-  // Partch's 4:5:6:7:9:11 hexad — the canonical "11-limit chord"
-  { n: 1, d: 1 }, { n: 9, d: 8 }, { n: 5, d: 4 }, { n: 11, d: 8 },
-  { n: 3, d: 2 }, { n: 7, d: 4 },
+// 7-limit chromatic — 5-limit chromatic with septimal substitutions
+// at the slots where 7-limit ratios beat the 5-limit equivalents: 7/6
+// for minor 3rd, 7/5 for tritone, 7/4 for minor 7th.
+const CANONICAL_7_LIMIT_12 = [
+  { n: 1, d: 1 }, { n: 16, d: 15 }, { n: 9, d: 8 }, { n: 7, d: 6 },
+  { n: 5, d: 4 }, { n: 4, d: 3 }, { n: 7, d: 5 }, { n: 3, d: 2 },
+  { n: 8, d: 5 }, { n: 5, d: 3 }, { n: 7, d: 4 }, { n: 15, d: 8 },
 ];
-const CANONICAL_PYTHAGOREAN = [
+// 11-limit "diatonic" — Partch's 4:5:6:7:9:11 hexad, padded to 7 with
+// 15/8 so notes=7 always gives a fully-populated 7-degree scale.
+const CANONICAL_11_LIMIT_7 = [
+  { n: 1, d: 1 }, { n: 9, d: 8 }, { n: 5, d: 4 }, { n: 11, d: 8 },
+  { n: 3, d: 2 }, { n: 7, d: 4 }, { n: 15, d: 8 },
+];
+// 11-limit chromatic — 7-limit chromatic with 11/8 substituted as the
+// sole tritone (dropping 7/5) so 11 actually appears in the scale and
+// only one tritone exists. Keeps the perfect 4th (4/3) intact, since
+// that's a foundational interval not worth losing for an extra
+// undecimal. 11-limit doesn't reduce cleanly to 12 (Partch went to 43);
+// this is a curated subset.
+const CANONICAL_11_LIMIT_12 = [
+  { n: 1, d: 1 }, { n: 16, d: 15 }, { n: 9, d: 8 }, { n: 7, d: 6 },
+  { n: 5, d: 4 }, { n: 4, d: 3 }, { n: 11, d: 8 }, { n: 3, d: 2 },
+  { n: 8, d: 5 }, { n: 5, d: 3 }, { n: 7, d: 4 }, { n: 15, d: 8 },
+];
+// Pythagorean diatonic — chain of fifths up from 1/1.
+const CANONICAL_PYTHAGOREAN_7 = [
   { n: 1, d: 1 }, { n: 9, d: 8 }, { n: 81, d: 64 }, { n: 4, d: 3 },
   { n: 3, d: 2 }, { n: 27, d: 16 }, { n: 243, d: 128 },
 ];
-const CANONICAL_12_TET = [
+// Pythagorean chromatic — 5 fifths up + 6 fifths down from 1/1,
+// octave-reduced. Biased toward the "flat" side (per user choice), so
+// the tritone is 1024/729 (~588¢) rather than 729/512 (~612¢).
+const CANONICAL_PYTHAGOREAN_12 = [
+  { n: 1, d: 1 }, { n: 256, d: 243 }, { n: 9, d: 8 }, { n: 32, d: 27 },
+  { n: 81, d: 64 }, { n: 4, d: 3 }, { n: 1024, d: 729 }, { n: 3, d: 2 },
+  { n: 128, d: 81 }, { n: 27, d: 16 }, { n: 16, d: 9 }, { n: 243, d: 128 },
+];
+// 12-TET diatonic — major scale at standard semitone offsets.
+const CANONICAL_12_TET_7 = [
   { cents: 0 }, { cents: 200 }, { cents: 400 }, { cents: 500 },
   { cents: 700 }, { cents: 900 }, { cents: 1100 },
 ];
-// Harmonic series — n/1 for n = 1..16. Voices beyond the 16th harmonic
-// would need to extend the list; in practice voice count caps at 12.
+// 12-TET chromatic — all 12 semitones, 100¢ apart.
+const CANONICAL_12_TET_12 = Array.from({ length: 12 }, (_, i) => ({ cents: i * 100 }));
+// Harmonic series — n/1 for n = 1..16. NOT octave-reducing; notes=7
+// gives the first 7 harmonics (1..7), notes=12 the first 12 (1..12).
+// Voices beyond N=12 keep climbing into the upper harmonics.
 const CANONICAL_HARMONIC = Array.from({ length: 16 }, (_, i) => ({ n: i + 1, d: 1 }));
 
+// `recommendedScale` is the scale size (7 or 12) the system shows as
+// its hint on the picker — Load applies it. The harmonic series'
+// natural identity is "climb the overtones," so we default it to 12
+// (harmonics 1-12); diatonic-leaning systems default to 7. 12-TET also
+// defaults to 7 because the major scale is its idiomatic "load" — the
+// user can flip to 12 to fill out a full chromatic.
 export const TUNING_SYSTEMS = {
   '5-limit': {
     key: '5-limit',
@@ -188,7 +245,9 @@ export const TUNING_SYSTEMS = {
     description: '2-3-5 primes — classical Western thirds & fifths',
     octaveReduced: true,
     generate: () => generateJiCandidates(5, ODD_LIMIT_FOR_PRIME[5]),
-    canonical: CANONICAL_5_LIMIT,
+    canonical7: CANONICAL_5_LIMIT_7,
+    canonical12: CANONICAL_5_LIMIT_12,
+    recommendedScale: 7,
   },
   '7-limit': {
     key: '7-limit',
@@ -196,7 +255,9 @@ export const TUNING_SYSTEMS = {
     description: 'adds 7th prime — septimal "blue note" intervals',
     octaveReduced: true,
     generate: () => generateJiCandidates(7, ODD_LIMIT_FOR_PRIME[7]),
-    canonical: CANONICAL_7_LIMIT,
+    canonical7: CANONICAL_7_LIMIT_7,
+    canonical12: CANONICAL_7_LIMIT_12,
+    recommendedScale: 7,
   },
   '11-limit': {
     key: '11-limit',
@@ -204,7 +265,9 @@ export const TUNING_SYSTEMS = {
     description: 'adds 11th prime — Partch undecimal territory',
     octaveReduced: true,
     generate: () => generateJiCandidates(11, ODD_LIMIT_FOR_PRIME[11]),
-    canonical: CANONICAL_11_LIMIT,
+    canonical7: CANONICAL_11_LIMIT_7,
+    canonical12: CANONICAL_11_LIMIT_12,
+    recommendedScale: 12,
   },
   'pythagorean': {
     key: 'pythagorean',
@@ -212,7 +275,9 @@ export const TUNING_SYSTEMS = {
     description: '3-limit chain of fifths — no thirds (5)',
     octaveReduced: true,
     generate: () => generatePythagoreanCandidates(6),
-    canonical: CANONICAL_PYTHAGOREAN,
+    canonical7: CANONICAL_PYTHAGOREAN_7,
+    canonical12: CANONICAL_PYTHAGOREAN_12,
+    recommendedScale: 7,
   },
   '12-tet': {
     key: '12-tet',
@@ -220,7 +285,9 @@ export const TUNING_SYSTEMS = {
     description: 'equal temperament — 12 equal semitones per octave',
     octaveReduced: true,
     generate: () => generateTetCandidates(12),
-    canonical: CANONICAL_12_TET,
+    canonical7: CANONICAL_12_TET_7,
+    canonical12: CANONICAL_12_TET_12,
+    recommendedScale: 7,
   },
   'harmonic': {
     key: 'harmonic',
@@ -228,9 +295,21 @@ export const TUNING_SYSTEMS = {
     description: '1, 2, 3, 4, 5… — climbs the overtone series',
     octaveReduced: false,
     generate: () => generateHarmonicCandidates(16),
-    canonical: CANONICAL_HARMONIC,
+    canonical7: CANONICAL_HARMONIC,
+    canonical12: CANONICAL_HARMONIC,
+    recommendedScale: 12,
   },
 };
+
+// Resolve the canonical scale array for a system + scale-size choice.
+// Falls back to whichever array exists if the requested size isn't
+// defined (defensive — every registered system carries both).
+export function canonicalScale(system, scaleSize) {
+  if (!system) return null;
+  const size = scaleSize === 7 ? 7 : 12;
+  return size === 7 ? (system.canonical7 || system.canonical12)
+                    : (system.canonical12 || system.canonical7);
+}
 
 export const SUPPORTED_SYSTEMS = Object.keys(TUNING_SYSTEMS);
 export const DEFAULT_SYSTEM = '5-limit';
@@ -260,11 +339,17 @@ export function getSystem(systemKey) {
  * the scale length (16) extend by re-using the highest harmonic (the
  * call site won't normally hit this since voice count is capped at 12).
  *
+ * `scaleSize` chooses the 7-note (diatonic) or 12-note (chromatic)
+ * canonical for the system. Defaults to the system's recommended size.
+ *
  * Returns null if the system has no canonical scale defined.
  */
-export function canonicalRatioForVoice(systemKey, degreeIdx) {
+export function canonicalRatioForVoice(systemKey, degreeIdx, scaleSize) {
   const sys = getSystem(systemKey);
-  const scale = sys.canonical;
+  const size = scaleSize === 7 || scaleSize === 12
+    ? scaleSize
+    : (sys.recommendedScale || 7);
+  const scale = canonicalScale(sys, size);
   if (!scale || scale.length === 0) return null;
   if (degreeIdx < 0) return null;
 

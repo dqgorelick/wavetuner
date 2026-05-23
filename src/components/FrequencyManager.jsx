@@ -550,6 +550,11 @@ export function TuningPanel({
   isAligning,
   tuningSystem,
   onTuningSystemChange,
+  // Pending-intent radio for the next Load — 7 (diatonic / white-only)
+  // or 12 (chromatic / all keys). Defaults to the active system's
+  // recommendedScale; switching systems resets it in App.jsx.
+  scaleSize = 7,
+  onScaleSizeChange,
 }) {
   useTheme();
   useFreqVersion();
@@ -593,6 +598,8 @@ export function TuningPanel({
   const activeSystem = tuningSystem || frequencyManager.tuningSystem;
   const activeSystemDef = getSystem(activeSystem);
 
+  const recommended = activeSystemDef?.recommendedScale === 12 ? 12 : 7;
+
   return (
     <>
       <div
@@ -601,55 +608,89 @@ export function TuningPanel({
         aria-label="Tuning"
         style={{ '--anchor-idx': anchorSlot, '--anchor-color': anchorColor }}
       >
+        {/* Top bar — TUNINGS: N rocker. Sits ABOVE the row list,
+            right-aligned. Free 2..maxOscillators count; Load resizes
+            this to match scaleSize, but the user can nudge it after. */}
+        <div className="tuning-topbar">
+          <span className="tuning-topbar-label">TUNINGS: {oscillatorCount}</span>
+          <div className="tuning-chip-group" role="group" aria-label="Tuning count">
+            <button
+              type="button"
+              className="tuning-chip"
+              onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+              disabled={oscillatorCount <= 2}
+              title="Remove the highest tuning"
+              aria-label="Remove tuning"
+            >−</button>
+            <button
+              type="button"
+              className="tuning-chip"
+              onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+              disabled={oscillatorCount >= maxOscillators}
+              title="Add a tuning"
+              aria-label="Add tuning"
+            >+</button>
+          </div>
+        </div>
         <div className="tuning-rows">
           {Array.from({ length: oscillatorCount }, (_, i) => (
             <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} />
           ))}
         </div>
-        {/* Footer — two columns, each with a small caption above its
-            control. Left: tuning system selector (mode the rows render
-            in). Right: drone count rocker (− N +), styled like the
-            per-row pill so it visually aligns. */}
+        {/* Footer — system dropdown, scale radio (7/12), and Load all
+            on a single line. Load now lives here (not in the action
+            row below) because the three controls work as a unit: pick
+            a system, pick a scale size, commit. Hint underneath
+            surfaces the system's conventional scale size. */}
         <div className="tuning-footer">
-          <div className="tuning-footer-col">
-            <label className="tuning-footer-label" htmlFor="tuning-system-select">
-              system
-            </label>
+          <div className="tuning-system-row">
             <select
               id="tuning-system-select"
               className="tuning-system-select"
               value={activeSystem}
               onChange={(e) => onTuningSystemChange?.(e.target.value)}
               title={activeSystemDef ? activeSystemDef.description : ''}
+              aria-label="Tuning system"
             >
               {SUPPORTED_SYSTEMS.map((key) => (
                 <option key={key} value={key}>{TUNING_SYSTEMS[key].label}</option>
               ))}
             </select>
-          </div>
-          <div className="tuning-footer-col">
-            <span className="tuning-footer-label">tunings</span>
-            <div className="freq-rail-rocker tuning-count-rocker" role="group" aria-label="Tuning count">
+            <div className="tuning-chip-group tuning-scale-radio" role="radiogroup" aria-label="Scale size">
               <button
                 type="button"
-                className="freq-rail-rocker-btn freq-rail-rocker-btn-text"
-                onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
-                disabled={oscillatorCount <= 2}
-                title="Remove the highest tuning"
-                aria-label="Remove tuning"
-              >−</button>
-              <span className="tuning-count-num" aria-live="polite">
-                {oscillatorCount}
-              </span>
+                role="radio"
+                className={`tuning-chip${scaleSize === 7 ? ' is-active' : ''}`}
+                onClick={() => onScaleSizeChange?.(7)}
+                aria-checked={scaleSize === 7}
+                title="Load 7-note diatonic (white-key keyboard)"
+              >7</button>
               <button
                 type="button"
-                className="freq-rail-rocker-btn freq-rail-rocker-btn-text"
-                onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
-                disabled={oscillatorCount >= maxOscillators}
-                title="Add a tuning"
-                aria-label="Add tuning"
-              >+</button>
+                role="radio"
+                className={`tuning-chip${scaleSize === 12 ? ' is-active' : ''}`}
+                onClick={() => onScaleSizeChange?.(12)}
+                aria-checked={scaleSize === 12}
+                title="Load 12-note chromatic (all-keys keyboard)"
+              >12</button>
             </div>
+            <button
+              type="button"
+              className="tuning-load-btn"
+              onClick={onLoad}
+              disabled={isAligning || !onLoad}
+              title={`Load — lay voices out as ${activeSystemDef?.label ?? 'the active system'}, ${scaleSize === 12 ? '12-note chromatic' : '7-note diatonic'} (resizes voice count and flips the keyboard notes setting)`}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3v12" />
+                <path d="M7 10l5 5 5-5" />
+                <path d="M4 19h16" />
+              </svg>
+              <span>Load</span>
+            </button>
+          </div>
+          <div className="tuning-system-hint-row">
+            (conventional: {recommended} notes)
           </div>
         </div>
       </div>
@@ -668,21 +709,6 @@ export function TuningPanel({
             <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" />
           </svg>
           <span>Align</span>
-        </button>
-        <button
-          type="button"
-          className="freq-rail-action"
-          onClick={onLoad}
-          disabled={isAligning || !onLoad}
-          title="Load — lay voices out as the active system's canonical scale (root stays, others get the next degrees)"
-        >
-          {/* Down-arrow-into-tray icon: signals "load into rows". */}
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 3v12" />
-            <path d="M7 10l5 5 5-5" />
-            <path d="M4 19h16" />
-          </svg>
-          <span>Load</span>
         </button>
         <button
           type="button"

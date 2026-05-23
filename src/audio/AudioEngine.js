@@ -700,8 +700,11 @@ class AudioEngine {
     this._masterMuted = false;
     // Master node now carries ONLY user volume; count-scale lives on
     // droneCountScale and is updated independently when oscillator
-    // count changes.
-    if (this.isInitialized && !this.isPaused && this.masterGainNode) {
+    // count changes. Pause no longer touches master (it fades the drone
+    // bus instead — see pauseDrones), so an isPaused gate here would
+    // silently swallow master-fader drags while drones are paused but
+    // MIDI / kbd voices are still playing.
+    if (this.isInitialized && this.masterGainNode) {
       this.masterGainNode.gain.setTargetAtTime(
         this.masterVolumeUser,
         this.audioContext.currentTime,
@@ -2234,25 +2237,33 @@ class AudioEngine {
    * @param {Object} opts
    * @param {string} opts.systemKey   Tuning system key (e.g. '5-limit')
    * @param {number} opts.anchorSlot  Slot whose Hz is treated as 1/1
+   * @param {number} [opts.scaleSize] 7 (diatonic) or 12 (chromatic);
+   *                                  defaults to the system's recommended.
    */
   computeLoadTargets(opts = {}) {
     const out = this.frequencyValues.slice();
-    const { systemKey = DEFAULT_SYSTEM, anchorSlot = 0 } = opts;
+    const { systemKey = DEFAULT_SYSTEM, anchorSlot = 0, scaleSize } = opts;
     const sys = getSystem(systemKey);
-    if (!sys || !sys.canonical || sys.canonical.length === 0) return out;
+    const size = scaleSize === 7 || scaleSize === 12
+      ? scaleSize
+      : (sys && sys.recommendedScale) || 7;
+    const scale = sys ? (size === 7 ? sys.canonical7 : sys.canonical12) : null;
+    if (!scale || scale.length === 0) return out;
 
     const anchorHz = (anchorSlot >= 0 && anchorSlot < this.oscillatorCount)
       ? this.frequencyValues[anchorSlot]
       : 0;
     if (!(anchorHz > 0)) return out;
 
-    // Build the ordered list of un-muted slots, anchor first. Anchor
-    // gets degree 0 (= 1/1) so its Hz is preserved; the rest receive
-    // consecutive scale degrees in slot-index order.
+    // Build the ordered slot list, anchor first. Anchor gets degree 0
+    // (= 1/1) so its Hz is preserved; the rest receive consecutive
+    // scale degrees in slot-index order. Muted slots are included —
+    // Load defines the *pitch palette* for the whole instrument, so a
+    // muted voice still gets its slot in the scale ready for when the
+    // user unmutes it later.
     const orderedSlots = [anchorSlot];
     for (let i = 0; i < this.oscillatorCount; i++) {
       if (i === anchorSlot) continue;
-      if (this.mutedStates[i]) continue;
       orderedSlots.push(i);
     }
 
@@ -2263,7 +2274,7 @@ class AudioEngine {
         out[slot] = anchorHz;
         continue;
       }
-      const ratio = canonicalRatioForVoice(systemKey, degreeIdx);
+      const ratio = canonicalRatioForVoice(systemKey, degreeIdx, size);
       if (ratio == null) continue;
       const target = anchorHz * ratio;
       out[slot] = Math.max(0.001, Math.min(20000, target));

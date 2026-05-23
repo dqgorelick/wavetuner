@@ -7,7 +7,9 @@ import { droneWave, keyboardWave } from './audio/Wave';
 import { droneFold, keyboardFold } from './audio/Fold';
 import { droneStereo, keyboardStereo } from './audio/StereoMode';
 import frequencyManager from './audio/FrequencyManager';
+import { getSystem } from './audio/jiRatios';
 import midiInput from './audio/MidiInput';
+import midiCCMap from './audio/MidiCCMap';
 import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
@@ -17,6 +19,7 @@ import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
 import Mixer from './components/Mixer';
+import MidiPanel from './components/MidiPanel';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
 import HydraOverlay from './components/HydraOverlay';
@@ -423,6 +426,64 @@ function App() {
     midiInput.setEnabled(next);
     setMidiEnabled(next);
   }, []);
+  // MIDI mappings panel. Opening it == entering learn mode (Ableton
+  // style). Closing it cancels any in-progress arm. Tracked outside
+  // React state for the button + dots so a CC stream doesn't trigger
+  // React re-renders 100×/sec.
+  const [isMidiPanelOpen, setIsMidiPanelOpen] = useState(false);
+  const noteDotRef = useRef(null);
+  const ccDotRef = useRef(null);
+  useEffect(() => {
+    // Activity flashes — direct DOM class toggling to avoid setState
+    // storms on busy CC streams. Each ping schedules a clear; if a
+    // new ping arrives before the clear fires, the timer is reset.
+    let noteTimer = null;
+    let ccTimer = null;
+    const FLASH_MS = 120;
+    const off = midiInput.onActivity((kind) => {
+      if (kind === 'note' && noteDotRef.current) {
+        noteDotRef.current.classList.add('flash');
+        if (noteTimer) clearTimeout(noteTimer);
+        noteTimer = setTimeout(() => {
+          noteDotRef.current?.classList.remove('flash');
+          noteTimer = null;
+        }, FLASH_MS);
+      } else if (kind === 'cc' && ccDotRef.current) {
+        ccDotRef.current.classList.add('flash');
+        if (ccTimer) clearTimeout(ccTimer);
+        ccTimer = setTimeout(() => {
+          ccDotRef.current?.classList.remove('flash');
+          ccTimer = null;
+        }, FLASH_MS);
+      }
+    });
+    return () => {
+      off();
+      if (noteTimer) clearTimeout(noteTimer);
+      if (ccTimer) clearTimeout(ccTimer);
+    };
+  }, []);
+  // Cancel any pending learn-arm when the panel closes.
+  useEffect(() => {
+    if (!isMidiPanelOpen) midiCCMap.cancelArm();
+  }, [isMidiPanelOpen]);
+  // Escape closes the MIDI panel (and cancels arm via the effect above).
+  useEffect(() => {
+    if (!isMidiPanelOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setIsMidiPanelOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isMidiPanelOpen]);
+  // Restore saved mappings once per session, after the engine is
+  // ready. The MidiCCMap singleton stays empty until then; CC
+  // messages that arrive before init are dropped by the existing
+  // midiInput._enabled gate anyway.
+  const midiMapRestoredRef = useRef(false);
+  useEffect(() => {
+    if (!isStarted || midiMapRestoredRef.current) return;
+    midiMapRestoredRef.current = true;
+    midiCCMap.loadFromStorage();
+  }, [isStarted]);
   // MIDI velocity curve: 'linear' | 'soft' | 'hard' | 'fixed'.
   // Pushed into the voice manager on change; default 'linear' = identity,
   // matches pre-existing behavior.
@@ -466,9 +527,20 @@ function App() {
   // frequencyManager.tuningSystem; setter pushes back into the
   // singleton so the rail picks it up.
   const [tuningSystem, setTuningSystemState] = useState(frequencyManager.tuningSystem);
+  // Scale size for the next Load (7 = diatonic, 12 = chromatic). Mirrors
+  // the active system's recommendedScale when the user switches systems;
+  // the radio in the tuning panel can override it. Read by handleLoad.
+  const [scaleSize, setScaleSize] = useState(() => {
+    const sys = getSystem(frequencyManager.tuningSystem);
+    return sys?.recommendedScale === 12 ? 12 : 7;
+  });
   const handleTuningSystemChange = useCallback((key) => {
     frequencyManager.setTuningSystem(key);
     setTuningSystemState(frequencyManager.tuningSystem);
+    // Switching systems resets the scale-size radio to the new system's
+    // recommended default. User can still override before Load.
+    const sys = getSystem(key);
+    setScaleSize(sys?.recommendedScale === 12 ? 12 : 7);
   }, []);
 
   // Align button — glides every drone to its nearest target in the
@@ -493,17 +565,40 @@ function App() {
   // the next scale degrees). Distinct from Align: Align preserves
   // shape (snap each voice to nearest), Load rewrites the shape to
   // the system's characteristic sound.
+  //
+  // Load uses the scale size from the panel's radio (7 vs 12). It also:
+  //  (a) resizes the voice count to match the scale size (growing or
+  //      shrinking), so a 7-note scale lands on 7 voices and a 12-note
+  //      on 12, with no octave-wrap repeats in the row list;
+  //  (b) flips kbdKeyMode (white-only for 7, chromatic for 12) so the
+  //      player's keyboard immediately reaches every loaded note.
+  // The radio is a pending-intent — no effects until Load fires.
   const handleLoad = useCallback(() => {
     if (!audioEngine.initialized) return;
+    const targetCount = scaleSize === 12 ? 12 : 7;
+    // Resize FIRST so computeLoadTargets reads the new count when
+    // walking the slot list. Growing adds default-pitched voices that
+    // immediately get overwritten by the glide's per-voice target;
+    // shrinking drops the highest slots before they're tuned. (Inlined
+    // rather than calling handleOscillatorCountChange because that
+    // handler is declared later in this component — referencing it
+    // here would land in the TDZ at render.)
+    if (audioEngine.oscillatorCount !== targetCount) {
+      audioEngine.setOscillatorCount(targetCount);
+      setOscillatorCount(audioEngine.getOscillatorCount());
+      setRoutingMap(audioEngine.getRoutingMap());
+    }
     const targets = audioEngine.computeLoadTargets({
       systemKey: frequencyManager.tuningSystem,
       anchorSlot: frequencyManager.anchorSlot,
+      scaleSize,
     });
+    setKbdKeyMode(scaleSize === 7 ? 'white-only' : 'chromatic');
     setIsAligning(true);
     audioEngine.glideToFrequencies(targets, Math.round(tuneGlideSec * 1000), () => {
       setIsAligning(false);
     });
-  }, [tuneGlideSec]);
+  }, [tuneGlideSec, scaleSize]);
 
   // Mobile caps the oscillator count at 4 — but ONLY on iOS, where the
   // Web Audio backend is the bottleneck (Safari struggles with 10+ live
@@ -936,6 +1031,8 @@ function App() {
             suppressAutoUnmute={isKbdTrayOpen}
             onOscillatorCountChange={handleOscillatorCountChange}
             maxOscillators={maxOscillators}
+            showKbdLabels={showKbdLabels}
+            onShowKbdLabelsChange={setShowKbdLabels}
           />
           {isTuningOpen && (
             <div className="left-stack">
@@ -948,17 +1045,25 @@ function App() {
                 isAligning={isAligning}
                 tuningSystem={tuningSystem}
                 onTuningSystemChange={handleTuningSystemChange}
+                scaleSize={scaleSize}
+                onScaleSizeChange={setScaleSize}
               />
             </div>
           )}
-          {isMixerOpen && (
+          {(isMixerOpen || isMidiPanelOpen) && (
             <div className="right-stack">
-              <Mixer
-                oscillatorCount={oscillatorCount}
-                minOscillators={2}
-                maxOscillators={maxOscillators}
-                onSlotsChange={syncStateFromEngine}
-              />
+              {isMidiPanelOpen && (
+                <MidiPanel oscillatorCount={oscillatorCount} />
+              )}
+              {isMixerOpen && (
+                <Mixer
+                  oscillatorCount={oscillatorCount}
+                  minOscillators={2}
+                  maxOscillators={maxOscillators}
+                  onSlotsChange={syncStateFromEngine}
+                  midiLearnOn={isMidiPanelOpen}
+                />
+              )}
             </div>
           )}
 
@@ -1091,6 +1196,17 @@ function App() {
             </svg>
           </button>
           <button
+            className={`midi-toggle${isMidiPanelOpen ? ' active' : ''}`}
+            onClick={() => setIsMidiPanelOpen((v) => !v)}
+            title={isMidiPanelOpen ? 'Exit MIDI learn mode' : 'MIDI learn — click a drone, then move a CC knob'}
+            aria-label="MIDI"
+            aria-pressed={isMidiPanelOpen}
+          >
+            <span className="midi-toggle-label">MIDI</span>
+            <span ref={noteDotRef} className="midi-dot note" />
+            <span ref={ccDotRef} className="midi-dot cc" />
+          </button>
+          <button
             className={`settings-toggle${isSettingsOpen ? ' active' : ''}`}
             onClick={handleSettingsToggle}
             title="Settings"
@@ -1142,6 +1258,8 @@ function App() {
             onKbdVoiceCountChange={setKbdVoiceCount}
             oscillatorCount={oscillatorCount}
             showKeyLabels={showKbdLabels}
+            kbdKeyMode={kbdKeyMode}
+            onKbdKeyModeChange={setKbdKeyMode}
           />
         </>
       )}

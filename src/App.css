@@ -121,6 +121,182 @@ p {
 }
 .mixer-panel { width: 275px; }
 .tuning-panel { width: 280px; }
+.midi-panel { width: 275px; }
+
+/* MIDI mappings panel — sits in .right-stack above the mixer when
+   the user is in MIDI learn mode. Same translucent chassis as the
+   mixer so the two panels read as a single stack. Constrained
+   height + inner scroll: with many mappings the panel would
+   otherwise grow past the viewport top and visually collide with
+   the corner toggles. */
+.midi-panel {
+  padding: 9px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Leave clear room above for the top-row buttons (~70px) and below
+     for the mixer + center play button. The body scrolls; the header
+     stays pinned. */
+  max-height: calc(100vh - 360px);
+}
+/* Scrollable row container — flex:1 inside the panel column so it
+   absorbs whatever vertical space the header leaves. min-height:0
+   is required for flex children to actually shrink and trigger
+   overflow rather than blowing the parent's max-height. */
+.midi-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  /* Subtle scrollbar — WebKit only, matches the panel's dark
+     translucent palette. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.midi-panel-body::-webkit-scrollbar { width: 6px; }
+.midi-panel-body::-webkit-scrollbar-track { background: transparent; }
+.midi-panel-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+.midi-panel-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+.midi-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.midi-panel-title {
+  font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+}
+.midi-panel-header-actions {
+  display: flex;
+  gap: 4px;
+}
+.midi-panel-btn {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.85);
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.midi-panel-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.midi-panel-empty {
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 6px 2px;
+}
+
+/* Single mapping row. Grid: dot · target · CC · ch · value-bar · × */
+.midi-row {
+  display: grid;
+  grid-template-columns: 10px 28px auto auto 1fr 18px;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font: 500 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(255, 255, 255, 0.92);
+}
+.midi-row.out-of-range {
+  color: rgba(255, 255, 255, 0.4);
+}
+.midi-row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.midi-row-target {
+  color: #fff;
+}
+.midi-row-cc,
+.midi-row-ch {
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 10px;
+}
+.midi-row-bar {
+  position: relative;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.midi-row-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--midi-row-color, #fff);
+  border-radius: 2px;
+  transition: width 30ms linear;
+}
+.midi-row-bar-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.midi-row-x {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+.midi-row-x:hover {
+  background: rgba(255, 80, 80, 0.25);
+  color: #fff;
+}
+
+/* Armed row — slightly inset, pulses to signal "waiting". Spans the
+   full grid so the "waiting for CC..." text sits between the target
+   and the cancel button without fighting the row template. */
+.midi-row-armed {
+  grid-template-columns: 10px 28px 1fr auto;
+  background: rgba(255, 80, 80, 0.10);
+  border-radius: 4px;
+  padding: 4px 6px;
+  animation: midi-armed-pulse 1.4s ease-in-out infinite;
+}
+@keyframes midi-armed-pulse {
+  0%, 100% { background: rgba(255, 80, 80, 0.08); }
+  50%      { background: rgba(255, 80, 80, 0.18); }
+}
+.midi-row-armed-text {
+  color: rgba(255, 200, 200, 0.85);
+  font-size: 10px;
+}
+.midi-row-cancel {
+  padding: 2px 6px;
+  font-size: 10px;
+}
 
 /* Tuning panel internal layout — Root sits at the top, then the
    scale rows, then the action cluster, then save chips. Tight
@@ -131,26 +307,48 @@ p {
   gap: 8px;
 }
 
-/* Tuning panel footer — two-column layout. Left column is the
-   system selector (mode); right column is the drone-count rocker
-   (− N +). Each column has a small caption above its control so the
-   roles are legible without the captions cluttering the row above. */
-.tuning-footer {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  align-items: end;
-}
-.tuning-footer-col {
+/* Top bar above the tuning rows — "TUNINGS: N" label on the left,
+   −/+ chip rocker right-aligned. Same chip family as the in-footer
+   scale-size radio so the panel reads as one consistent control
+   language. */
+.tuning-topbar {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
 }
-.tuning-footer-label {
+.tuning-topbar-label {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  opacity: 0.7;
+  font-weight: 700;
+  color: var(--text-color, #e8e8e8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Footer — system row (dropdown + scale radio + Load) on one line,
+   hint caption underneath. Compact: each control sized to fit its
+   content so all three sit comfortably on one row at the panel's
+   ~280px width. */
+.tuning-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tuning-system-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tuning-system-row .tuning-system-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.tuning-system-hint-row {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  opacity: 0.55;
   color: var(--text-color, #e8e8e8);
 }
 .tuning-system-select {
@@ -170,33 +368,86 @@ p {
   outline: none;
   border-color: rgba(255, 255, 255, 0.32);
 }
-/* Drone-count rocker — same pill chassis as the per-row .freq-rail-
-   rocker so it visually lines up. Differs in that the count number
-   sits between the − and + buttons; mirrors .kbd-voice-pill. */
-.tuning-count-rocker {
-  width: auto;
-  min-width: 64px;
+
+/* Chip family — shared between TUNINGS −/+ rocker, the 7/12 scale
+   radio, and the Load button. Visually mirrors the per-row /2 ×2
+   octave chip: subtle dark fill, light text, hover lifts to white.
+   `.is-active` is the radio-selected state. */
+.tuning-chip-group {
+  display: inline-flex;
+  align-items: stretch;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  height: 22px;
+  overflow: hidden;
 }
-.tuning-count-num {
+.tuning-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  padding: 0 4px;
-  color: #fff;
+  min-width: 26px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.65);
+  font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
   font-weight: 700;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
+  letter-spacing: 0.4px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
 }
-/* Action buttons (Align / Undo / Redo) — content-sized columns
-   pinned left so each button is only as wide as its icon + label
-   plus a little padding. Matches the KBD / DRONE button visual
-   (gray fill rather than the previous near-transparent tint). */
+.tuning-chip + .tuning-chip {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+.tuning-chip:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+.tuning-chip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.tuning-chip.is-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Load button — own chassis (chip family palette but with icon+label
+   so it reads as the primary action of the system row). */
+.tuning-load-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.tuning-load-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.22);
+}
+.tuning-load-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Action buttons (Align / Undo / Redo / Save) — Load no longer lives
+   here, so the grid is 4 columns now. Content-sized columns pinned
+   left so each button is only as wide as its icon + label. */
 .tuning-actions {
   display: grid;
-  grid-template-columns: repeat(5, auto);
+  grid-template-columns: repeat(4, auto);
   justify-content: start;
   gap: 4px;
 }
@@ -323,6 +574,13 @@ p {
 .mixer-fader.released {
   cursor: default;
 }
+/* MIDI learn mode disables direct drag on every fader so a click can't
+   stealth-write a volume during the same gesture that arms a binding.
+   Cursor switches to default; visuals (track/fill/ball) stay live. */
+.mixer-fader.disabled {
+  cursor: default;
+  touch-action: auto;
+}
 
 .mixer-fader-track {
   position: absolute;
@@ -431,6 +689,32 @@ p {
    the spectrum bar without losing their spot in the mixer. */
 .mixer-row.mixer-row-drone.muted {
   opacity: 0.5;
+}
+/* In MIDI learn mode every drone shows full-strength so the user can
+   read targets at a glance regardless of mute state — the dashed red
+   outline communicates "click target" without needing the dim cue. */
+.mixer-row.mixer-row-drone.muted.midi-targetable {
+  opacity: 1;
+}
+
+/* MIDI learn target — drone rows that can be clicked to arm a CC
+   binding. Dashed outline + faint red wash so the user can see
+   which rows the corner MIDI button is asking them to pick. */
+.mixer-row.mixer-row-drone.midi-targetable {
+  cursor: pointer;
+  outline: 1px dashed rgba(255, 120, 120, 0.6);
+  outline-offset: -2px;
+  border-radius: 4px;
+  background: rgba(255, 80, 80, 0.06);
+  animation: midi-target-pulse 1.6s ease-in-out infinite;
+}
+.mixer-row.mixer-row-drone.midi-targetable:hover {
+  background: rgba(255, 80, 80, 0.14);
+  outline-color: rgba(255, 160, 160, 0.9);
+}
+@keyframes midi-target-pulse {
+  0%, 100% { background: rgba(255, 80, 80, 0.04); }
+  50%      { background: rgba(255, 80, 80, 0.10); }
 }
 
 /* Per-row action cluster (drone rows only). Four icon buttons: clone,
@@ -1527,13 +1811,14 @@ kbd {
 }
 
 /* Top-row toggles — always-visible corner buttons. Right cluster:
-   settings (16px), share (58px). Left cluster: help (16px), patches
-   (58px), hydra (100px). */
+   settings (16px), midi (58px), share (100px). Left cluster: help
+   (16px), patches (58px), hydra (100px). */
 .help-toggle,
 .patches-toggle,
 .hydra-toggle,
 .settings-toggle,
 .share-toggle,
+.midi-toggle,
 .scope-mode-btn {
   display: flex;
   align-items: center;
@@ -1554,23 +1839,64 @@ kbd {
 .patches-toggle,
 .hydra-toggle,
 .settings-toggle,
-.share-toggle {
+.share-toggle,
+.midi-toggle {
   position: fixed;
   top: 16px;
-  z-index: 200;
+  /* Above .right-stack (340) and other floating panels so a tall
+     MIDI mappings list or mixer can never visually overlap the
+     corner controls. */
+  z-index: 700;
 }
 
 .settings-toggle { right: 16px; }
-.share-toggle    { right: 58px; }
+.midi-toggle     { right: 58px; }
+.share-toggle    { right: 100px; }
 .patches-toggle  { left: 58px; }
 .hydra-toggle    { left: 100px; }
 .patches-toggle:hover,
 .settings-toggle:hover,
 .share-toggle:hover,
-.hydra-toggle:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.hydra-toggle:hover,
+.midi-toggle:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
 .patches-toggle.active,
 .settings-toggle.active,
 .hydra-toggle.active { background: rgba(255, 255, 255, 0.22); color: #fff; }
+
+/* MIDI toggle — text label instead of an icon, plus two activity
+   dots floating just outside the right edge (upper = note, lower =
+   CC). Active state matches the bottom-row "on" treatment so the
+   button reads as the rest of the chrome rather than an alarm. */
+.midi-toggle {
+  position: fixed;
+  overflow: visible; /* dots sit outside the bounding box */
+}
+.midi-toggle-label {
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.04em;
+}
+.midi-toggle.active {
+  background: rgba(74, 158, 255, 0.16);
+  color: rgba(74, 158, 255, 0.95);
+}
+.midi-toggle.active:hover {
+  background: rgba(74, 158, 255, 0.26);
+  color: rgba(74, 158, 255, 1);
+}
+
+.midi-dot {
+  position: absolute;
+  right: -8px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  transition: background 80ms ease-out;
+}
+.midi-dot.note { top: 9px; }
+.midi-dot.cc   { bottom: 9px; }
+.midi-dot.flash { background: #4ade80; }
 /* Hydra-on indicator: subtle neutral lift when the synth is running,
    even if the panel is closed — same gray-on/gray-off treatment as
    the MIDI and Hold buttons inside the tray. */
@@ -1606,8 +1932,10 @@ kbd {
 .scope-mode-buttons {
   position: fixed;
   top: 16px;
-  right: 100px;
-  z-index: 200;
+  right: 142px;
+  /* Matches the other top-row toggles so a tall .right-stack panel
+     can't visually overlap. */
+  z-index: 700;
 }
 
 .scope-mode-dropdown {
@@ -2825,6 +3153,16 @@ kbd {
   opacity: 0.25;
   cursor: not-allowed;
 }
+/* ? button — same chassis as count-btn, slightly smaller font so the
+   glyph reads as an "info" affordance rather than a counter. Active
+   state (labels currently on) shows full white. */
+.fsb-help-btn {
+  font-size: 14px;
+  padding: 2px 5px;
+}
+.fsb-help-btn.is-active {
+  color: rgba(255, 255, 255, 0.95);
+}
 
 /* Settings panel overlays the spectrum bar without shifting it — the
    bar stays centered at its default position and the panel renders on
@@ -3374,6 +3712,10 @@ kbd {
 }
 .kbd-octave-btn:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+.kbd-octave-btn.is-active {
+  background: rgba(255, 255, 255, 0.32);
+  color: #fff;
 }
 
 /* Octave shift buttons — share the .kbd-octave-btn size (30 × 22) with

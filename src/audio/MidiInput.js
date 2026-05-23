@@ -20,6 +20,7 @@
  */
 
 import keyboardVoiceManager from './KeyboardVoiceManager';
+import midiCCMap from './MidiCCMap';
 
 const NOTE_OFF   = 0x80;
 const NOTE_ON    = 0x90;
@@ -42,6 +43,11 @@ class MidiInput {
     // working. Defaults true; toggled from the Settings panel.
     this._enabled = true;
     this._listeners = new Set();
+    // Activity callbacks for the corner button's two dots. Fired on
+    // every accepted note / CC message regardless of whether it maps
+    // to anything — the dots are just "wire is alive" indicators.
+    // Callbacks throttle themselves; this layer just dispatches.
+    this._activityListeners = new Set();
 
     MidiInput.instance = this;
   }
@@ -67,6 +73,18 @@ class MidiInput {
   _fire() {
     for (const fn of this._listeners) {
       try { fn(); } catch (e) { console.error('MidiInput listener error', e); }
+    }
+  }
+
+  // 'note' | 'cc' activity pings. Listener gets `(kind)`.
+  onActivity(fn) {
+    this._activityListeners.add(fn);
+    return () => this._activityListeners.delete(fn);
+  }
+
+  _fireActivity(kind) {
+    for (const fn of this._activityListeners) {
+      try { fn(kind); } catch (e) { console.error('MidiInput activity listener error', e); }
     }
   }
 
@@ -143,12 +161,33 @@ class MidiInput {
     const value    = data.length >= 3 ? data[2] : 0;
 
     if (command === NOTE_ON && value > 0) {
+      this._fireActivity('note');
       keyboardVoiceManager.noteOn(note, value / 127, { source: 'midi' });
     } else if (command === NOTE_OFF || (command === NOTE_ON && value === 0)) {
       // Some controllers send NOTE_ON with velocity 0 instead of NOTE_OFF.
+      this._fireActivity('note');
       keyboardVoiceManager.noteOff(note, { source: 'midi' });
-    } else if (command === CC && note === CC_SUSTAIN) {
-      keyboardVoiceManager.setSustainPedal(value >= 64);
+    } else if (command === CC) {
+      // Channel extracted as 1-indexed at this boundary — the rest of
+      // the app stores channels the way the UI displays them.
+      const channel = (data[0] & 0x0f) + 1;
+      this._fireActivity('cc');
+      // Opt-in raw-byte log for diagnosing controller weirdness.
+      // Toggle with `window.__midiDebug = true` in the DevTools console.
+      if (typeof window !== 'undefined' && window.__midiDebug === true) {
+        const bytes = Array.from(data).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ');
+        // eslint-disable-next-line no-console
+        console.log(`[CC raw] bytes=[${bytes}] len=${data.length} → ch${channel} cc${note} val${value}`);
+      }
+      if (note === CC_SUSTAIN) {
+        keyboardVoiceManager.setSustainPedal(value >= 64);
+        return;
+      }
+      // handleCc consumes learn-arm first, then dispatches to any
+      // bound targets. Returns true on either path; we don't need
+      // the return value here — the upstream voice manager has no
+      // generic CC behavior.
+      midiCCMap.handleCc(channel, note, value);
     }
   }
 }

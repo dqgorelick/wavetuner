@@ -71,6 +71,21 @@ function snapToPlayableRoot(midi) {
   return clampRoot(r);
 }
 
+// Snap to the nearest C MIDI (any octave). Used by white-only mode so
+// the QWERTY layout's chromatic offsets [0, 2, 4, 5, 7, 9, 11] line up
+// with actual piano white keys — only true when kbdRoot is itself a C.
+// Picks whichever C is closer; ties round up. The result is also passed
+// through snapToPlayableRoot so the playable-floor invariant holds.
+function snapToNearestC(midi) {
+  const pc = ((midi % 12) + 12) % 12;
+  const candidateDown = midi - pc;
+  const candidateUp = candidateDown + 12;
+  const snapped = (midi - candidateDown) <= (candidateUp - midi)
+    ? candidateDown
+    : candidateUp;
+  return snapToPlayableRoot(snapped);
+}
+
 /**
  * Keyboard tray that rolls up from the bottom of the viewport. When open,
  * the wrapper gets a `kbd-tray-open` class so the existing bottom-anchored
@@ -101,37 +116,59 @@ export default function KeyboardTray({
   onKbdVoiceCountChange,
   oscillatorCount = 12,
   showKeyLabels = false,
+  // The 'notes' toggle mirrors kbdKeyMode owned by App: 'white-only' =
+  // 7 (diatonic), 'chromatic' = 12. Same state shown here and in
+  // SettingsPanel → Keys; either surface flips the same flag.
+  kbdKeyMode = 'chromatic',
+  onKbdKeyModeChange,
 }) {
   // MIDI note that letter offset 0 ('A') triggers. Seeded from the
   // current lowest drone if tuning has spun up (typical after audio
   // init); falls back to C4 (60) for first paint before the engine is
   // ready. Clamped to a range that keeps every offset (0..15) within
   // valid MIDI.
+  // The visual root is always snapped to the nearest C (in both
+  // chromatic and white-only modes). kbdRoot only controls the
+  // ON-SCREEN keyboard's visual layout — audio mapping is anchored to
+  // the SORTED drone list (letter A always plays sorted[0], regardless
+  // of kbdRoot). Anchoring to C means the on-screen keys read as a
+  // familiar C-major piano stripe whether the bass drone is at C, Ab,
+  // or anywhere else, and the white-only key filter (which requires
+  // kbdRoot to be a C to correctly silence piano blacks) always works.
   const [kbdRoot, setKbdRoot] = useState(() => {
     const lowest = tuning.sortedFrequencies[0];
     const midi = freqToMidi(lowest);
-    return midi == null ? 60 : snapToPlayableRoot(midi);
+    if (midi == null) return 60;
+    return snapToNearestC(midi);
   });
   // Number of visible piano octaves. Default 1 — the letter row plus a
   // five-key "peek" up to the E above (offset +16). Each step above 1
   // adds one full octave of context BELOW the letter row.
   const [keyboardZoom, setKeyboardZoom] = useState(1);
   const clampZoom = (n) => Math.max(1, Math.min(6, n | 0));
-  const stepSize = Math.max(1, oscillatorCount | 0);
+  // Z/X transpose step. In white-only mode we force the step to 12
+  // (one chromatic octave) so kbdRoot stays anchored to a C — the
+  // QWERTY layout's offsets [0, 2, 4, 5, 7, 9, 11] only hit real piano
+  // whites when the root is itself a C. Stepping by anything else
+  // (e.g. the scale size 7) would slide kbdRoot off a C and the
+  // "7 keys = white keys" invariant would break.
+  const stepSize = kbdKeyMode === 'white-only'
+    ? 12
+    : Math.max(1, oscillatorCount | 0);
   const shiftRoot = (delta) =>
     setKbdRoot((r) => clampRoot(r + delta));
 
-  // Keep the keyboard's lowest letter aligned with the lowest drone
-  // frequency. Fires once on mount (in case the engine spun up between
-  // our useState init and now) and on every tuning change (drone count,
-  // scale, ordering). User Z/X transposition is intentionally overwritten
-  // here — the alignment to the bass drone wins on every scale event.
+  // Keep the keyboard's visual root aligned with the nearest C to the
+  // lowest drone's pitch. Fires once on mount and on every tuning
+  // change (drone count, scale, ordering). User Z/X transposition is
+  // intentionally overwritten here — the alignment wins on every scale
+  // event so a drone change re-centers the visual on a familiar C.
   useEffect(() => {
     const align = () => {
       const lowest = tuning.sortedFrequencies[0];
       const midi = freqToMidi(lowest);
       if (midi == null) return;
-      setKbdRoot(snapToPlayableRoot(midi));
+      setKbdRoot(snapToNearestC(midi));
     };
     align();
     return tuning.onChange(align);
@@ -232,6 +269,33 @@ export default function KeyboardTray({
               disabled={keyboardZoom <= 1}
             >
               +
+            </button>
+          </div>
+        </div>
+        {/* Notes — 7 (diatonic / white keys only) vs 12 (chromatic / all
+            keys). Mirrors kbdKeyMode in App; toggling here is instant
+            (keyboard playback changes immediately). Load also writes
+            this state to match its system's recommended size. */}
+        <div className="kbd-hold-row">
+          <span className="kbd-hold-caption">notes</span>
+          <div className="kbd-row-controls">
+            <button
+              type="button"
+              className={`kbd-octave-btn${kbdKeyMode === 'white-only' ? ' is-active' : ''}`}
+              onClick={() => onKbdKeyModeChange?.('white-only')}
+              aria-pressed={kbdKeyMode === 'white-only'}
+              title="Diatonic — only white keys play (7 notes per octave)"
+            >
+              7
+            </button>
+            <button
+              type="button"
+              className={`kbd-octave-btn${kbdKeyMode === 'chromatic' ? ' is-active' : ''}`}
+              onClick={() => onKbdKeyModeChange?.('chromatic')}
+              aria-pressed={kbdKeyMode === 'chromatic'}
+              title="Chromatic — every key plays (12 notes per octave)"
+            >
+              12
             </button>
           </div>
         </div>

@@ -3,6 +3,7 @@ import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { keyboardEnvelope } from '../audio/Envelope';
 import { droneStereo, keyboardStereo, midiStereo } from '../audio/StereoMode';
+import midiCCMap from '../audio/MidiCCMap';
 import palette, { useTheme } from '../theme/palette';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -151,14 +152,17 @@ function startMixerDrag(e) {
 // active position. For drones / partials, fill and ball share the same
 // value. For voices, fill = live envelope amp (animates), ball =
 // steady-state target. Released voices hide the ball.
-const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released }) {
+// `disabled` blocks the drag handler; the fader still renders so the
+// fill/ball stay visible. Used during MIDI learn mode so a click can't
+// stealth-write a new volume on the same gesture that arms the binding.
+const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released, disabled }) {
   const fillPct = Math.max(0, Math.min(1, fill)) * 100;
   const ballPct = ball === null ? null : Math.max(0, Math.min(1, ball)) * 100;
   return (
     <div
-      className={`mixer-fader ${released ? 'released' : ''}`}
+      className={`mixer-fader ${released ? 'released' : ''} ${disabled ? 'disabled' : ''}`}
       style={{ '--mixer-color': color }}
-      onPointerDown={startMixerDrag}
+      onPointerDown={disabled ? undefined : startMixerDrag}
       {...dataAttrs}
     >
       <div className="mixer-fader-track" />
@@ -259,7 +263,7 @@ const BUS_COLOR = 'rgba(255, 255, 255, 0.85)';
 // toggle sits to the left of the value readout so the user can flip
 // each source's pan mode without leaving the mixer.
 const BusFader = memo(function BusFader({
-  busKey, label, value, muted, stereoMode, onToggleMute, onToggleStereo,
+  busKey, label, value, muted, stereoMode, onToggleMute, onToggleStereo, disabled,
 }) {
   const fill = Math.max(0, Math.min(1, value / 2));
   const stopPointer = (e) => e.stopPropagation();
@@ -289,6 +293,7 @@ const BusFader = memo(function BusFader({
         ball={fill}
         color={BUS_COLOR}
         released={false}
+        disabled={disabled}
       />
       <div className="mixer-row-buttons mixer-row-buttons-voice" onPointerDown={stopPointer}>
         <button
@@ -318,7 +323,7 @@ function meterZone(holdLevel) {
 // peak hold ticks decay slowly per channel so brief transients stay
 // visible long enough to read.
 const MasterFader = memo(function MasterFader({
-  value, muted, peakL, peakR, peakHoldL, peakHoldR, onToggleMute,
+  value, muted, peakL, peakR, peakHoldL, peakHoldR, onToggleMute, disabled,
 }) {
   const ballPct = Math.max(0, Math.min(1, value)) * 100;
   const metPctL = Math.max(0, Math.min(1, peakL)) * 100;
@@ -337,9 +342,9 @@ const MasterFader = memo(function MasterFader({
       <span className="mixer-bus-value">{value.toFixed(2)}</span>
       <span className="mixer-source-tag mixer-source-tag-empty" />
       <div
-        className="mixer-fader mixer-fader-master"
+        className={`mixer-fader mixer-fader-master ${disabled ? 'disabled' : ''}`}
         style={{ '--mixer-color': BUS_COLOR }}
-        onPointerDown={startMixerDrag}
+        onPointerDown={disabled ? undefined : startMixerDrag}
         data-master=""
       >
         <div className={`mixer-master-meter-row L ${zoneL}`} style={{ width: `${metPctL}%` }} />
@@ -365,8 +370,19 @@ const MasterFader = memo(function MasterFader({
   );
 });
 
-function Mixer({ oscillatorCount }) {
+function Mixer({ oscillatorCount, midiLearnOn = false }) {
   useTheme(); // re-render on theme flip so palette.oscColor swaps correctly
+
+  // When MIDI learn mode is on, un-muted drone rows become click
+  // targets that arm a CC binding. The capture-phase handler beats
+  // the Fader's onPointerDown so dragging doesn't fire while learn
+  // mode is active. Released-voice rows are unaffected.
+  const handleArmDrone = (slot) => (e) => {
+    if (!midiLearnOn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    midiCCMap.arm({ kind: 'drone-volume', slot });
+  };
 
   // RAF-driven snapshot of mixer rows.
   //   rows: flat list of { type: 'drone' | 'partial', ... }
@@ -432,33 +448,40 @@ function Mixer({ oscillatorCount }) {
         const droneBusOff = audioEngine.droneEnabled === false;
         const nextRows = [];
         for (let i = 0; i < oscillatorCount; i++) {
-          // Only audible drones appear in the mixer. Muting a single
-          // drone (× in its button cluster) removes its row; flipping
-          // the global drone toggle off removes all of them. Re-enabling
-          // happens via the spectrum bar (per-slot) or the drone toggle
-          // (global). Volume === 0 is NOT the same as muted: a silent-
-          // but-unmuted row still renders so the user can find and
-          // raise it. Partials of a hidden drone are dropped with it.
+          // Audible-only by default: muted drones (× button) and the
+          // global drone off-state hide the row. MIDI learn mode is the
+          // exception — every slot must be visible there so the user can
+          // bind a CC to a currently-muted drone too. Partials still only
+          // attach to audible primaries even in learn mode (CC binding
+          // for partials is v2; showing them on a muted parent would just
+          // be clutter).
           const baseFreq = freqs[i] ?? 0;
           const v100 = vols100[i] ?? 0;
           const isMuted = !!muted[i];
-          if (droneBusOff || isMuted) continue;
+          const audible = !droneBusOff && !isMuted;
+          if (!audible && !midiLearnOn) continue;
           // Partials first in DOM so column-reverse puts the primary
-          // on top of its partials. Always show every extra of an
-          // audible primary — even silent/muted ones — so the user
-          // can re-enable without re-finding the row.
-          const extras = audioEngine.getExtraPartials(i);
-          for (const p of extras) {
-            nextRows.push({
-              type: 'partial',
-              id: p.id,
-              slot: i,
-              partialIndex: p.partialIndex,
-              ratio: p.ratio,
-              freq: baseFreq * p.ratio,
-              vol: p.vol,
-              muted: p.muted,
-            });
+          // on top of its partials. Muted partials hide when learn
+          // mode is off (matches the drone-row rule — anything not
+          // currently audible drops out of the normal view). In learn
+          // mode they reappear so the user can see the full structure
+          // while mapping. The PartialButtons cluster on the parent
+          // gives them a way back even when hidden.
+          if (audible) {
+            const extras = audioEngine.getExtraPartials(i);
+            for (const p of extras) {
+              if (p.muted && !midiLearnOn) continue;
+              nextRows.push({
+                type: 'partial',
+                id: p.id,
+                slot: i,
+                partialIndex: p.partialIndex,
+                ratio: p.ratio,
+                freq: baseFreq * p.ratio,
+                vol: p.vol,
+                muted: p.muted,
+              });
+            }
           }
           nextRows.push({
             type: 'drone',
@@ -540,7 +563,7 @@ function Mixer({ oscillatorCount }) {
     };
     tick();
     return () => cancelAnimationFrame(raf);
-  }, [oscillatorCount]);
+  }, [oscillatorCount, midiLearnOn]);
 
   return (
     <div className="mixer-panel" role="region" aria-label="Mixer">
@@ -551,11 +574,18 @@ function Mixer({ oscillatorCount }) {
             const color = palette.oscColor(slot, oscillatorCount);
             const note = freqToNote(freq);
             const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
+            // In learn mode, every drone slot (audible OR muted) is a
+            // click target so the user can bind a CC to any slot in
+            // order. Capture-phase pointerdown beats the Fader's drag
+            // handler.
             return (
               <div
                 key={`drone-${slot}`}
-                className={`mixer-row mixer-row-drone ${muted ? 'muted' : ''}`}
+                className={`mixer-row mixer-row-drone ${muted ? 'muted' : ''} ${midiLearnOn ? 'midi-targetable' : ''}`}
                 style={{ '--mixer-color': color }}
+                onPointerDownCapture={midiLearnOn ? handleArmDrone(slot) : undefined}
+                role={midiLearnOn ? 'button' : undefined}
+                title={midiLearnOn ? `Bind a CC to D${slot + 1}` : undefined}
               >
                 <span className="mixer-marker">D{slot + 1}</span>
                 <span className="mixer-freq">{formatFreq(freq)}</span>
@@ -567,6 +597,7 @@ function Mixer({ oscillatorCount }) {
                   ball={vol}
                   color={color}
                   released={false}
+                  disabled={midiLearnOn}
                 />
                 <PrimaryButtons slot={slot} />
               </div>
@@ -596,6 +627,7 @@ function Mixer({ oscillatorCount }) {
                 ball={vol}
                 color={color}
                 released={false}
+                disabled={midiLearnOn}
               />
               <PartialButtons slot={slot} partialIndex={partialIndex} />
             </div>
@@ -629,6 +661,7 @@ function Mixer({ oscillatorCount }) {
                 ball={released ? null : target}
                 color={color}
                 released={released}
+                disabled={midiLearnOn}
               />
               <div
                 className="mixer-row-buttons mixer-row-buttons-voice"
@@ -659,6 +692,7 @@ function Mixer({ oscillatorCount }) {
           stereoMode={stereoDrone}
           onToggleMute={() => audioEngine.toggleDroneBusMute()}
           onToggleStereo={() => droneStereo.setMode(stereoDrone === 'stereo' ? 'lr' : 'stereo')}
+          disabled={midiLearnOn}
         />
         <BusFader
           busKey="kbd"
@@ -668,6 +702,7 @@ function Mixer({ oscillatorCount }) {
           stereoMode={stereoKbd}
           onToggleMute={() => audioEngine.toggleKbdBusMute()}
           onToggleStereo={() => keyboardStereo.setMode(stereoKbd === 'stereo' ? 'lr' : 'stereo')}
+          disabled={midiLearnOn}
         />
         <BusFader
           busKey="midi"
@@ -677,6 +712,7 @@ function Mixer({ oscillatorCount }) {
           stereoMode={stereoMidi}
           onToggleMute={() => audioEngine.toggleMidiBusMute()}
           onToggleStereo={() => midiStereo.setMode(stereoMidi === 'stereo' ? 'lr' : 'stereo')}
+          disabled={midiLearnOn}
         />
         <MasterFader
           value={master}
@@ -686,6 +722,7 @@ function Mixer({ oscillatorCount }) {
           peakHoldL={peakHoldL}
           peakHoldR={peakHoldR}
           onToggleMute={() => audioEngine.toggleMasterMute()}
+          disabled={midiLearnOn}
         />
       </div>
     </div>

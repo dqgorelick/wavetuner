@@ -326,6 +326,15 @@ export default function SettingsPanel({
             fill
           </button>
         </div>
+        {/* TODO: revisit keyboard ordering. Today, white-only mode shifts
+            the drone→key mapping so consecutive white keys play consecutive
+            scale degrees (ascending). This matches the playing-style
+            intent for diatonic systems, but loses the property that a
+            given QWERTY key always plays the same drone slot. An
+            alternative mode — "fixed semitone mapping" where blacks just
+            go silent without re-indexing whites — could live here as a
+            third option. For now we ship the ascending behavior; if
+            users miss the semitone-fixed mode, surface it as a setting. */}
         <label className="settings-sublabel">Keys</label>
         <div className="settings-toggle-row">
           <button

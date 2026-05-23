@@ -276,6 +276,11 @@ function FrequencySpectrumBar({
   // count buttons to the right of the spectrum-bar pill.
   onOscillatorCountChange,
   maxOscillators = 10,
+  // Keybind-labels toggle — the "?" button on the right rail flips
+  // whether the on-screen piano shows its Z/X/letter caption overlay.
+  // State is owned by App; the bar only renders the button.
+  showKbdLabels = false,
+  onShowKbdLabelsChange,
 }) {
   // Subscribe to theme changes so JSX re-renders when the user flips
   // palette in settings — every osc-color lookup below reads live from
@@ -1187,6 +1192,14 @@ function FrequencySpectrumBar({
           title="Add oscillator"
           aria-label="Add oscillator"
         >+</button>
+        <button
+          type="button"
+          className={`fsb-count-btn fsb-help-btn${showKbdLabels ? ' is-active' : ''}`}
+          onClick={() => onShowKbdLabelsChange?.(!showKbdLabels)}
+          aria-pressed={showKbdLabels}
+          title={showKbdLabels ? 'Hide keybind labels on the piano' : 'Show keybind labels on the piano'}
+          aria-label="Toggle keybind labels"
+        >?</button>
       </div>
       </div>
     </>

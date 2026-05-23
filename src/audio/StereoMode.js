@@ -169,16 +169,30 @@ class StereoMode {
 //     dual-osc L≠R width by default — that's the more interesting voice
 //     setup. Master detune 1.5 Hz — keyboard voices are transient so the
 //     spread reads clearly even at gentle widths.
-//   - MIDI also starts in 'stereo' with the same detune as kbd, but is
-//     a separate StereoMode instance so the mixer can toggle MIDI's pan
-//     mode independently from the computer keyboard.
+//   - MIDI starts in 'stereo' as a separate StereoMode instance so the
+//     mixer can toggle MIDI's pan mode independently from the computer
+//     keyboard. Its own detuneHz/detuneCurve fields are unused — there
+//     is only one "Keyboard stereo" detune control in Settings, and MIDI
+//     voices read keyboardStereo's curve + master Hz via the proxy below.
 export const droneStereo = new StereoMode({ detuneHz: 1 });
 export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 1.5 });
-export const midiStereo = new StereoMode({ mode: 'stereo', detuneHz: 1.5 });
+export const midiStereo = new StereoMode({ mode: 'stereo' });
 
-/** Pick the StereoMode instance that owns a given voice source. */
+/** Pick the StereoMode-like object that drives a given voice source.
+ *  kbd voices use keyboardStereo directly (mode + detune both come from
+ *  the "Keyboard stereo" panel). MIDI voices get a proxy that takes its
+ *  pan mode from midiStereo (so the mixer's MIDI stereo toggle is
+ *  independent) but its detune amount from keyboardStereo — so the
+ *  Settings panel's keyboard detune drives both kbd and MIDI together. */
 export function stereoForSource(source) {
-  return source === 'midi' ? midiStereo : keyboardStereo;
+  if (source !== 'midi') return keyboardStereo;
+  return {
+    get mode() { return midiStereo.mode; },
+    detuneHzAt(i) {
+      if (midiStereo.mode !== 'stereo') return 0;
+      return (keyboardStereo.detuneCurve[i] || 0) * keyboardStereo.detuneHz;
+    },
+  };
 }
 
 export default StereoMode;

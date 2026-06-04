@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import audioEngine from '../audio/AudioEngine';
 
@@ -39,6 +39,13 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
   const startRef = useRef({ x: 0, y: 0 });
   const lastShiftRef = useRef(false);
   const draggingRef = useRef(false);
+  // Pointermove can fire faster than the display refresh (e.g. 120 Hz trackpads on
+  // 60 Hz monitors). Coalesce moves to one applyDrag() per frame — the audio
+  // engine fan-out (setAllFrequenciesBatch + Tuning._recompute + listeners) is
+  // the same per-call cost regardless of pointer rate, so running it 2× per
+  // frame is pure waste. Latest event wins; intermediate ones are dropped.
+  const pendingMoveRef = useRef(null);
+  const moveRafRef = useRef(0);
   const [ghost, setGhost] = useState(null); // { x, y } viewport coords while dragging; null at rest
 
   // Re-snapshot current audio state and reset the drag origin to the current
@@ -117,19 +124,45 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
     rebase(e.clientX, e.clientY);
     setGhost({ x: e.clientX, y: e.clientY });
   };
+  const flushPendingMove = () => {
+    moveRafRef.current = 0;
+    const p = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (!p || !draggingRef.current) return;
+    applyDrag(p.x, p.y, p.shiftKey);
+  };
   const handlePointerMove = (e) => {
     if (!draggingRef.current) return;
     e.preventDefault();
-    applyDrag(e.clientX, e.clientY, e.shiftKey);
+    pendingMoveRef.current = { x: e.clientX, y: e.clientY, shiftKey: e.shiftKey };
+    if (!moveRafRef.current) {
+      moveRafRef.current = requestAnimationFrame(flushPendingMove);
+    }
   };
   const handlePointerUp = (e) => {
     if (!draggingRef.current) return;
+    // Flush a queued move so the resting position matches the cursor's final
+    // location — otherwise the last sub-frame of motion would be discarded.
+    if (moveRafRef.current) {
+      cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = 0;
+    }
+    if (pendingMoveRef.current) {
+      const p = pendingMoveRef.current;
+      pendingMoveRef.current = null;
+      applyDrag(p.x, p.y, p.shiftKey);
+    }
     draggingRef.current = false;
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
     freqSnapshotRef.current = null;
     volSnapshotRef.current = null;
     setGhost(null);
   };
+
+  // Unmount safety: if the component dies mid-drag, cancel the pending frame.
+  useEffect(() => () => {
+    if (moveRafRef.current) cancelAnimationFrame(moveRafRef.current);
+  }, []);
 
   const isDragging = ghost !== null;
 

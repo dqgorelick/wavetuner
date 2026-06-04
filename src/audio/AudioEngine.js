@@ -2468,6 +2468,10 @@ class AudioEngine {
     if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
       droneEnvelope.applyNoteOff(this.gainNodesR[index].gain, this.audioContext);
     }
+    // Notify listeners so demand-driven UIs (FSB) repaint the muted state.
+    // Tuning._recompute is a no-op for mute-only changes since the sorted
+    // frequency array doesn't depend on mute — adds one cheap sort and bails.
+    this._notifyFrequencyChange();
   }
 
   /**
@@ -2487,6 +2491,7 @@ class AudioEngine {
     if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
       droneEnvelope.applyNoteOn(this.gainNodesR[index].gain, this.audioContext, peak);
     }
+    this._notifyFrequencyChange();
   }
   
   /**

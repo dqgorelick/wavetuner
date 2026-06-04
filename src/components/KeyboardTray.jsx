@@ -32,17 +32,6 @@ function visibleMidiRange(kbdRoot, octaveCount) {
   return { startMidi, endMidi };
 }
 
-// Log-scale 20Hz–20kHz reference window for positioning the keyboard's
-// visible span inside the mini range bar.
-const RANGE_BAR_HZ_MIN = 20;
-const RANGE_BAR_HZ_MAX = 20000;
-const RANGE_BAR_LOG_MIN = Math.log2(RANGE_BAR_HZ_MIN);
-const RANGE_BAR_LOG_MAX = Math.log2(RANGE_BAR_HZ_MAX);
-function logFracHz(f) {
-  const clamped = Math.max(RANGE_BAR_HZ_MIN, Math.min(RANGE_BAR_HZ_MAX, f));
-  return (Math.log2(clamped) - RANGE_BAR_LOG_MIN) / (RANGE_BAR_LOG_MAX - RANGE_BAR_LOG_MIN);
-}
-
 // Round a frequency to its nearest equal-temperament MIDI note. Used to
 // snap the keyboard's root to the current lowest drone — we want a
 // playable MIDI integer, not the drone's microtonal frequency itself
@@ -121,6 +110,7 @@ export default function KeyboardTray({
   // SettingsPanel → Keys; either surface flips the same flag.
   kbdKeyMode = 'chromatic',
   onKbdKeyModeChange,
+  onShowKeyLabelsChange,
 }) {
   // MIDI note that letter offset 0 ('A') triggers. Seeded from the
   // current lowest drone if tuning has spun up (typical after audio
@@ -202,23 +192,20 @@ export default function KeyboardTray({
           const { startMidi, endMidi } = visibleMidiRange(kbdRoot, keyboardZoom);
           const lowHz = midiToHz(startMidi);
           const highHz = midiToHz(endMidi - 1);
-          const leftPct = logFracHz(lowHz) * 100;
-          const rightPct = logFracHz(highHz) * 100;
-          const widthPct = Math.max(1, rightPct - leftPct);
           return (
             <div
               className="kbd-range-row"
               title={`Keyboard range: ${lowHz.toFixed(1)} Hz – ${highHz.toFixed(1)} Hz`}
             >
               <span className="kbd-range-text">
-                {formatHz(lowHz)}hz <span className="kbd-range-sep">↔</span> {formatHz(highHz)}hz
+                <span className="kbd-range-num">{formatHz(lowHz)}hz</span>
+                <span className="kbd-range-arrow" aria-hidden="true">
+                  <span className="kbd-range-arrow-cap kbd-range-arrow-cap-left" />
+                  <span className="kbd-range-arrow-line" />
+                  <span className="kbd-range-arrow-cap kbd-range-arrow-cap-right" />
+                </span>
+                <span className="kbd-range-num">{formatHz(highHz)}hz</span>
               </span>
-              <div className="kbd-range-bar" aria-hidden="true">
-                <div
-                  className="kbd-range-bar-fill"
-                  style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                />
-              </div>
             </div>
           );
         })()}
@@ -232,7 +219,7 @@ export default function KeyboardTray({
               aria-label="Transpose down"
               title={`Transpose down ${stepSize} semitones (Z)`}
             >
-              <span className="kbd-octave-arrow">↓</span>
+              <span className="kbd-octave-arrow">←</span>
               {showKeyLabels && <span className="kbd-octave-key">Z</span>}
             </button>
             <button
@@ -242,7 +229,7 @@ export default function KeyboardTray({
               aria-label="Transpose up"
               title={`Transpose up ${stepSize} semitones (X)`}
             >
-              <span className="kbd-octave-arrow">↑</span>
+              <span className="kbd-octave-arrow">→</span>
               {showKeyLabels && <span className="kbd-octave-key">X</span>}
             </button>
           </div>
@@ -305,6 +292,7 @@ export default function KeyboardTray({
           kbdRoot={kbdRoot}
           octaveCount={keyboardZoom}
           showKeyLabels={showKeyLabels}
+          keyMode={kbdKeyMode}
         />
       </div>
       <div className="kbd-tray-right">
@@ -361,6 +349,20 @@ export default function KeyboardTray({
               title="MIDI hold — latch played notes until re-pressed"
             >
               {midiHoldOn ? 'ON' : 'OFF'}
+            </button>
+          </div>
+        </div>
+        <div className="kbd-hold-row">
+          <span className="kbd-hold-caption">labels</span>
+          <div className="kbd-row-controls">
+            <button
+              type="button"
+              className={`kbd-hold-btn ${showKeyLabels ? 'on' : 'off'}`}
+              onClick={() => onShowKeyLabelsChange?.(!showKeyLabels)}
+              aria-pressed={!!showKeyLabels}
+              title={showKeyLabels ? 'Hide keybind labels on the piano' : 'Show keybind labels on the piano'}
+            >
+              {showKeyLabels ? 'ON' : 'OFF'}
             </button>
           </div>
         </div>

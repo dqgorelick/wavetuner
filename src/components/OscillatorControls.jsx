@@ -106,6 +106,18 @@ function OscillatorControls({
     audioEngine.toggleMute(index);
   };
 
+  // Mute every un-muted slot in one click. Button only renders when at
+  // least one slot is currently un-muted; once everything's muted it
+  // hides itself (there's nothing left for it to do). To bring drones
+  // back the user clicks individual squares — no toggle here.
+  const handleAllOff = () => {
+    if (!audioEngine.initialized) return;
+    for (let i = 0; i < oscillatorCount; i++) {
+      if (!mutedOscillators[i]) audioEngine.muteOscillator(i);
+    }
+  };
+  const anyOn = mutedOscillators.some((m) => !m);
+
   return (
     <div className="osc-controls-panel">
       {/* Drone tray — slides open whenever drones are enabled. Holds the
@@ -114,23 +126,48 @@ function OscillatorControls({
           events are suppressed via the open class so the squares can't
           be clicked while collapsed. */}
       <div className={`drone-tray${droneEnabled ? ' open' : ''}`}>
-        {oscillators.map((osc) => {
-          const muted = mutedOscillators[osc.index] || false;
-          return (
+        {/* 3-column grid: [empty 1fr] [centered cells] [actions 1fr].
+            Left and right slots have matching flex (1fr) so the middle
+            cell row stays horizontally centered regardless of whether
+            the × button is present in the right slot. */}
+        <div className="drone-tray-slot drone-tray-slot-left" aria-hidden="true" />
+        <div className="drone-tray-cells">
+          {oscillators.map((osc) => {
+            const muted = mutedOscillators[osc.index] || false;
+            return (
+              <button
+                key={`m-${osc.index}`}
+                type="button"
+                className={`drone-tray-cell ${muted ? 'off' : 'on'}`}
+                style={{ '--cell-color': osc.color }}
+                onClick={() => handleMuteToggle(osc.index)}
+                title={muted ? `Unmute ${osc.label}` : `Mute ${osc.label}`}
+                aria-pressed={!muted}
+                tabIndex={droneEnabled ? 0 : -1}
+              >
+                {osc.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="drone-tray-slot drone-tray-slot-right">
+          {/* × — mutes every un-muted slot in one click. Self-hides
+              once nothing is left to mute, so its presence is the cue
+              that there are drones sounding. The surrounding slot
+              keeps its 1fr width regardless, so cells don't shift. */}
+          {anyOn && (
             <button
-              key={`m-${osc.index}`}
               type="button"
-              className={`drone-tray-cell ${muted ? 'off' : 'on'}`}
-              style={{ '--cell-color': osc.color }}
-              onClick={() => handleMuteToggle(osc.index)}
-              title={muted ? `Unmute ${osc.label}` : `Mute ${osc.label}`}
-              aria-pressed={!muted}
+              className="drone-tray-all-off"
+              onClick={handleAllOff}
+              title="Mute all drones"
+              aria-label="Mute all drones"
               tabIndex={droneEnabled ? 0 : -1}
             >
-              {osc.label}
+              ×
             </button>
-          );
-        })}
+          )}
+        </div>
       </div>
       <div className="osc-grid-wrap">
         <div className="osc-grid-row bottom-row">

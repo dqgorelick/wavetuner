@@ -1031,8 +1031,6 @@ function App() {
             suppressAutoUnmute={isKbdTrayOpen}
             onOscillatorCountChange={handleOscillatorCountChange}
             maxOscillators={maxOscillators}
-            showKbdLabels={showKbdLabels}
-            onShowKbdLabelsChange={setShowKbdLabels}
           />
           {isTuningOpen && (
             <div className="left-stack">
@@ -1258,6 +1256,7 @@ function App() {
             onKbdVoiceCountChange={setKbdVoiceCount}
             oscillatorCount={oscillatorCount}
             showKeyLabels={showKbdLabels}
+            onShowKeyLabelsChange={setShowKbdLabels}
             kbdKeyMode={kbdKeyMode}
             onKbdKeyModeChange={setKbdKeyMode}
           />

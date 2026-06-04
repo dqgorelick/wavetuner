@@ -2148,10 +2148,12 @@ kbd {
    pointer-events: none when closed so collapsed squares aren't
    click-targets. */
 .drone-tray {
-  display: flex;
-  justify-content: center;
+  /* 3-column layout: left spacer (1fr) | cells (auto, content-sized) |
+     right slot (1fr). Equal flex on the side columns keeps the cells
+     centered whether or not the × button is present in the right slot. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 4px;
   max-height: 0;
   margin: 0;
   padding: 0;
@@ -2164,6 +2166,19 @@ kbd {
     opacity 0.2s ease,
     transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
     padding 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.drone-tray-cells {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.drone-tray-slot {
+  display: flex;
+  align-items: center;
+}
+.drone-tray-slot-right {
+  justify-content: flex-start;
+  padding-left: 8px;
 }
 .drone-tray.open {
   max-height: 40px;
@@ -2211,6 +2226,35 @@ kbd {
   background: color-mix(in srgb, var(--cell-color), white 15%);
 }
 
+/* × button — one-click silence-all. Lives in the right-side slot of
+   the drone-tray's 3-column grid, so it appears "after" the cells
+   without affecting their centered position. Small square button with
+   a faint outline so it reads as a separate action from the per-osc
+   color squares. */
+.drone-tray-all-off {
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.drone-tray-all-off:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
 
 /* Left "ALL" column — mirrors .osc-col layout so the per-row slots
    (readout / octave buttons / fader / mute) line up with the per-osc cols. */
@@ -3488,7 +3532,7 @@ kbd {
 #wrapper.kbd-tray-open {
   /* Taller than the previous ~50 px strip so the full key column is
      comfortably visible without cropping the labels at the top. */
-  --kbd-tray-h: 120px;
+  --kbd-tray-h: 140px;
 }
 
 /* Drone tray contributes its own height variable to bottom-anchored
@@ -3544,13 +3588,15 @@ kbd {
      animating `height` (height transitions don't compose well with the
      grid layout inside). Match the open-state --kbd-tray-h above so the
      spectrum bar lifts exactly to the top of the tray. */
-  height: 120px;
+  height: 140px;
   z-index: 600;
   display: grid;
-  grid-template-columns: 130px 1fr 130px;
+  grid-template-columns: 150px 1fr 150px;
   align-items: stretch;
   background: rgba(15, 15, 15, 0.92);
   border-top: 1px solid rgba(255, 255, 255, 0.15);
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  border-right: 1px solid rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   user-select: none;
@@ -3576,46 +3622,60 @@ kbd {
   padding: 0 10px;
   color: #fff;
   font-size: 12px;
+  overflow: hidden;
+  min-width: 0;
 }
 
-/* Keyboard frequency-range readout: tiny log-scale strip (20Hz–20kHz)
-   with the currently-visible keyboard span highlighted. Sits above the
-   range-shift (Z/X) buttons so the player can see where the on-screen
-   keys land in the broader spectrum at a glance. The "range" label
-   lives on the Z/X row below — these numbers carry on their own. */
+/* Keyboard frequency-range readout — muted blue tint with soft rounded
+   corners so it reads as a small display panel without a heavy bezel.
+   Sits above the range-shift (← / →) buttons. */
 .kbd-range-row {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 3px;
+  align-items: center;
   margin-bottom: 2px;
 }
 .kbd-range-text {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
   font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.3px;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.7);
+}
+.kbd-range-num {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
-.kbd-range-sep {
-  margin: 0 4px;
-  color: rgba(255, 255, 255, 0.55);
+.kbd-range-arrow {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.45);
+  font-family: monospace;
   font-weight: 500;
 }
-.kbd-range-bar {
-  position: relative;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 2px;
-  overflow: hidden;
+.kbd-range-arrow-cap {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
 }
-.kbd-range-bar-fill {
-  position: absolute;
-  top: 0;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.55);
-  border-radius: 2px;
+.kbd-range-arrow-cap-left {
+  border-right: 4px solid currentColor;
+}
+.kbd-range-arrow-cap-right {
+  border-left: 4px solid currentColor;
+}
+.kbd-range-arrow-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 1px;
+  background: currentColor;
 }
 
 /* Generic right-aligned control group used inside every kbd-tray row —
@@ -3950,6 +4010,24 @@ kbd {
      white's clip-path on both bottom corners; the dark tray bg shows
      through the 1px gap as a piano-style seam line. */
   border-bottom: 1px solid rgba(255, 255, 255, 0.55);
+}
+/* Diatonic layout (white-only mode) — whites are equal-width per WHITE
+   count (7 per octave) and don't use a clip-path. Add a 1px right inset
+   on each white's shape so adjacent whites show a dark seam between
+   them, matching the piano-look the clip-path produces in chromatic. */
+.osk.osk-diatonic .osk-white .osk-key-shape {
+  inset: 0 1px 0 0;
+}
+/* Blacks in diatonic mode are NEVER playable (the white-only audio
+   filter silences them). Fade them well past the generic .silent
+   treatment so they read as decorative-only — visible enough that the
+   piano shape is recognizable, but clearly off-limits. */
+.osk.osk-diatonic .osk-black {
+  opacity: 0.22;
+  filter: brightness(0.5) saturate(0.4);
+}
+.osk.osk-diatonic .osk-black .osk-key-shape {
+  cursor: default;
 }
 
 .osk-black {

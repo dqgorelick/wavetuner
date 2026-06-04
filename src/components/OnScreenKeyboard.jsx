@@ -28,7 +28,7 @@ function midiToDegreeOctave(midi) {
  * per-frame DOM update (no React state on the hot path — same pattern
  * the existing oscilloscope uses).
  */
-export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKeyLabels = false }) {
+export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKeyLabels = false, keyMode = 'chromatic' }) {
   const containerRef = useRef(null);
   const keyRefs = useRef(new Map()); // midi → element
   const leftArrowRef = useRef(null);
@@ -75,7 +75,7 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
     if (BLACK_OFFSET_SET.has(lastOff)) endMidi += 1;
   }
 
-  const { keys, totalKeys } = useMemo(() => {
+  const { keys, totalKeys, totalWhites } = useMemo(() => {
     const visibleStart = startMidi;
     const visibleEnd = endMidi;
     // Every visible semitone gets its own equal-width column. The
@@ -89,7 +89,14 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
     // piano-shaped "T" each white renders as: the bottom strip extends
     // half a column into every adjacent black so adjacent whites read
     // as a single continuous surface beneath the blacks.
+    //
+    // For the white-only DIATONIC layout (used when keyMode==='white-only'),
+    // we also track each key's running whiteIndex — the count of whites
+    // seen so far. Whites get equal-width columns based on totalWhites;
+    // blacks are overlaid on top, centered at the SEAM between the two
+    // adjacent whites (i.e. at the whiteIndex of the next white).
     const keys = [];
+    let whiteCounter = 0;
     for (let midi = visibleStart; midi < visibleEnd; midi++) {
       const off = ((midi - kbdRoot) % 12 + 12) % 12;
       const isBlack = BLACK_OFFSET_SET.has(off);
@@ -131,9 +138,14 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
         extRight,
         topSeamLeft,
         topSeamRight,
+        // For diatonic mode: whites get their own index 0..totalWhites-1;
+        // blacks get the index of the NEXT white (so the black's center
+        // sits at that white's left edge, straddling both adjacent whites).
+        whiteIndex: whiteCounter,
       });
+      if (!isBlack) whiteCounter++;
     }
-    return { keys, totalKeys: keys.length };
+    return { keys, totalKeys: keys.length, totalWhites: whiteCounter };
   }, [startMidi, endMidi, kbdRoot]);
 
   // Per-key color update — sets BOTH the small dot's background AND a
@@ -310,11 +322,11 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
       <span ref={rightArrowRef} className="osk-arrow osk-arrow-right" aria-hidden="true" />
       <div
         ref={containerRef}
-        className="osk"
+        className={`osk${keyMode === 'white-only' ? ' osk-diatonic' : ''}`}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onPointerLeave={handlePointerUp}
-        style={{ '--key-count': totalKeys }}
+        style={{ '--key-count': totalKeys, '--white-count': totalWhites }}
       >
       {keys.map((k) => {
         // Optional QWERTY-key letter overlay (toggled in Settings). Off
@@ -324,21 +336,44 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
           ? OFFSET_TO_LETTER[k.midi - letterStartMidi]
           : null;
 
-        // Blacks stay one chromatic column wide at top 62%. Whites
-        // widen by half a column into every adjacent visible black
-        // and use clip-path on their inner shape to carve out the
-        // piano "T": narrow head between blacks, full-width bottom
-        // strip that reads as continuous white-key surface. The 0.5px
-        // shrinkage on each bottom corner leaves a 1px gap with the
-        // next white's clip-path, which shows the dark tray bg through
-        // as a thin seam line.
+        // Two layouts:
+        //   chromatic mode — every semitone is an equal-width column;
+        //     whites use a clip-path to widen their bottom strip into
+        //     adjacent black columns, producing the piano "T" shape.
+        //   white-only mode — whites are equal-width per WHITE-key
+        //     count (7 per octave). Blacks are overlaid on top,
+        //     narrower (≈60% of a white), centered at the seam between
+        //     the two whites they sit between. Whites are simple
+        //     rectangles — no clip-path needed since blacks already
+        //     cover the top portion where they overlap.
         let keyStyle;
         let shapeStyle = null;
-        if (k.isBlack) {
+        if (keyMode === 'white-only') {
+          if (k.isBlack) {
+            // whiteIndex marks the next white's index; the black sits
+            // centered at that white's left edge.
+            keyStyle = {
+              left: `calc(${k.whiteIndex} * (100% / var(--white-count)) - 30% / var(--white-count))`,
+              width: `calc(60% / var(--white-count))`,
+            };
+          } else {
+            keyStyle = {
+              left: `calc(${k.whiteIndex} * (100% / var(--white-count)))`,
+              width: `calc(100% / var(--white-count))`,
+              '--own-center': '50%',
+            };
+          }
+        } else if (k.isBlack) {
+          // chromatic, black: one chromatic column wide at top 62%.
           keyStyle = {
             left: `calc(${k.chromaticIndex} * (100% / var(--key-count)))`,
           };
         } else {
+          // chromatic, white: widen into adjacent visible blacks via
+          // clip-path so the bottom strip reads as continuous piano
+          // surface. The 0.5px shrinkage on each bottom corner leaves
+          // a 1px gap with the next white's clip-path, which the dark
+          // tray bg shows through as a seam line.
           const leftExt = k.extLeft ? 0.5 : 0;
           const rightExt = k.extRight ? 0.5 : 0;
           const widthCols = 1 + leftExt + rightExt;
@@ -346,11 +381,6 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
           const ownStartPct = (leftExt / widthCols) * 100;
           const ownEndPct = ((leftExt + 1) / widthCols) * 100;
           const ownCenterPct = (ownStartPct + ownEndPct) / 2;
-          // Top-portion own-column edges shrink by 0.5px on any side
-          // where the adjacent semitone is also a white (E/F, B/C),
-          // so the seam runs unbroken from top to bottom. Sides
-          // bordering a black don't shrink — the black key itself
-          // already provides the visual separator at the top.
           const ownStartStr = k.topSeamLeft
             ? `calc(${ownStartPct.toFixed(4)}% + 0.5px)`
             : `${ownStartPct.toFixed(4)}%`;
@@ -360,8 +390,6 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
           keyStyle = {
             left: `calc(${leftCols} * (100% / var(--key-count)))`,
             width: `calc(${widthCols} * (100% / var(--key-count)))`,
-            // Letter + dot follow the OWN column center, not the
-            // element-box center (which drifts for asymmetric Ts).
             '--own-center': `${ownCenterPct.toFixed(4)}%`,
           };
           shapeStyle = {

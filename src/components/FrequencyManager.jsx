@@ -608,9 +608,15 @@ export function TuningPanel({
         aria-label="Tuning"
         style={{ '--anchor-idx': anchorSlot, '--anchor-color': anchorColor }}
       >
-        {/* Top bar — TUNINGS: N rocker. Sits ABOVE the row list,
-            right-aligned. Free 2..maxOscillators count; Load resizes
-            this to match scaleSize, but the user can nudge it after. */}
+        <div className="tuning-rows">
+          {Array.from({ length: oscillatorCount }, (_, i) => (
+            <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} />
+          ))}
+        </div>
+        {/* TUNINGS: N rocker sits BETWEEN the row list and the system
+            row. Right-aligned. Free 2..maxOscillators count; Load
+            resizes this to match scaleSize, but the user can nudge it
+            after. */}
         <div className="tuning-topbar">
           <span className="tuning-topbar-label">TUNINGS: {oscillatorCount}</span>
           <div className="tuning-chip-group" role="group" aria-label="Tuning count">
@@ -631,11 +637,6 @@ export function TuningPanel({
               aria-label="Add tuning"
             >+</button>
           </div>
-        </div>
-        <div className="tuning-rows">
-          {Array.from({ length: oscillatorCount }, (_, i) => (
-            <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} />
-          ))}
         </div>
         {/* Footer — system dropdown, scale radio (7/12), and Load all
             on a single line. Load now lives here (not in the action

@@ -276,11 +276,6 @@ function FrequencySpectrumBar({
   // count buttons to the right of the spectrum-bar pill.
   onOscillatorCountChange,
   maxOscillators = 10,
-  // Keybind-labels toggle — the "?" button on the right rail flips
-  // whether the on-screen piano shows its Z/X/letter caption overlay.
-  // State is owned by App; the bar only renders the button.
-  showKbdLabels = false,
-  onShowKbdLabelsChange,
 }) {
   // Subscribe to theme changes so JSX re-renders when the user flips
   // palette in settings — every osc-color lookup below reads live from
@@ -314,6 +309,10 @@ function FrequencySpectrumBar({
   const mousePosRef = useRef({ x: 0, y: 0 }); // latest client-space cursor, always tracked
   const grabEdgeRateRef = useRef(0); // octaves/sec drift for grabbed oscs, set from cursor X
   const lastEdgePanTimeRef = useRef(null); // performance.now() of previous edge-pan tick
+  // Auto-zoom loop is demand-driven; pointer handlers that enter the
+  // edge-pan state without immediately mutating engine freqs (which would
+  // wake via addFrequencyListener) call wakeRef.current() to start it.
+  const wakeRef = useRef(null);
 
   useEffect(() => { barWidthRef.current = barWidth; }, [barWidth]);
   useEffect(() => { grabbedRef.current = grabbedOscs; }, [grabbedOscs]);
@@ -427,55 +426,93 @@ function FrequencySpectrumBar({
     return () => obs.disconnect();
   }, []);
 
-  // Auto-zoom runs continuously — even during drag/grab — so the spectrum extends
-  // to follow freqs pushed toward the padded edges. Incremental delta-based interaction
-  // below avoids the cursor-position feedback loop that would otherwise be a problem.
+  // Auto-zoom is demand-driven: ticks only when (a) the engine notifies a
+  // freq/mute change, (b) an edge-pan is active, or (c) the zoom range is
+  // still easing toward target. At idle (no drag, no engine changes, range
+  // settled) the rAF stops entirely — main thread freed, no per-frame
+  // array allocs, no GC churn.
+  //
+  // Wake sources:
+  //   - audioEngine.addFrequencyListener: covers every freq + mute mutation
+  //     anywhere in the app (computer keyboard, MIDI, all-orb drag, glide,
+  //     alignment, etc.).
+  //   - wakeRef.current(): called by the drag and document pointermove
+  //     handlers below when they set an edge rate but didn't change freq
+  //     yet (e.g., grabbed orb at FREQ_MIN with rightward edge-pan, or the
+  //     very first pointermove crossing into the edge zone).
   useEffect(() => {
-    let rafId;
+    let rafId = 0;
+    let dirty = true;             // initial sync on mount
     const arraysEqual = (a, b) => {
       if (a.length !== b.length) return false;
       for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
       return true;
     };
-    const tick = () => {
-      if (audioEngine.initialized) {
-        try {
-          // Edge auto-pan: drift toward the edge for any drag/grab pointer in the zone.
-          // Done before reading frequencies so this frame's render sees the new values.
-          let anyEdgePan = false;
-          for (const pid in dragRef.current) {
-            if (dragRef.current[pid].edgeRate) { anyEdgePan = true; break; }
-          }
-          if (grabbedRef.current.size > 0 && grabEdgeRateRef.current) anyEdgePan = true;
 
-          if (anyEdgePan) {
-            const now = performance.now();
-            const dt = lastEdgePanTimeRef.current === null
-              ? 0
-              : Math.min(MAX_EDGE_PAN_DT, (now - lastEdgePanTimeRef.current) / 1000);
-            lastEdgePanTimeRef.current = now;
-            if (dt > 0) {
-              const sens = (fineTuneRef.current || shiftRef.current) ? SENSITIVITY_FINE : SENSITIVITY_NORMAL;
-              for (const pid in dragRef.current) {
-                const d = dragRef.current[pid];
-                if (!d.edgeRate) continue;
-                const cur = audioEngine.getFrequency(d.index);
-                const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * 2 ** (d.edgeRate * dt * sens)));
-                if (next !== cur) audioEngine.setFrequency(d.index, next);
-              }
-              if (grabbedRef.current.size > 0 && grabEdgeRateRef.current) {
-                const factor = 2 ** (grabEdgeRateRef.current * dt * sens);
-                for (const idx of grabbedRef.current) {
-                  const cur = audioEngine.getFrequency(idx);
-                  const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * factor));
-                  if (next !== cur) audioEngine.setFrequency(idx, next);
-                }
+    const schedule = () => {
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    };
+    const wake = () => {
+      dirty = true;
+      schedule();
+    };
+
+    const tick = () => {
+      rafId = 0;
+      let keepRunning = false;
+
+      if (!audioEngine.initialized) {
+        // Wait for init. Cheap poll — we land here only between component
+        // mount and the first AudioContext start, typically a handful of
+        // frames; once initialized, the loop becomes demand-driven.
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      try {
+        // Edge auto-pan: drift toward the edge for any drag/grab pointer in
+        // the zone. Done before reading frequencies so this frame's render
+        // sees the new values. Each successful setFrequency below fires
+        // _notifyFrequencyChange → wake() — but we also force keepRunning
+        // so the loop continues even on frames that don't actually move
+        // anything (e.g., orb pinned at FREQ_MIN).
+        let anyEdgePan = false;
+        for (const pid in dragRef.current) {
+          if (dragRef.current[pid].edgeRate) { anyEdgePan = true; break; }
+        }
+        if (grabbedRef.current.size > 0 && grabEdgeRateRef.current) anyEdgePan = true;
+
+        if (anyEdgePan) {
+          const now = performance.now();
+          const dt = lastEdgePanTimeRef.current === null
+            ? 0
+            : Math.min(MAX_EDGE_PAN_DT, (now - lastEdgePanTimeRef.current) / 1000);
+          lastEdgePanTimeRef.current = now;
+          if (dt > 0) {
+            const sens = (fineTuneRef.current || shiftRef.current) ? SENSITIVITY_FINE : SENSITIVITY_NORMAL;
+            for (const pid in dragRef.current) {
+              const d = dragRef.current[pid];
+              if (!d.edgeRate) continue;
+              const cur = audioEngine.getFrequency(d.index);
+              const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * 2 ** (d.edgeRate * dt * sens)));
+              if (next !== cur) audioEngine.setFrequency(d.index, next);
+            }
+            if (grabbedRef.current.size > 0 && grabEdgeRateRef.current) {
+              const factor = 2 ** (grabEdgeRateRef.current * dt * sens);
+              for (const idx of grabbedRef.current) {
+                const cur = audioEngine.getFrequency(idx);
+                const next = Math.max(FREQ_MIN, Math.min(FREQ_MAX, cur * factor));
+                if (next !== cur) audioEngine.setFrequency(idx, next);
               }
             }
-          } else {
-            lastEdgePanTimeRef.current = null;
           }
+          keepRunning = true;
+        } else {
+          lastEdgePanTimeRef.current = null;
+        }
 
+        if (dirty) {
+          dirty = false;
           const f = audioEngine.getAllFrequencies();
           const m = audioEngine.getAllMutedStates();
           if (f.length >= oscillatorCount && m.length >= oscillatorCount) {
@@ -494,16 +531,28 @@ function FrequencySpectrumBar({
             ) {
               rangeRef.current = { logMin: nextMin, logMax: nextMax };
               setRange(rangeRef.current);
+              // Still mid-ease: keep ticking next frame with dirty=true so
+              // we re-evaluate against the (unchanged) target until the
+              // exponential lerp settles below threshold.
+              dirty = true;
+              keepRunning = true;
             }
           }
-        } catch {
-          // ignore
         }
-      }
-      rafId = requestAnimationFrame(tick);
+      } catch { /* ignore */ }
+
+      if (keepRunning) schedule();
     };
-    tick();
-    return () => cancelAnimationFrame(rafId);
+
+    const unsub = audioEngine.addFrequencyListener(wake);
+    wakeRef.current = wake;
+    schedule();
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      unsub();
+      wakeRef.current = null;
+    };
   }, [oscillatorCount]);
 
   const freqXs = useMemo(
@@ -615,6 +664,9 @@ function FrequencySpectrumBar({
         }
       }
       drag.edgeRate = computeEdgeRate(e.clientX);
+      // Edge-pan needs the auto-zoom loop alive even on frames where
+      // setFrequency above didn't fire (e.g., orb already at FREQ_MIN/MAX).
+      if (drag.edgeRate) wakeRef.current?.();
     } else {
       drag.edgeRate = 0;
     }
@@ -675,6 +727,10 @@ function FrequencySpectrumBar({
       const rate = computeEdgeRate(e.clientX);
       setGrabCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top, edgeRate: rate });
       grabEdgeRateRef.current = rate;
+      // Wake the auto-zoom rAF when entering edge-pan from a static cursor
+      // (cursor moved into the edge zone without dragging an orb, so the
+      // setFrequency path below may not fire on this event).
+      if (rate) wakeRef.current?.();
 
       if (lastGrabXRef.current === null) {
         lastGrabXRef.current = e.clientX;
@@ -1192,14 +1248,6 @@ function FrequencySpectrumBar({
           title="Add oscillator"
           aria-label="Add oscillator"
         >+</button>
-        <button
-          type="button"
-          className={`fsb-count-btn fsb-help-btn${showKbdLabels ? ' is-active' : ''}`}
-          onClick={() => onShowKbdLabelsChange?.(!showKbdLabels)}
-          aria-pressed={showKbdLabels}
-          title={showKbdLabels ? 'Hide keybind labels on the piano' : 'Show keybind labels on the piano'}
-          aria-label="Toggle keybind labels"
-        >?</button>
       </div>
       </div>
     </>

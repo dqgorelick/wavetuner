@@ -276,6 +276,10 @@ function FrequencySpectrumBar({
   // count buttons to the right of the spectrum-bar pill.
   onOscillatorCountChange,
   maxOscillators = 10,
+  // Notified (true/false) when an orb starts/stops being dragged or
+  // grabbed. Lets sibling panels (e.g. the tuning panel) drop into a
+  // cheaper render mode while values are changing every frame.
+  onDragStateChange,
 }) {
   // Subscribe to theme changes so JSX re-renders when the user flips
   // palette in settings — every osc-color lookup below reads live from
@@ -285,6 +289,7 @@ function FrequencySpectrumBar({
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
   const [draggingDots, setDraggingDots] = useState(() => new Set());
+  const [globalOrbDragging, setGlobalOrbDragging] = useState(false);
   const [grabbedOscs, setGrabbedOscs] = useState(() => new Set());
   const [ghosts, setGhosts] = useState({}); // { [pointerId]: { index, x, y } } during drag
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
@@ -853,6 +858,14 @@ function FrequencySpectrumBar({
     });
   }, [draggingDots, grabbedOscs, onActiveChange]);
 
+  // Surface a coarse "an orb is being manipulated" boolean to the parent.
+  // Covers both interaction modes: direct press-drag (draggingDots) and
+  // click-to-grab then move (grabbedOscs). Only transitions on start/stop,
+  // not per-move, so it doesn't add to the per-frame render cost.
+  useEffect(() => {
+    onDragStateChange?.(draggingDots.size > 0 || grabbedOscs.size > 0 || globalOrbDragging);
+  }, [draggingDots, grabbedOscs, globalOrbDragging, onDragStateChange]);
+
   // Reconcile active-order (first-selected-wins) when drag/grab sets change.
   useEffect(() => {
     setActiveOrder((prev) => {
@@ -986,7 +999,7 @@ function FrequencySpectrumBar({
       )}
       <div className="fsb-row" style={{ height: TOTAL_HEIGHT }}>
       <div className="fsb-side fsb-side-left">
-        <GlobalDetuneOrb />
+        <GlobalDetuneOrb onDragStateChange={setGlobalOrbDragging} />
       </div>
       <div
         className="freq-spectrum-bar"

@@ -1,15 +1,15 @@
 /**
  * Tuning - Shared scale derived from the drone's frequency list.
  *
- * The drone's currently-active oscillator frequencies, sorted ascending,
- * become the scale degrees. Mute is intentionally ignored — to remove a
- * pitch from the keyboard, reduce the drone's oscillator count instead.
- * No octave folding, no dedup: two drones at 100/102 Hz become two
- * adjacent scale degrees so beating intent is preserved when both keys
- * are held.
+ * The drone's oscillators become the scale degrees IN SLOT ORDER: degree i
+ * is always voice #(i+1), regardless of pitch. Voice #1 is the keyboard's
+ * first note (C), #2 the next, and so on — changing a drone's frequency (or
+ * which voice is the tuning root) never re-sorts the keyboard. Mute is
+ * intentionally ignored — to remove a pitch from the keyboard, reduce the
+ * drone's oscillator count instead. No octave folding, no dedup.
  *
- * Live re-sort: whenever any drone freq changes (or osc count changes),
- * the scale is recomputed and listeners are notified. KeyboardVoiceManager
+ * Live update: whenever any drone freq changes (or osc count changes), the
+ * scale is recomputed and listeners are notified. KeyboardVoiceManager
  * subscribes to push retunes into held voices.
  *
  * MIDI mapping: scale-degree, with `rootMidi` as scale-degree-0 of
@@ -84,15 +84,16 @@ class Tuning {
     const count = audioEngine.getOscillatorCount();
     const freqs = audioEngine.getAllFrequencies().slice(0, count);
 
-    const indexed = freqs.map((f, i) => ({ f, i }));
-    indexed.sort((a, b) => a.f - b.f);
+    // Voices map to scale degrees by SLOT INDEX, not by pitch: degree i is
+    // always voice #(i+1). The keyboard's note-letter assignment is fixed to
+    // the slot (C = #1, then C#/D… per the active key-mapping) and never
+    // re-sorts when a frequency moves. Pitch order is irrelevant here — the
+    // spectrum bar is the pitch-ordered view; this is the play surface.
+    const sorted = freqs.slice();
+    const sortedToSlot = freqs.map((_, i) => i);
 
-    const sorted = indexed.map(x => x.f);
-    const sortedToSlot = indexed.map(x => x.i);
-
-    // Notify on any change to either the freq values or the order
-    // (re-orderings without value changes still matter — pan-by-degree
-    // looks up the slot index per degree).
+    // Notify on any change to the freq values (degree→slot is now identity,
+    // so only a count change moves the slot map).
     if (this._arraysClose(this._sorted, sorted) &&
         this._arraysEqual(this._sortedToSlot, sortedToSlot)) {
       return;

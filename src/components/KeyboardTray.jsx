@@ -120,11 +120,12 @@ export default function KeyboardTray({
   // The visual root is always snapped to the nearest C (in both
   // chromatic and white-only modes). kbdRoot only controls the
   // ON-SCREEN keyboard's visual layout — audio mapping is anchored to
-  // the SORTED drone list (letter A always plays sorted[0], regardless
-  // of kbdRoot). Anchoring to C means the on-screen keys read as a
-  // familiar C-major piano stripe whether the bass drone is at C, Ab,
-  // or anywhere else, and the white-only key filter (which requires
-  // kbdRoot to be a C to correctly silence piano blacks) always works.
+  // the drone list by SLOT (voice #1 = degree 0 = the keyboard's C,
+  // regardless of pitch or which voice is the tuning root). Centering
+  // the visual on the nearest C to voice #1 keeps the on-screen keys
+  // reading as a familiar C-major piano stripe, and the white-only key
+  // filter (which requires kbdRoot to be a C to correctly silence piano
+  // blacks) always works.
   const [kbdRoot, setKbdRoot] = useState(() => {
     const lowest = tuning.sortedFrequencies[0];
     const midi = freqToMidi(lowest);

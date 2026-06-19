@@ -281,7 +281,7 @@ export const TUNING_SYSTEMS = {
   },
   '12-tet': {
     key: '12-tet',
-    label: '12-TET',
+    label: 'Equal temperament',
     description: 'equal temperament — 12 equal semitones per octave',
     octaveReduced: true,
     generate: () => generateTetCandidates(12),

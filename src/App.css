@@ -4701,17 +4701,34 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Left gutter holds the root-selector rail (absolutely-positioned dots). */
+  padding-left: 18px;
+}
+/* Vertical rail line that the root dots sit on — one continuous line down
+   the gutter, connecting every row's selector. */
+.tuning-rows::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.16);
+  pointer-events: none;
 }
 
-/* Tuning row — marker | radio | Hz | Ratio | Note | Cents | rocker.
-   The marker square toggles mute (mirrors .drone-tray-cell). The
-   radio (column 2) selects which slot is the 1/1 root; only one row
-   is filled at a time. Column 7 is the rocker pill: ‹ › chevrons on
-   non-root rows (candidate step), /2 ×2 on the root row (octave
-   transpose every slot). Mono font; slot color via --osc-color. */
+/* Tuning row — marker | Hz | Ratio | Note | Cents | rocker.
+   The marker square toggles mute (mirrors .drone-tray-cell). The root
+   selector lives OUTSIDE the grid, absolutely positioned in the left
+   gutter (see .freq-rail-root-radio), so it never shifts these columns.
+   Column 6 is the rocker pill: ‹ › chevrons on non-root rows (candidate
+   step), /2 ×2 on the root row (octave transpose every slot). Mono font;
+   slot color via --osc-color. */
 .freq-rail-row {
+  position: relative;
   display: grid;
-  grid-template-columns: 22px 14px 56px 44px 36px 30px 50px;
+  grid-template-columns: 22px 56px 44px 36px 30px 50px;
   justify-content: start;
   gap: 4px;
   align-items: center;
@@ -4777,12 +4794,18 @@ kbd {
   line-height: 1;
 }
 
-/* Root radio — single-select indicator in column 2. Filled circle
-   when this slot is the 1/1; small empty ring otherwise. Replaces
-   the patch-cable cue that used to hang off the old Root field. */
+/* Root selector — a node on the vertical rail in the left gutter.
+   Absolutely positioned (centered on the rail line at x=9) so it sits
+   to the LEFT of the mute marker without taking a grid column. Small dot
+   when unselected; grows to a full filled circle (in the voice's color)
+   when this slot is the 1/1 root. */
 .freq-rail-root-radio {
-  width: 14px;
-  height: 14px;
+  position: absolute;
+  left: -9px;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
   padding: 0;
   background: transparent;
   border: none;
@@ -4790,23 +4813,25 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  z-index: 1;
 }
 .freq-rail-root-radio-dot {
-  width: 12px;
-  height: 12px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.35);
-  background: transparent;
+  border: none;
+  background: rgba(255, 255, 255, 0.5);
   box-sizing: border-box;
-  transition: background 0.15s, border-color 0.15s;
+  transition: width 0.15s, height 0.15s, background 0.15s, box-shadow 0.15s;
 }
 .freq-rail-root-radio:hover .freq-rail-root-radio-dot {
-  border-color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.85);
 }
 .freq-rail-root-radio.on .freq-rail-root-radio-dot {
-  background: rgba(255, 255, 255, 0.92);
-  border-color: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.35);
+  width: 13px;
+  height: 13px;
+  background: var(--osc-color, rgba(255, 255, 255, 0.95));
+  box-shadow: 0 0 5px color-mix(in srgb, var(--osc-color, #fff), transparent 50%);
 }
 
 /* Row marker — small colored square mirroring .drone-tray-cell. The
@@ -4881,6 +4906,17 @@ kbd {
 .freq-rail-input:disabled {
   color: rgba(255, 255, 255, 0.55);
   cursor: default;
+}
+/* Frozen variant: a <span> rendered in place of the <input> while an orb
+   is being dragged. Mirrors the input's box so there's no layout shift on
+   the input↔text swap; just made non-interactive and clipped. */
+.freq-rail-input-static {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  pointer-events: none;
 }
 
 .freq-rail-ratio.exact {

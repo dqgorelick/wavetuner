@@ -246,6 +246,11 @@ function App() {
     try { localStorage.setItem('tuningOpen', isTuningOpen ? '1' : '0'); } catch { /* ignore */ }
   }, [isTuningOpen]);
 
+  // True while an orb is being dragged/grabbed in the spectrum bar. The
+  // tuning panel uses this to freeze its inputs into plain text so the
+  // per-frame frequency updates don't thrash N rows of controlled inputs.
+  const [isOrbDragging, setIsOrbDragging] = useState(false);
+
   // Boot/teardown Hydra when the enable toggle flips. Source the
   // oscilloscope's canvas via its known id (stable, no ref plumbing)
   // and run the default passthrough sketch so the user sees output
@@ -527,20 +532,27 @@ function App() {
   // frequencyManager.tuningSystem; setter pushes back into the
   // singleton so the rail picks it up.
   const [tuningSystem, setTuningSystemState] = useState(frequencyManager.tuningSystem);
-  // Scale size for the next Load (7 = diatonic, 12 = chromatic). Mirrors
-  // the active system's recommendedScale when the user switches systems;
-  // the radio in the tuning panel can override it. Read by handleLoad.
+  // Scale size for the next Load (7 = diatonic, 12 = chromatic). This is a
+  // sticky user preference: persisted, and retained across tuning-system
+  // changes (the radio in the tuning panel sets it; the per-system
+  // "(conventional: N)" hint still surfaces each system's typical size).
+  // Read by handleLoad. Falls back to the active system's recommendedScale
+  // the first time, before any preference is saved.
   const [scaleSize, setScaleSize] = useState(() => {
+    try {
+      const v = parseInt(localStorage.getItem('tuningScaleSize'), 10);
+      if (v === 7 || v === 12) return v;
+    } catch { /* ignore */ }
     const sys = getSystem(frequencyManager.tuningSystem);
     return sys?.recommendedScale === 12 ? 12 : 7;
   });
+  useEffect(() => {
+    try { localStorage.setItem('tuningScaleSize', String(scaleSize)); } catch { /* ignore */ }
+  }, [scaleSize]);
   const handleTuningSystemChange = useCallback((key) => {
     frequencyManager.setTuningSystem(key);
     setTuningSystemState(frequencyManager.tuningSystem);
-    // Switching systems resets the scale-size radio to the new system's
-    // recommended default. User can still override before Load.
-    const sys = getSystem(key);
-    setScaleSize(sys?.recommendedScale === 12 ? 12 : 7);
+    // Scale size is a sticky preference — intentionally NOT reset here.
   }, []);
 
   // Align button — glides every drone to its nearest target in the
@@ -1031,6 +1043,7 @@ function App() {
             suppressAutoUnmute={isKbdTrayOpen}
             onOscillatorCountChange={handleOscillatorCountChange}
             maxOscillators={maxOscillators}
+            onDragStateChange={setIsOrbDragging}
           />
           {isTuningOpen && (
             <div className="left-stack">
@@ -1045,6 +1058,7 @@ function App() {
                 onTuningSystemChange={handleTuningSystemChange}
                 scaleSize={scaleSize}
                 onScaleSizeChange={setScaleSize}
+                frozen={isOrbDragging || isAligning}
               />
             </div>
           )}

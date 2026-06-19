@@ -2221,18 +2221,20 @@ class AudioEngine {
   }
 
   /**
-   * Compute per-oscillator target frequencies that lay out the active
-   * voices as a *canonical scale* in the chosen tuning system. The
-   * anchor slot keeps its Hz (= 1/1). Other un-muted slots get the
-   * canonical scale's 2nd, 3rd, … degree in slot-index order. Muted
-   * slots are skipped (their current Hz is preserved). Voices past
-   * the scale length octave-extend for octave-reducing systems and
-   * climb further into the overtone series for the harmonic system.
+   * Compute per-oscillator target frequencies that lay out the voices as
+   * the chosen tuning system's scale, RE-ROOTED on the anchor voice.
    *
-   * Used by the Load button — distinct from Align: Align preserves
-   * the rough shape of the current tuning by snapping each voice to
-   * its *nearest* candidate; Load rewrites the shape to the system's
-   * canonical "this is what this system sounds like" scale.
+   * Voices are never reordered: voice #(slot+1) keeps its fixed keyboard
+   * note (slot 0 = C, …). The anchor slot is the JI 1/1 (its Hz is kept);
+   * every other slot is tuned to the system's ratio for its semitone
+   * distance from the anchor, octave-placed in its natural register. So
+   * rooting on the A voice tunes the whole scale to be just-intonation
+   * consonant around A while C still plays a (comma-shifted) C. 12-TET is
+   * rotation-invariant, so re-rooting it only pins the anchor.
+   *
+   * Used by the Load button — distinct from Align: Align preserves the
+   * rough shape of the current tuning by snapping each voice to its
+   * *nearest* candidate; Load rewrites the shape to the system's scale.
    *
    * @param {Object} opts
    * @param {string} opts.systemKey   Tuning system key (e.g. '5-limit')
@@ -2244,40 +2246,59 @@ class AudioEngine {
     const out = this.frequencyValues.slice();
     const { systemKey = DEFAULT_SYSTEM, anchorSlot = 0, scaleSize } = opts;
     const sys = getSystem(systemKey);
+    if (!sys) return out;
     const size = scaleSize === 7 || scaleSize === 12
       ? scaleSize
-      : (sys && sys.recommendedScale) || 7;
-    const scale = sys ? (size === 7 ? sys.canonical7 : sys.canonical12) : null;
-    if (!scale || scale.length === 0) return out;
+      : (sys.recommendedScale) || 7;
 
     const anchorHz = (anchorSlot >= 0 && anchorSlot < this.oscillatorCount)
       ? this.frequencyValues[anchorSlot]
       : 0;
     if (!(anchorHz > 0)) return out;
 
-    // Build the ordered slot list, anchor first. Anchor gets degree 0
-    // (= 1/1) so its Hz is preserved; the rest receive consecutive
-    // scale degrees in slot-index order. Muted slots are included —
-    // Load defines the *pitch palette* for the whole instrument, so a
-    // muted voice still gets its slot in the scale ready for when the
-    // user unmutes it later.
-    const orderedSlots = [anchorSlot];
-    for (let i = 0; i < this.oscillatorCount; i++) {
-      if (i === anchorSlot) continue;
-      orderedSlots.push(i);
+    // Voices are NEVER reordered: voice #(slot+1) is a fixed keyboard note.
+    // Slot 0 = C; the semitone for each slot follows the key-mapping the
+    // chosen scale size implies — chromatic (size 12) walks every semitone,
+    // white-only (size 7) walks the white-key offsets, wrapping by octave.
+    const WHITE = [0, 2, 4, 5, 7, 9, 11];
+    const semitoneForSlot = (slot) => (size === 7
+      ? WHITE[slot % 7] + 12 * Math.floor(slot / 7)
+      : slot);
+
+    // Non-octave-reduced systems (harmonic series) have no 12-tone frame to
+    // root against — keep the anchor as the fundamental (1/1) and climb the
+    // overtones in slot order. Still no reshuffle.
+    if (!sys.octaveReduced) {
+      for (let slot = 0; slot < this.oscillatorCount; slot++) {
+        if (slot === anchorSlot) { out[slot] = anchorHz; continue; }
+        const ratio = canonicalRatioForVoice(systemKey, slot, size);
+        if (ratio != null) out[slot] = Math.max(0.001, Math.min(20000, anchorHz * ratio));
+      }
+      return out;
     }
 
-    for (let degreeIdx = 0; degreeIdx < orderedSlots.length; degreeIdx++) {
-      const slot = orderedSlots[degreeIdx];
-      if (degreeIdx === 0) {
-        // Anchor stays exactly where it is — this is "1/1" by definition.
-        out[slot] = anchorHz;
-        continue;
-      }
-      const ratio = canonicalRatioForVoice(systemKey, degreeIdx, size);
+    // Octave-reduced systems: RE-ROOT the scale on the anchor voice. Each
+    // slot's pitch is the system's JI ratio for its SEMITONE distance from
+    // the root, octave-placed nearest its 12-TET position so note letters
+    // and register are preserved — C stays a C, only comma-shifted, never a
+    // C#. The anchor itself is exactly 1/1 (its Hz is kept). Because we
+    // index by semitone (not diatonic degree), this is letter-correct for
+    // both chromatic and white-key loads. For 12-TET the ratios are
+    // equal-tempered, so re-rooting only pins the anchor and leaves the
+    // other pitches put.
+    const semiRoot = semitoneForSlot(anchorSlot);
+    for (let slot = 0; slot < this.oscillatorCount; slot++) {
+      const semi = semitoneForSlot(slot);
+      const dist = (((semi - semiRoot) % 12) + 12) % 12; // semitones above root, 0..11
+      const ratio = canonicalRatioForVoice(systemKey, dist, 12); // in [1, 2)
       if (ratio == null) continue;
-      const target = anchorHz * ratio;
-      out[slot] = Math.max(0.001, Math.min(20000, target));
+      const raw = anchorHz * ratio;
+      // 12-TET reference position for this slot relative to the root; pick
+      // the octave of `raw` closest to it so the voice lands in its natural
+      // register (notes below the root drop an octave, etc.).
+      const ref = anchorHz * Math.pow(2, (semi - semiRoot) / 12);
+      const k = Math.round(Math.log2(ref / raw));
+      out[slot] = Math.max(0.001, Math.min(20000, raw * Math.pow(2, k)));
     }
     return out;
   }

@@ -67,7 +67,9 @@ class FrequencyManager {
 
     this._listeners = new Set();
     this._slotRatios = new Map(); // slot → { n, d }; absent = free
-    this._anchorSlot = 0;
+    // Root (1/1) slot persists across reloads — the user's chosen tuning
+    // center is part of the instrument's setup, like the tuning system.
+    this._anchorSlot = FrequencyManager._loadRootSlot();
     this._tuningSystem = DEFAULT_SYSTEM;
     this._lastAnchorHz = 0;
     this._inPropagation = false;
@@ -87,6 +89,19 @@ class FrequencyManager {
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
 
     FrequencyManager.instance = this;
+  }
+
+  // Root-slot persistence. localStorage may be unavailable (privacy mode,
+  // SSR) — both helpers swallow failures and fall back to slot 0.
+  static _loadRootSlot() {
+    try {
+      const v = parseInt(localStorage.getItem('tuningRootSlot'), 10);
+      if (Number.isInteger(v) && v >= 0) return v;
+    } catch { /* ignore */ }
+    return 0;
+  }
+  _persistRootSlot() {
+    try { localStorage.setItem('tuningRootSlot', String(this._anchorSlot)); } catch { /* ignore */ }
   }
 
   get anchorSlot() { return this._anchorSlot; }
@@ -127,6 +142,7 @@ class FrequencyManager {
     // against the previous anchor.
     this._slotRatios.delete(slot);
     this._anchorSlot = slot;
+    this._persistRootSlot();
     if (audioEngine.initialized) {
       this._lastAnchorHz = audioEngine.getFrequency(slot);
       this._purgeDriftedLocks(this._lastAnchorHz);
@@ -376,6 +392,7 @@ class FrequencyManager {
     this._inPropagation = true;
     try {
       this._anchorSlot = snap.anchorSlot;
+      this._persistRootSlot();
       this._slotRatios = new Map(snap.slotRatios);
       // Tolerate legacy snapshots stored as numeric `limit`.
       this._tuningSystem = snap.tuningSystem
@@ -406,6 +423,7 @@ class FrequencyManager {
 
     this._inUndoRestore = true;
     this._anchorSlot = snap.anchorSlot;
+    this._persistRootSlot();
     this._slotRatios = new Map(snap.slotRatios);
     this._tuningSystem = snap.tuningSystem
       || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])

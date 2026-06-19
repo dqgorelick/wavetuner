@@ -117,13 +117,29 @@ function parseHz(input) {
 // unfocused, switches to a local edit buffer on focus, and commits on
 // Enter/blur (Esc reverts). Tabbing through without edits does NOT
 // commit — protects ratio locks from accidental focus/blur.
-function CellInput({ value, onCommit, format, parse, className, title, disabled, style }) {
+function CellInput({ value, onCommit, format, parse, className, title, disabled, style, frozen }) {
   const [buffer, setBuffer] = useState('');
   const [focused, setFocused] = useState(false);
   const [edited, setEdited] = useState(false);
   const [invalid, setInvalid] = useState(false);
 
   const display = focused ? buffer : format(value);
+
+  // While an orb is being dragged, the value updates every frame and the
+  // user can't interact with the cell anyway. Render a plain <span> instead
+  // of a controlled <input> — far cheaper to reconcile across N rows, and
+  // it sidesteps React fighting the input's value/focus on each frame.
+  if (frozen) {
+    return (
+      <span
+        className={`freq-rail-input freq-rail-input-static${className ? ` ${className}` : ''}`}
+        title={title}
+        style={style}
+      >
+        {format(value)}
+      </span>
+    );
+  }
 
   return (
     <input
@@ -173,7 +189,7 @@ function CellInput({ value, onCommit, format, parse, className, title, disabled,
   );
 }
 
-function FrequencyRow({ slot, oscillatorCount }) {
+function FrequencyRow({ slot, oscillatorCount, frozen }) {
   const hz = audioEngine.initialized ? audioEngine.getFrequency(slot) : 0;
   const anchorHz = audioEngine.initialized
     ? audioEngine.getFrequency(frequencyManager.anchorSlot)
@@ -246,7 +262,7 @@ function FrequencyRow({ slot, oscillatorCount }) {
     : `${note.cents > 0 ? '+' : ''}${note.cents}¢`;
 
   // Marker click toggles mute (mirrors the drone-tray squares). Root
-  // reassignment moved to the inline radio in column 2.
+  // reassignment moved to the root-rail radio in the left gutter.
   const isMuted = audioEngine.initialized
     ? !!(audioEngine.mutedStates && audioEngine.mutedStates[slot])
     : false;
@@ -312,6 +328,20 @@ function FrequencyRow({ slot, oscillatorCount }) {
 
   return (
     <div className="freq-rail-row" style={{ '--osc-color': color }}>
+      {/* Root radio — single-select across all rows, rendered as a node on
+          a vertical rail in the left gutter (absolutely positioned, so it
+          doesn't shift the mute markers). Full circle = this slot is the
+          1/1; small dot otherwise. Click to reassign the root. */}
+      <button
+        type="button"
+        className={`freq-rail-root-radio${isAnchor ? ' on' : ''}`}
+        onClick={handleRootClick}
+        title={isAnchor ? 'Root (1/1)' : `Set slot ${slot + 1} as root`}
+        aria-pressed={isAnchor}
+        aria-label={`Root selector for slot ${slot + 1}`}
+      >
+        <span className="freq-rail-root-radio-dot" aria-hidden="true" />
+      </button>
       {/* Marker square — toggles mute. Filled (drone-tray "on" style)
           when this slot is audible, outlined when muted. */}
       <button
@@ -324,18 +354,6 @@ function FrequencyRow({ slot, oscillatorCount }) {
       >
         {slot + 1}
       </button>
-      {/* Root radio — single-select across all rows. Filled circle
-          means this slot is the 1/1. Click to reassign the root. */}
-      <button
-        type="button"
-        className={`freq-rail-root-radio${isAnchor ? ' on' : ''}`}
-        onClick={handleRootClick}
-        title={isAnchor ? 'Root (1/1)' : `Set slot ${slot + 1} as root`}
-        aria-pressed={isAnchor}
-        aria-label={`Root selector for slot ${slot + 1}`}
-      >
-        <span className="freq-rail-root-radio-dot" aria-hidden="true" />
-      </button>
       <CellInput
         value={hz}
         format={formatHz}
@@ -343,6 +361,7 @@ function FrequencyRow({ slot, oscillatorCount }) {
         onCommit={handleHzCommit}
         className="freq-rail-hz"
         title="Frequency in Hz"
+        frozen={frozen}
       />
       <CellInput
         value={ratioInfo}
@@ -361,6 +380,7 @@ function FrequencyRow({ slot, oscillatorCount }) {
                 ? 'Nearest harmonic — type a fraction to lock'
                 : 'Nearest ratio (type to lock)'}
         disabled={isAnchor}
+        frozen={frozen}
       />
       <CellInput
         value={note.midi}
@@ -369,6 +389,7 @@ function FrequencyRow({ slot, oscillatorCount }) {
         onCommit={handleNoteCommit}
         className="freq-rail-note-name"
         title={`Note (${noteLabel}) — type e.g. C4, F#3, Bb5`}
+        frozen={frozen}
       />
       <CellInput
         value={note.cents}
@@ -377,8 +398,9 @@ function FrequencyRow({ slot, oscillatorCount }) {
         onCommit={handleCentsCommit}
         className="freq-rail-note-cents"
         title={`Cents off ${noteLabel} (${centsLabel}) — type 0 to snap to ET`}
+        frozen={frozen}
       />
-      {/* Per-row pill in column 7. Two states:
+      {/* Per-row pill in the last column. Two states:
             • Root row: /2 and ×2 — transpose every slot proportionally.
             • Non-root rows: ‹ › chevrons — step this slot through the
               active tuning system's candidates.
@@ -504,11 +526,27 @@ function SaveSlotChip({ slot }) {
 function useFreqVersion() {
   const [, setVersion] = useState(0);
   useEffect(() => {
-    const bump = () => setVersion((v) => v + 1);
+    // Coalesce bumps to one re-render per animation frame. setFrequency
+    // fires the listener on every pointermove — up to ~120 Hz on
+    // trackpads — but the panel only needs to repaint at display rate.
+    // Without this, dragging an orb re-renders all N rows × their inputs
+    // 120×/sec, which is the source of the visible UI lag.
+    let raf = 0;
+    const bump = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        setVersion((v) => v + 1);
+      });
+    };
     const unsubA = audioEngine.addFrequencyListener(bump);
     const unsubB = frequencyManager.onChange(bump);
     frequencyManager.ensureInitialSnapshot();
-    return () => { unsubA(); unsubB(); };
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      unsubA();
+      unsubB();
+    };
   }, []);
   // Mute changes don't fire the frequency listener (AudioEngine's
   // toggleMute mutates mutedStates directly). Poll the array via rAF
@@ -555,6 +593,10 @@ export function TuningPanel({
   // recommendedScale; switching systems resets it in App.jsx.
   scaleSize = 7,
   onScaleSizeChange,
+  // True while frequencies are changing every frame — an orb drag/grab OR
+  // a Load/Align glide. Freezes the per-row Hz/ratio/note inputs into plain
+  // text so the storm of updates doesn't thrash N rows × 5 controlled inputs.
+  frozen = false,
 }) {
   useTheme();
   useFreqVersion();
@@ -610,7 +652,7 @@ export function TuningPanel({
       >
         <div className="tuning-rows">
           {Array.from({ length: oscillatorCount }, (_, i) => (
-            <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} />
+            <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} frozen={frozen} />
           ))}
         </div>
         {/* TUNINGS: N rocker sits BETWEEN the row list and the system

@@ -31,7 +31,7 @@ function detuneOrbOffsetLine(x1, y1, x2, y2, r1, r2) {
   };
 }
 
-const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
+const GlobalDetuneOrb = memo(function GlobalDetuneOrb({ onDragStateChange }) {
   const wrapRef = useRef(null);
   const homeCenterRef = useRef({ x: 0, y: 0 });
   const freqSnapshotRef = useRef(null);
@@ -39,6 +39,7 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
   const startRef = useRef({ x: 0, y: 0 });
   const lastShiftRef = useRef(false);
   const draggingRef = useRef(false);
+  const pointerIdRef = useRef(null);
   // Pointermove can fire faster than the display refresh (e.g. 120 Hz trackpads on
   // 60 Hz monitors). Coalesce moves to one applyDrag() per frame — the audio
   // engine fan-out (setAllFrequenciesBatch + Tuning._recompute + listeners) is
@@ -112,7 +113,13 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
     e.stopPropagation();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
     draggingRef.current = true;
+    pointerIdRef.current = e.pointerId;
     lastShiftRef.current = e.shiftKey;
+    // Tell the parent an all-orb drag started so sibling panels (the tuning
+    // panel) can freeze their per-row inputs into plain text. This drag moves
+    // EVERY oscillator each frame, so without it all N rows re-render as full
+    // controlled inputs — the heaviest case.
+    onDragStateChange?.(true);
     // Snapshot the home orb's viewport center so the tether line anchors to
     // the resting position (not the cursor) even though the ghost is in a
     // portal that escapes our transformed ancestor.
@@ -139,30 +146,73 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
       moveRafRef.current = requestAnimationFrame(flushPendingMove);
     }
   };
-  const handlePointerUp = (e) => {
+  // Single teardown path for every way a drag can end — normal pointerup,
+  // pointercancel, lost capture, window blur, tab hidden, Escape, or a click
+  // elsewhere. Idempotent (guards on draggingRef) so overlapping signals are
+  // harmless. `flush` applies the last queued move so a clean release lands
+  // exactly under the cursor; interruptions skip it and rest where they were.
+  const endDrag = (flush) => {
     if (!draggingRef.current) return;
-    // Flush a queued move so the resting position matches the cursor's final
-    // location — otherwise the last sub-frame of motion would be discarded.
+    draggingRef.current = false;
     if (moveRafRef.current) {
       cancelAnimationFrame(moveRafRef.current);
       moveRafRef.current = 0;
     }
-    if (pendingMoveRef.current) {
+    if (flush && pendingMoveRef.current) {
       const p = pendingMoveRef.current;
-      pendingMoveRef.current = null;
       applyDrag(p.x, p.y, p.shiftKey);
     }
-    draggingRef.current = false;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+    pendingMoveRef.current = null;
+    const id = pointerIdRef.current;
+    pointerIdRef.current = null;
+    if (id != null) {
+      try { wrapRef.current?.releasePointerCapture?.(id); } catch { /* no-op */ }
+    }
     freqSnapshotRef.current = null;
     volSnapshotRef.current = null;
     setGhost(null);
+    onDragStateChange?.(false);
   };
 
-  // Unmount safety: if the component dies mid-drag, cancel the pending frame.
+  const handlePointerUp = () => endDrag(true);
+
+  // Keep the safety-net listeners (attached once, below) pointing at the
+  // current endDrag closure without re-subscribing on every render.
+  const endDragRef = useRef(null);
+  useEffect(() => { endDragRef.current = endDrag; });
+
+  // Global safety net for a stuck orb: if the gesture is interrupted somewhere
+  // we don't receive a pointerup — capture lost, window blur, tab hidden,
+  // Escape, or a pointerdown outside the orb — snap the drag closed so the
+  // ghost never keeps following the cursor. Each handler no-ops when not
+  // dragging, so they're inert outside an active drag.
+  useEffect(() => {
+    const cancel = () => endDragRef.current?.(false);
+    const onVis = () => { if (document.visibilityState === 'hidden') endDragRef.current?.(false); };
+    const onKey = (e) => { if (e.key === 'Escape') endDragRef.current?.(false); };
+    const onDown = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) endDragRef.current?.(false);
+    };
+    window.addEventListener('blur', cancel);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('pointerdown', onDown);
+    document.addEventListener('visibilitychange', onVis);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('visibilitychange', onVis);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, []);
+
+  // Unmount safety: if the component dies mid-drag, cancel the pending frame
+  // and clear the parent's drag flag so the tuning panel doesn't stay frozen.
   useEffect(() => () => {
     if (moveRafRef.current) cancelAnimationFrame(moveRafRef.current);
-  }, []);
+    if (draggingRef.current) onDragStateChange?.(false);
+  }, [onDragStateChange]);
 
   const isDragging = ghost !== null;
 
@@ -187,7 +237,8 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb() {
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      onPointerCancel={() => endDrag(false)}
+      onLostPointerCapture={() => endDrag(false)}
       title="Drag to shift all oscillators — X detunes (preserves beats), Y changes volume. Hold shift for fine-tune."
     >
       <div className="global-detune-orb" />

@@ -1,6 +1,8 @@
-import { memo, useEffect, useState, useMemo, useCallback } from 'react';
+import { memo, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import { droneStereo } from '../audio/StereoMode';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
+import midiOutput from '../audio/MidiOutput';
 import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 
@@ -20,8 +22,31 @@ function OscillatorControls({
   onMixerToggle,
   isTuningOpen = false,
   onTuningToggle,
+  routingMap = {},
+  onSetVoiceRouting,
+  onResetVoiceRouting,
 }) {
   const [mutedOscillators, setMutedOscillators] = useState(() => Array(oscillatorCount).fill(false));
+  // Mirror the drone pan mode so the L/R/⊙ indicators re-render when it's
+  // toggled from the mixer or settings (both call droneStereo.setMode).
+  const [droneMode, setDroneMode] = useState(droneStereo.mode);
+  // Whether any computer-keyboard / MIDI note is currently sounding. The
+  // drone's own play/pause button (to the left of the drones) only shows
+  // once something else is playing — a first-time user with no input never
+  // sees it, since the master pause is all they need.
+  const [hasPlayedNotes, setHasPlayedNotes] = useState(false);
+  // Master transport state, driven by the bottom-row button + spacebar.
+  // Distinct from the drone pause (audioEngine.isPaused / the `isPaused`
+  // prop): the master pause silences drones AND keyboard/MIDI together,
+  // whereas the drone button only pauses the drone.
+  const [masterPaused, setMasterPaused] = useState(false);
+
+  useEffect(() => {
+    setDroneMode(droneStereo.mode);
+    return droneStereo.onChange((s, info) => {
+      if (info?.kind === 'mode') setDroneMode(s.mode);
+    });
+  }, []);
 
   useEffect(() => {
     setMutedOscillators((prev) => {
@@ -62,6 +87,12 @@ function OscillatorControls({
         } catch {
           // ignore
         }
+        // Track live keyboard/MIDI voices for the play-pause button.
+        // Released voices (in their fade-out tail) don't count as playing.
+        // While paused we keep the button up regardless so the user has a
+        // resume control even after the held notes have drained.
+        const playing = keyboardVoiceManager.getActiveVoices().some((v) => !v.released);
+        setHasPlayedNotes((prev) => (prev === playing ? prev : playing));
       }
       animationId = requestAnimationFrame(sync);
     };
@@ -76,16 +107,49 @@ function OscillatorControls({
     onDroneEnabledChange?.(next);
   };
 
-  // Global play/pause — toggles the drone bus AND releases any held
-  // computer-keyboard voices. This is what the leftmost bottom-row
-  // button and the spacebar both fire so "everything off" is a single
-  // gesture (drones fade out, keys release). Resume just unpauses
-  // drones; keyboard voices have to be replayed.
+  // Master play/pause — the leftmost bottom-row button and the spacebar
+  // both fire this. It silences EVERYTHING (drones + computer/MIDI
+  // keyboard, locally and on the external synth) and brings it all back on
+  // the next press, overriding any independent drone pause. Held voices
+  // are kept alive (the keyboard bus is muted, not released) so they sound
+  // again on resume; the synth gets note-offs on pause and re-triggers on
+  // resume via MidiOutput's reconcile loop. Uses explicit pause/unpause
+  // (not a toggle) so it can't fight the drone button over isPaused.
+  const kbdEnabledBeforeMuteRef = useRef(true);
+  const masterPausedRef = useRef(false);
   const handleGlobalPlayPause = useCallback(() => {
     if (!audioEngine.initialized) return;
-    const wasPaused = audioEngine.paused;
-    audioEngine.togglePlayPause();
-    if (!wasPaused) keyboardVoiceManager.releaseAll('kbd');
+    const nextPaused = !masterPausedRef.current;
+    masterPausedRef.current = nextPaused;
+    if (nextPaused) {
+      audioEngine.pauseDrones();
+      midiOutput.setDroneMuted(true);
+      kbdEnabledBeforeMuteRef.current = audioEngine.getKeyboardEnabled();
+      audioEngine.setKeyboardEnabled(false);
+      midiOutput.setKbdMuted(true);
+    } else {
+      audioEngine.unpauseDrones();
+      midiOutput.setDroneMuted(false);
+      audioEngine.setKeyboardEnabled(kbdEnabledBeforeMuteRef.current);
+      midiOutput.setKbdMuted(false);
+    }
+    setMasterPaused(nextPaused);
+    onPausedChange?.(audioEngine.paused);
+  }, [onPausedChange]);
+
+  // The drone's OWN play/pause (the button to the left of the drones).
+  // Pauses just the drone — locally and on the synth — while keyboard /
+  // MIDI keep playing, so the drone reads as a self-contained instrument.
+  // Resuming the drone does NOT un-pause anything else.
+  const handleDronePauseToggle = useCallback(() => {
+    if (!audioEngine.initialized) return;
+    if (audioEngine.paused) {
+      audioEngine.unpauseDrones();
+      midiOutput.setDroneMuted(false);
+    } else {
+      audioEngine.pauseDrones();
+      midiOutput.setDroneMuted(true);
+    }
     onPausedChange?.(audioEngine.paused);
   }, [onPausedChange]);
 
@@ -118,8 +182,84 @@ function OscillatorControls({
   };
   const anyOn = mutedOscillators.some((m) => !m);
 
+  // Per-voice pan: routingMap[i] holds the output channels (0=L, 1=R).
+  // The origin depends on mode — in 'lr' it's the alternating hard-pan
+  // (slot i → i%2); in 'stereo' it's the L/R split ([0,1] = ⊙ "both").
+  // Either way the tray toggle cycles L → R → ⊙ → L and reset returns
+  // every voice to its mode-appropriate origin.
+  const defaultChannelsFor = (i) => (droneMode === 'stereo' ? [0, 1] : [i % 2]);
+  const channelsFor = (i) => {
+    const c = routingMap[i];
+    return Array.isArray(c) && c.length ? c : defaultChannelsFor(i);
+  };
+  const panStateFor = (i) => {
+    const c = channelsFor(i);
+    if (c.length >= 2) return 'both';
+    return c[0] === 1 ? 'R' : 'L';
+  };
+  const PAN_GLYPH = { L: 'L', R: 'R', both: '⊙' };
+  const PAN_NEXT = { L: [1], R: [0, 1], both: [0] };
+  const handleCyclePan = (i) => {
+    if (!audioEngine.initialized) return;
+    onSetVoiceRouting?.(i, PAN_NEXT[panStateFor(i)]);
+  };
+  // A voice is "out of place" when its routing differs from the mode's
+  // origin — underlined in the tray so you can spot which were moved.
+  const isPanDefault = (i) => {
+    const c = channelsFor(i);
+    const def = defaultChannelsFor(i);
+    return c.length === def.length && def.every((ch, k) => c[k] === ch);
+  };
+  const anyPanNonDefault = oscillators.some((osc) => !isPanDefault(osc.index));
+
   return (
     <div className="osc-controls-panel">
+      {/* Pan tray — one subtle L/R/⊙ toggle per voice, sitting directly
+          above the drone mute squares so each lines up with its slot.
+          Cycles L → R → ⊙(both). In stereo mode ⊙ is the L/R split and an
+          L/R override collapses that voice's detune pair to one side. Reset
+          (right slot, above the mute-all ×) returns every voice to its
+          mode-appropriate origin and only appears once one differs. */}
+      <div className={`pan-tray${droneEnabled ? ' open' : ''}`}>
+        <div className="pan-tray-slot pan-tray-slot-left" aria-hidden="true" />
+        <div className="pan-tray-cells">
+          {oscillators.map((osc) => {
+            const state = panStateFor(osc.index);
+            const moved = !isPanDefault(osc.index);
+            return (
+              <button
+                key={`p-${osc.index}`}
+                type="button"
+                className={`pan-tray-cell${moved ? ' moved' : ''}`}
+                onClick={() => handleCyclePan(osc.index)}
+                title={`Voice ${osc.label} pan: ${
+                  state === 'both'
+                    ? (droneMode === 'stereo' ? 'both (stereo split)' : 'both (center)')
+                    : `${state} only`
+                } — click to cycle L → R → ⊙`}
+                aria-label={`Voice ${osc.label} pan ${state}`}
+                tabIndex={droneEnabled ? 0 : -1}
+              >
+                {PAN_GLYPH[state]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="pan-tray-slot pan-tray-slot-right">
+          {anyPanNonDefault && (
+            <button
+              type="button"
+              className="pan-tray-reset"
+              onClick={() => onResetVoiceRouting?.()}
+              title={droneMode === 'stereo' ? 'Reset all voices to stereo' : 'Reset all voices to L/R'}
+              aria-label={droneMode === 'stereo' ? 'Reset all voices to stereo' : 'Reset all voices to L/R'}
+              tabIndex={droneEnabled ? 0 : -1}
+            >
+              ↵
+            </button>
+          )}
+        </div>
+      </div>
       {/* Drone tray — slides open whenever drones are enabled. Holds the
           per-osc mute squares (small, outlined when off, lit with osc
           color when on). Closed when droneEnabled is false; pointer
@@ -130,7 +270,33 @@ function OscillatorControls({
             Left and right slots have matching flex (1fr) so the middle
             cell row stays horizontally centered regardless of whether
             the × button is present in the right slot. */}
-        <div className="drone-tray-slot drone-tray-slot-left" aria-hidden="true" />
+        {/* Left slot mirrors the right "×": the drone's OWN play/pause, so
+            the drone can be paused/resumed as its own instrument while the
+            keyboard / MIDI keep going. Shown once something else is playing
+            (or while the drone is solo-paused) — a first-time user with no
+            input never sees it and just uses the master pause. */}
+        <div className="drone-tray-slot drone-tray-slot-left">
+          {(hasPlayedNotes || (isPaused && !masterPaused)) && (
+            <button
+              type="button"
+              className={`drone-tray-kbd-play ${isPaused ? 'paused' : ''}`}
+              onClick={handleDronePauseToggle}
+              title={isPaused ? 'Resume drone' : 'Pause drone'}
+              aria-label={isPaused ? 'Resume drone' : 'Pause drone'}
+              tabIndex={droneEnabled ? 0 : -1}
+            >
+              {isPaused ? (
+                <svg viewBox="0 0 24 24" className="button-icon">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" className="button-icon">
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                </svg>
+              )}
+            </button>
+          )}
+        </div>
         <div className="drone-tray-cells">
           {oscillators.map((osc) => {
             const muted = mutedOscillators[osc.index] || false;
@@ -174,12 +340,12 @@ function OscillatorControls({
           <div className="grid-cell bottom-cell-wrap osc-play-col">
             <button
               type="button"
-              className={`bottom-cell bottom-play ${isPaused ? 'paused' : ''}`}
+              className={`bottom-cell bottom-play ${masterPaused ? 'paused' : ''}`}
               onClick={handleGlobalPlayPause}
-              title={isPaused ? 'Play everything (Space)' : 'Pause everything — silence drones + release keys (Space)'}
-              aria-label={isPaused ? 'Play' : 'Pause'}
+              title={masterPaused ? 'Play everything (Space)' : 'Pause everything — drones, keyboard + MIDI (Space)'}
+              aria-label={masterPaused ? 'Play' : 'Pause'}
             >
-              {isPaused ? (
+              {masterPaused ? (
                 <svg viewBox="0 0 24 24" className="button-icon">
                   <path d="M8 5v14l11-7z" />
                 </svg>

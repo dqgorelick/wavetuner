@@ -73,6 +73,12 @@ class FrequencyManager {
     this._tuningSystem = DEFAULT_SYSTEM;
     this._lastAnchorHz = 0;
     this._inPropagation = false;
+    // Follow-root: when ON, moving the root (drag, typed Hz, octave) scales
+    // EVERY voice by the same factor so the whole chord transposes and all
+    // relative ratios are preserved. When OFF, only voices with a locked
+    // ratio track the root; free voices stay put. Persisted as part of the
+    // instrument setup. Default ON so the root predictably carries the rest.
+    this._followRoot = FrequencyManager._loadFollowRoot();
 
     // Undo / redo state
     this._undoStack = [];
@@ -104,6 +110,28 @@ class FrequencyManager {
     try { localStorage.setItem('tuningRootSlot', String(this._anchorSlot)); } catch { /* ignore */ }
   }
 
+  // Follow-root persistence. Defaults to ON when unset/unavailable.
+  static _loadFollowRoot() {
+    try {
+      const v = localStorage.getItem('tuningFollowRoot');
+      if (v === '0') return false;
+      if (v === '1') return true;
+    } catch { /* ignore */ }
+    return true;
+  }
+  _persistFollowRoot() {
+    try { localStorage.setItem('tuningFollowRoot', this._followRoot ? '1' : '0'); } catch { /* ignore */ }
+  }
+
+  get followRoot() { return this._followRoot; }
+  setFollowRoot(on) {
+    const next = !!on;
+    if (next === this._followRoot) return;
+    this._followRoot = next;
+    this._persistFollowRoot();
+    this._fire();
+  }
+
   get anchorSlot() { return this._anchorSlot; }
   get tuningSystem() { return this._tuningSystem; }
   // Back-compat alias — old callers read `.limit` for the numeric
@@ -130,8 +158,14 @@ class FrequencyManager {
    * call (after the engine is initialized) takes effect.
    */
   ensureInitialSnapshot() {
-    if (this._lastStable) return;
     if (!audioEngine.initialized) return;
+    // Seed the anchor reference so follow-root's first transpose factor
+    // (anchorHz / lastAnchorHz) is valid from the very first root move.
+    if (this._lastAnchorHz <= 0) {
+      const hz = audioEngine.getFrequency(this._anchorSlot);
+      if (Number.isFinite(hz) && hz > 0) this._lastAnchorHz = hz;
+    }
+    if (this._lastStable) return;
     this._lastStable = this._takeSnapshot();
   }
 
@@ -237,6 +271,13 @@ class FrequencyManager {
     const oldHz = audioEngine.getFrequency(this._anchorSlot);
     if (!Number.isFinite(oldHz) || oldHz <= 0) return;
     if (Math.abs(newHz - oldHz) < 1e-4) return;
+    if (!this._followRoot) {
+      // Follow-root OFF: move only the anchor. The engine listener then
+      // pulls any locked-ratio slots along; free voices stay put. Keeps
+      // the typed-root / octave path consistent with dragging the orb.
+      audioEngine.setFrequency(this._anchorSlot, newHz);
+      return;
+    }
     const factor = newHz / oldHz;
     const count = audioEngine.getOscillatorCount();
     this._inPropagation = true;
@@ -491,6 +532,20 @@ class FrequencyManager {
     if (this._inUndoRestore) return;
     if (!audioEngine.initialized) return;
 
+    // A glide (Align / Load / recall) writes every voice's target each
+    // frame, so follow-root transpose and lock propagation are both
+    // redundant — and running them here would fire setFrequency per voice,
+    // re-triggering this whole listener fan-out O(N) times per frame (the
+    // source of the glide lag). Skip the work, but keep _lastAnchorHz
+    // current so the first user move AFTER the glide computes a sane
+    // transpose factor. The per-frame panel/spectrum repaint still happens
+    // via the separate bump listener.
+    if (audioEngine.isGliding) {
+      const hz = audioEngine.getFrequency(this._anchorSlot);
+      if (Number.isFinite(hz) && hz > 0) this._lastAnchorHz = hz;
+      return;
+    }
+
     const anchorHz = audioEngine.getFrequency(this._anchorSlot);
     if (!Number.isFinite(anchorHz) || anchorHz <= 0) {
       this._fire();
@@ -500,17 +555,32 @@ class FrequencyManager {
     const anchorChanged = Math.abs(anchorHz - this._lastAnchorHz) > 1e-4;
 
     if (anchorChanged) {
-      // Anchor moved — propagate to locked slots so their {n, d} stays
-      // honored. (External anchor changes from the audio engine — e.g.,
-      // patch loads or the FrequencySliders strip — flow through here.
-      // Manager-driven setRootHz scales every slot itself and uses
-      // _inPropagation to suppress this branch.)
+      // Anchor moved — propagate. (External anchor changes from the audio
+      // engine — orb drags, patch loads, the FrequencySliders strip — flow
+      // through here. Manager-driven setRootHz in follow-root mode scales
+      // every slot itself and uses _inPropagation to suppress this branch.)
+      const factor = this._lastAnchorHz > 0 ? anchorHz / this._lastAnchorHz : null;
       this._inPropagation = true;
       try {
-        for (const [slot, ratio] of this._slotRatios) {
-          if (slot === this._anchorSlot) continue;
-          const expectedHz = anchorHz * (ratio.n / ratio.d);
-          audioEngine.setFrequency(slot, expectedHz);
+        if (this._followRoot && factor) {
+          // Follow-root ON: transpose EVERY other voice by the same factor
+          // so the whole chord tracks the root — locked ratios are preserved
+          // (factor leaves n/d unchanged) and free voices come along too.
+          const count = audioEngine.getOscillatorCount();
+          for (let slot = 0; slot < count; slot++) {
+            if (slot === this._anchorSlot) continue;
+            const cur = audioEngine.getFrequency(slot);
+            if (!Number.isFinite(cur) || cur <= 0) continue;
+            audioEngine.setFrequency(slot, cur * factor);
+          }
+        } else {
+          // Follow-root OFF: only locked slots track the anchor so their
+          // {n, d} stays honored; free voices hold their absolute Hz.
+          for (const [slot, ratio] of this._slotRatios) {
+            if (slot === this._anchorSlot) continue;
+            const expectedHz = anchorHz * (ratio.n / ratio.d);
+            audioEngine.setFrequency(slot, expectedHz);
+          }
         }
       } finally {
         this._inPropagation = false;

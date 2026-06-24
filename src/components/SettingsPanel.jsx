@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
-import midiInput from '../audio/MidiInput';
-import midiOutput from '../audio/MidiOutput';
 import { droneEnvelope, keyboardEnvelope, computerKbdEnvelope } from '../audio/Envelope';
 import { droneWave, keyboardWave } from '../audio/Wave';
 import { droneFold, keyboardFold } from '../audio/Fold';
@@ -42,8 +40,6 @@ export default function SettingsPanel({
   onKbdKeyModeChange,
   kbdFillMode,
   onKbdFillModeChange,
-  midiEnabled,
-  onMidiEnabledToggle,
   saturationCurve,
   onSaturationCurveChange,
   saturationDrive,
@@ -57,39 +53,6 @@ export default function SettingsPanel({
   const [selectedDevice, setSelectedDevice] = useState('');
   const [maxChannels, setMaxChannels] = useState(2);
   const [needsPermission, setNeedsPermission] = useState(false);
-
-  // MIDI status/device list, mirrored from the MidiInput singleton.
-  // The singleton fires onChange after connect, hot-plug, and active-input
-  // changes — we just resync from its getters each time.
-  const [midiStatus, setMidiStatus] = useState(midiInput.status);
-  const [midiDevices, setMidiDevices] = useState(midiInput.devices);
-  const [activeMidiInput, setActiveMidiInput] = useState(midiInput.activeInputId);
-  useEffect(() => {
-    return midiInput.onChange(() => {
-      setMidiStatus(midiInput.status);
-      setMidiDevices(midiInput.devices);
-      setActiveMidiInput(midiInput.activeInputId);
-    });
-  }, []);
-
-  // MIDI output (drone → MPE) status, mirrored from the MidiOutput
-  // singleton. Same resync-on-change pattern as the input side.
-  const [midiOutStatus, setMidiOutStatus] = useState(midiOutput.status);
-  const [midiOutDevices, setMidiOutDevices] = useState(midiOutput.devices);
-  const [activeMidiOutput, setActiveMidiOutput] = useState(midiOutput.activeOutputId);
-  const [midiOutEnabled, setMidiOutEnabled] = useState(midiOutput.enabled);
-  const [midiOutBendRange, setMidiOutBendRange] = useState(midiOutput.bendRange);
-  const [midiOutZoneConfig, setMidiOutZoneConfig] = useState(midiOutput.sendZoneConfig);
-  useEffect(() => {
-    return midiOutput.onChange(() => {
-      setMidiOutStatus(midiOutput.status);
-      setMidiOutDevices(midiOutput.devices);
-      setActiveMidiOutput(midiOutput.activeOutputId);
-      setMidiOutEnabled(midiOutput.enabled);
-      setMidiOutBendRange(midiOutput.bendRange);
-      setMidiOutZoneConfig(midiOutput.sendZoneConfig);
-    });
-  }, []);
 
   // Enumerate audio output devices
   const enumerateDevices = useCallback(async (requestPermission = false) => {
@@ -235,188 +198,6 @@ export default function SettingsPanel({
           />
           <span className="tune-slider-value">{saturationDrive.toFixed(2)}×</span>
         </div>
-      </div>
-
-      <div className="settings-section">
-        {/* Inline "MIDI: [on / off]" row — gates MIDI input only
-            (computer-keyboard and on-screen input keep working when
-            this is off). The fader on the OscillatorControls strip
-            stays enabled regardless, so volume can be adjusted while
-            MIDI is muted. */}
-        <div className="settings-inline-row settings-inline-row-spaced">
-          <label className="settings-inline-label">MIDI:</label>
-          <div className="settings-inline-toggle">
-            <button
-              type="button"
-              className={`settings-toggle-btn ${midiEnabled ? 'on' : 'off'}`}
-              onClick={() => { if (!midiEnabled) onMidiEnabledToggle?.(); }}
-              aria-pressed={!!midiEnabled}
-              title="Enable MIDI input"
-            >
-              on
-            </button>
-            <button
-              type="button"
-              className={`settings-toggle-btn ${!midiEnabled ? 'on' : 'off'}`}
-              onClick={() => { if (midiEnabled) onMidiEnabledToggle?.(); }}
-              aria-pressed={!midiEnabled}
-              title="Mute MIDI input (keyboard/mouse still play)"
-            >
-              off
-            </button>
-          </div>
-        </div>
-        {midiStatus === 'unsupported' && (
-          <span className="settings-info">
-            This browser doesn't support Web MIDI (try Chrome or Edge).
-          </span>
-        )}
-        {(midiStatus === 'idle' || midiStatus === 'denied' || midiStatus === 'error') && (
-          <>
-            {midiStatus === 'denied' && (
-              <span className="settings-info">MIDI access denied.</span>
-            )}
-            {midiStatus === 'error' && (
-              <span className="settings-info">MIDI couldn't connect.</span>
-            )}
-            <button
-              type="button"
-              className="permission-button"
-              onClick={() => midiInput.connect()}
-            >
-              {midiStatus === 'idle' ? 'Connect MIDI' : 'Try again'}
-            </button>
-          </>
-        )}
-        {midiStatus === 'connecting' && (
-          <span className="settings-info">Connecting…</span>
-        )}
-        {midiStatus === 'connected' && midiDevices.length > 0 && (
-          <select
-            className="settings-select"
-            value={activeMidiInput}
-            onChange={(e) => midiInput.setActiveInput(e.target.value)}
-          >
-            <option value="all">All inputs</option>
-            {midiDevices.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-                {d.manufacturer ? ` (${d.manufacturer})` : ''}
-                {d.state === 'disconnected' ? ' — offline' : ''}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      <div className="settings-section">
-        {/* MIDI output — mirrors the drones out as MPE so an external
-            synth (e.g. Vital) can be the sound source. Off by default;
-            enabling it sends Note On per un-muted drone on its own
-            channel, with frequency → pitch bend and volume → channel
-            pressure. Target a virtual port (IAC Driver / loopMIDI). */}
-        <div className="settings-inline-row settings-inline-row-spaced">
-          <label className="settings-inline-label">MIDI out (MPE):</label>
-          <div className="settings-inline-toggle">
-            <button
-              type="button"
-              className={`settings-toggle-btn ${midiOutEnabled ? 'on' : 'off'}`}
-              onClick={() => { if (!midiOutEnabled) midiOutput.setEnabled(true); }}
-              aria-pressed={!!midiOutEnabled}
-              title="Send drones to an external synth as MPE"
-            >
-              on
-            </button>
-            <button
-              type="button"
-              className={`settings-toggle-btn ${!midiOutEnabled ? 'on' : 'off'}`}
-              onClick={() => { if (midiOutEnabled) midiOutput.setEnabled(false); }}
-              aria-pressed={!midiOutEnabled}
-              title="Stop sending MPE (releases held notes)"
-            >
-              off
-            </button>
-          </div>
-        </div>
-        {midiOutStatus === 'unsupported' && (
-          <span className="settings-info">
-            This browser doesn't support Web MIDI (try Chrome or Edge).
-          </span>
-        )}
-        {(midiOutStatus === 'idle' || midiOutStatus === 'denied' || midiOutStatus === 'error') && (
-          <>
-            {midiOutStatus === 'denied' && (
-              <span className="settings-info">MIDI access denied.</span>
-            )}
-            {midiOutStatus === 'error' && (
-              <span className="settings-info">MIDI couldn't connect.</span>
-            )}
-            <button
-              type="button"
-              className="permission-button"
-              onClick={() => midiOutput.connect()}
-            >
-              {midiOutStatus === 'idle' ? 'Connect MIDI' : 'Try again'}
-            </button>
-          </>
-        )}
-        {midiOutStatus === 'connecting' && (
-          <span className="settings-info">Connecting…</span>
-        )}
-        {midiOutStatus === 'connected' && midiOutDevices.length > 0 && (
-          <select
-            className="settings-select"
-            value={activeMidiOutput || ''}
-            onChange={(e) => midiOutput.setActiveOutput(e.target.value)}
-          >
-            {midiOutDevices.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-                {d.manufacturer ? ` (${d.manufacturer})` : ''}
-                {d.state === 'disconnected' ? ' — offline' : ''}
-              </option>
-            ))}
-          </select>
-        )}
-        {midiOutStatus === 'connected' && midiOutDevices.length === 0 && (
-          <span className="settings-info">
-            No MIDI output ports. Create a virtual port (IAC Driver on macOS,
-            loopMIDI on Windows) and run your synth on it.
-          </span>
-        )}
-        {midiOutStatus === 'connected' && midiOutDevices.length > 0 && (
-          <>
-            <label className="settings-sublabel">Synth bend range</label>
-            <select
-              className="settings-select"
-              value={midiOutBendRange}
-              onChange={(e) => midiOutput.setBendRange(parseInt(e.target.value, 10))}
-              title="Must match the synth's pitch-bend range. 48 = Vital MPE. If pitch barely moves when you change a drone, this is mismatched."
-            >
-              <option value={48}>±48 semitones (Vital MPE)</option>
-              <option value={24}>±24 semitones</option>
-              <option value={12}>±12 semitones</option>
-              <option value={2}>±2 semitones (default non-MPE)</option>
-            </select>
-            <span className="settings-info">
-              If pitch barely moves when you change a drone, this doesn't match
-              the synth — or MPE isn't active (toggle it off/on in the synth).
-            </span>
-            <label className="settings-inline-row" style={{ gap: '0.4em', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={midiOutZoneConfig}
-                onChange={(e) => midiOutput.setSendZoneConfig(e.target.checked)}
-              />
-              <span className="settings-inline-label">Send MPE zone config (RPN)</span>
-            </label>
-            <span className="settings-info">
-              Leave OFF for Vital — it's fixed at ±48 and these RPN messages
-              break its pitch bend. Enable only for a synth that needs explicit
-              MPE setup.
-            </span>
-          </>
-        )}
       </div>
 
       <StereoModeControls title="Drone stereo" stereoMode={droneStereo} slotCount={oscillatorCount} />

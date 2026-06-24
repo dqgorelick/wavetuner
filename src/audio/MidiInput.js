@@ -21,6 +21,7 @@
 
 import keyboardVoiceManager from './KeyboardVoiceManager';
 import midiCCMap from './MidiCCMap';
+import midiOutput from './MidiOutput';
 
 const NOTE_OFF   = 0x80;
 const NOTE_ON    = 0x90;
@@ -42,6 +43,12 @@ class MidiInput {
     // bus stays live, so computer-keyboard and on-screen input keep
     // working. Defaults true; toggled from the Settings panel.
     this._enabled = true;
+    // Input device ids that share a name with the active MIDI output port.
+    // Messages from these are dropped to break the feedback loop — IAC /
+    // loopMIDI buses appear as both an input and an output with the SAME
+    // name but DIFFERENT ids, so we match on name. Recomputed whenever the
+    // device list or the active output changes.
+    this._blockedInputIds = new Set();
     this._listeners = new Set();
     // Activity callbacks for the corner button's two dots. Fired on
     // every accepted note / CC message regardless of whether it maps
@@ -49,7 +56,24 @@ class MidiInput {
     // Callbacks throttle themselves; this layer just dispatches.
     this._activityListeners = new Set();
 
+    // Recompute the loopback block-list when the output port changes.
+    midiOutput.onChange(() => this._recomputeBlocked());
+
     MidiInput.instance = this;
+  }
+
+  // Rebuild the set of input ids whose device name matches the active
+  // output port — those are the loopback culprits. Cheap; runs on device
+  // hot-plug and on any output-port change.
+  _recomputeBlocked() {
+    const outName = midiOutput.activeOutputName;
+    const blocked = new Set();
+    if (outName) {
+      for (const d of this._devices) {
+        if (d.name === outName) blocked.add(d.id);
+      }
+    }
+    this._blockedInputIds = blocked;
   }
 
   get status() { return this._status; }
@@ -133,6 +157,7 @@ class MidiInput {
       });
     }
     this._devices = devs;
+    this._recomputeBlocked();
     this._fire();
   }
 
@@ -151,6 +176,11 @@ class MidiInput {
 
   _handleMessage(event, inputId) {
     if (!this._enabled) return;
+    // Feedback guard: while MIDI output is live, ignore anything arriving
+    // on the bus we're sending to (matched by name). Without this, our own
+    // emitted notes re-enter as input and loop — especially with input set
+    // to "All inputs" and output on an IAC / loopMIDI bus.
+    if (midiOutput.enabled && this._blockedInputIds.has(inputId)) return;
     if (this._activeInputId !== 'all' && inputId !== this._activeInputId) return;
 
     const data = event.data;

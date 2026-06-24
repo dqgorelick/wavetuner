@@ -46,6 +46,11 @@ class AudioEngine {
     this.gainNodesR = [];
     this.routingNodes = [];      // Routing control per oscillator (for channel assignment)
     this.masterGainNode = null;
+    // Pre-master summing tap for the visualizers. Sits BEFORE masterGainNode
+    // so the final/master fader doesn't scale the scope or spectrum — only the
+    // individual source mixers (drone, keyboard, midi) do, since they're
+    // upstream of this node.
+    this.preMasterTap = null;
     this.analyserNode1 = null;   // Left channel visualization
     this.analyserNode2 = null;   // Right channel visualization
     // High-resolution FFT analysers dedicated to the spectrum panel.
@@ -427,24 +432,33 @@ class AudioEngine {
     // on load failure (saturationReady stays false).
     await this._loadSaturationNode();
 
-    // Create splitter for visualization (off the post-master tap — after
-    // saturation if loaded, else directly off masterGainNode). Analyzers
-    // sit on the split-off, so every visualizer sees the full-width
-    // signal the listener hears (including saturation character).
-    const splitter = this.audioContext.createChannelSplitter(2);
-    const finalMerger = this.audioContext.createChannelMerger(2);
-
+    // Audio output path: master fader → saturation → destination. The
+    // visualizers are NOT in this path (see preMasterTap below), so the
+    // master/final fader and the soft-limiter character affect what you
+    // hear but not what the scope/spectrum draw.
     const postMaster = this.saturationNode || this.masterGainNode;
     if (this.saturationNode) {
       this.masterGainNode.connect(this.saturationNode);
     }
-    postMaster.connect(splitter);
+    postMaster.connect(this.audioContext.destination);
+
+    // Visualizer tap — sits BEFORE masterGainNode. The individual source
+    // mixers (drone, keyboard, midi) are upstream of this node, so they
+    // still scale the scope/spectrum; the final fader does not. droneUserGain
+    // and the keyboard/midi fold-bus both feed masterGainNode AND this tap.
+    // The analysers are dead-end side branches — an AnalyserNode reads its
+    // input without needing a downstream consumer.
+    this.preMasterTap = this.audioContext.createGain();
+    this.droneUserGain.connect(this.preMasterTap);
+    this.keyboardFoldDry.connect(this.preMasterTap);
+    this.keyboardFoldWet.connect(this.preMasterTap);
+
+    const splitter = this.audioContext.createChannelSplitter(2);
+    this.preMasterTap.connect(splitter);
     splitter.connect(this.analyserNode1, 0);
     splitter.connect(this.analyserNode2, 1);
-    this.analyserNode1.connect(finalMerger, 0, 0);
-    this.analyserNode2.connect(finalMerger, 0, 1);
 
-    // High-resolution spectrum analysers tap the same post-master split.
+    // High-resolution spectrum analysers tap the same pre-master split.
     // 32768 → ~1.35 Hz bins at 44.1k. Latency tradeoff is ~743 ms window
     // length but for drone visualization that's fine (slower envelope
     // changes read better than a jittery short window).
@@ -456,8 +470,6 @@ class AudioEngine {
     this.spectrumAnalyserR.smoothingTimeConstant = 0.6;
     splitter.connect(this.spectrumAnalyserL, 0);
     splitter.connect(this.spectrumAnalyserR, 1);
-
-    finalMerger.connect(this.audioContext.destination);
     
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;
@@ -540,6 +552,12 @@ class AudioEngine {
           // targets. Without this, _connectDroneToChannels' abrupt
           // disconnect() snaps the signal to 0 mid-waveform and
           // produces an audible click on every L|R ↔ L+R toggle.
+          // Switching pan mode resets every voice back to its origin
+          // L/R image — per-voice pan choices are an 'lr'-mode concept and
+          // shouldn't persist across a mode flip. reconnect:false because
+          // the click-free swap below does the disconnect/reconnect; here
+          // we only rewrite the map so the swap picks up the defaults.
+          this.resetRoutingToDefaults({ reconnect: false });
           this._applyDroneDetuneCurve();
           this._clickFreeDroneRouteSwap();
         } else if (info.kind === 'detune' || info.kind === 'curve') {
@@ -859,6 +877,24 @@ class AudioEngine {
   }
 
   /**
+   * Visualizer-only source gains: the same per-source bus contribution as
+   * the *EffectiveGain() versions but WITHOUT the master fader (or its
+   * count-based clip scale, which lives on masterGainNode). The scopes are
+   * sized by the individual source mixers (drone/keyboard/midi), not the
+   * final fader — so muting master still leaves the standing-wave, polar
+   * and face scopes visible. This mirrors the pre-master analyzer tap that
+   * feeds the XY scope.
+   */
+  getDroneVizGain() {
+    if (!this.isInitialized || !this.droneBusGain) return 0;
+    return this.droneBusGain.gain.value;
+  }
+  getKeyboardVizGain() {
+    if (!this.isInitialized || !this.keyboardBusGain) return 0;
+    return this.keyboardBusGain.gain.value;
+  }
+
+  /**
    * Instantaneous master gain as the audio graph currently has it —
    * includes the user's master-volume slider, the count-based clip
    * scale, and any in-flight fadeIn/fadeOut/pause ramp. This is what
@@ -934,11 +970,12 @@ class AudioEngine {
       // controlled by gainNodeR's value (0 in lr mode, full in stereo).
       gainNodeR.connect(this.channelGains[1]);
 
-      // Default routing: odd indices → left (0), even indices → right (1).
-      // Stash in routingMap; the actual node connect goes through
-      // _connectDroneToChannels so stereo mode is honored from the start.
+      // Default routing depends on mode (alternating hard-pan in lr, L/R
+      // split in stereo). Stash in routingMap; the actual node connect goes
+      // through _connectDroneToChannels so stereo mode is honored from the
+      // start.
       if (!this.routingMap[index] || this.routingMap[index].length === 0) {
-        this.routingMap[index] = [index % 2];
+        this.routingMap[index] = this._defaultRouting(index);
       }
       this.oscillators[index] = oscillator;
       this.gainNodes[index] = gainNode;
@@ -988,11 +1025,24 @@ class AudioEngine {
   }
   
   /**
-   * Setup default routing (odd → left, even → right)
+   * Mode-aware origin routing for one slot. In 'lr' mode it's the
+   * alternating hard-pan (slot i → i % channelCount). In 'stereo' mode the
+   * natural origin is the L/R split — channels [0,1], read as "both" by
+   * _connectDroneToChannels — so a fresh stereo load (or device change)
+   * gives the proper split rather than collapsing each voice to mono.
+   */
+  _defaultRouting(index) {
+    const n = this.channelGains.length || 2;
+    if (droneStereo.mode === 'stereo') return n >= 2 ? [0, 1] : [0];
+    return [index % n];
+  }
+
+  /**
+   * Setup default routing (odd → left, even → right; stereo → split)
    */
   _setupDefaultRouting() {
     for (let i = 0; i < this.oscillatorCount; i++) {
-      this.routingMap[i] = [i % 2]; // 0=left, 1=right as array
+      this.routingMap[i] = this._defaultRouting(i);
     }
   }
 
@@ -1189,11 +1239,14 @@ class AudioEngine {
     if (!partial._gain) return;
     if (!this.channelGains.length) return;
 
+    const channels = this.routingMap[slotIndex] || [];
+    const isBoth = channels.length >= 2;
+
     try { partial._gain.disconnect(); } catch { /* ignore */ }
     if (droneStereo.mode === 'stereo') {
-      if (this.channelGains[0]) partial._gain.connect(this.channelGains[0]);
+      const ch = isBoth ? 0 : (channels[0] ?? 0);
+      if (this.channelGains[ch]) partial._gain.connect(this.channelGains[ch]);
     } else {
-      const channels = this.routingMap[slotIndex] || [];
       for (const ch of channels) {
         if (ch >= 0 && ch < this.channelGains.length) {
           partial._gain.connect(this.channelGains[ch]);
@@ -1203,8 +1256,13 @@ class AudioEngine {
 
     if (partial._gainR) {
       try { partial._gainR.disconnect(); } catch { /* ignore */ }
-      const right = this.channelGains[1];
-      if (right) partial._gainR.connect(right);
+      if (droneStereo.mode === 'stereo') {
+        const ch = isBoth ? 1 : (channels[0] ?? 1);
+        if (this.channelGains[ch]) partial._gainR.connect(this.channelGains[ch]);
+      } else {
+        const right = this.channelGains[1];
+        if (right) partial._gainR.connect(right);
+      }
     }
   }
 
@@ -1232,12 +1290,19 @@ class AudioEngine {
     const gainNodeR = this.gainNodesR[i];
     if (!this.channelGains.length) return;
 
+    const channels = this.routingMap[i] || [];
+    // In stereo mode "both" (the default, channels = [0,1]) is the classic
+    // split: primary → L, partner → R. A single-channel override pins BOTH
+    // oscillators of the pair to that one side — the detune/beating is kept
+    // but the image collapses to mono-L or mono-R for that voice.
+    const isBoth = channels.length >= 2;
+
     if (gainNode) {
       try { gainNode.disconnect(); } catch { /* ignore */ }
       if (droneStereo.mode === 'stereo') {
-        if (this.channelGains[0]) gainNode.connect(this.channelGains[0]);
+        const ch = isBoth ? 0 : (channels[0] ?? 0);
+        if (this.channelGains[ch]) gainNode.connect(this.channelGains[ch]);
       } else {
-        const channels = this.routingMap[i] || [];
         for (const ch of channels) {
           if (ch >= 0 && ch < this.channelGains.length) {
             gainNode.connect(this.channelGains[ch]);
@@ -1248,8 +1313,14 @@ class AudioEngine {
 
     if (gainNodeR) {
       try { gainNodeR.disconnect(); } catch { /* ignore */ }
-      const right = this.channelGains[1];
-      if (right) gainNodeR.connect(right);
+      if (droneStereo.mode === 'stereo') {
+        // Partner follows the override: split → R, mono-L/R → same side.
+        const ch = isBoth ? 1 : (channels[0] ?? 1);
+        if (this.channelGains[ch]) gainNodeR.connect(this.channelGains[ch]);
+      } else {
+        const right = this.channelGains[1];
+        if (right) gainNodeR.connect(right);
+      }
     }
   }
 
@@ -1319,6 +1390,60 @@ class AudioEngine {
           this._connectPartialToChannels(i, p);
         }
       }
+      for (const { node, target } of gains) {
+        const t1 = target();
+        node.gain.cancelScheduledValues(tAfter);
+        node.gain.setValueAtTime(0, tAfter);
+        node.gain.linearRampToValueAtTime(t1, tAfter + RAMP_S);
+      }
+    }, RAMP_S * 1000 + 5);
+  }
+
+  /**
+   * Click-free route-swap for a SINGLE drone slot. Same trick as
+   * _clickFreeDroneRouteSwap but scoped to one voice's gains (primary +
+   * partner + partials), so changing one voice's L/R/⊙ pan dips only that
+   * voice for ~50 ms instead of momentarily ducking the whole drone bus.
+   * The rest of the bed keeps sounding untouched.
+   */
+  _clickFreeVoiceRouteSwap(i) {
+    if (!this.audioContext) return;
+    if (i < 0 || i >= this.oscillatorCount) return;
+    const RAMP_S = 0.025;
+    const ctx = this.audioContext;
+    const t = ctx.currentTime;
+
+    const partialsNow = this.extraPartials[i] || [];
+    const gains = [];
+    if (this.gainNodes[i]) {
+      gains.push({ node: this.gainNodes[i], target: () => this._droneTargetGain(i) });
+    }
+    if (this.gainNodesR[i]) {
+      gains.push({ node: this.gainNodesR[i], target: () => this._dronePartnerTargetGain(i) });
+    }
+    for (const p of partialsNow) {
+      if (p._gain) gains.push({ node: p._gain, target: () => this._partialTargetGain(p) });
+      if (p._gainR) gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p) });
+    }
+
+    // Nothing to fade (slot has no gain nodes yet) — just reconnect.
+    if (!gains.length) {
+      this._connectDroneToChannels(i);
+      for (const p of partialsNow) this._connectPartialToChannels(i, p);
+      return;
+    }
+
+    for (const { node } of gains) {
+      node.gain.cancelScheduledValues(t);
+      node.gain.setValueAtTime(node.gain.value, t);
+      node.gain.linearRampToValueAtTime(0, t + RAMP_S);
+    }
+
+    setTimeout(() => {
+      if (!this.audioContext) return;
+      const tAfter = this.audioContext.currentTime;
+      this._connectDroneToChannels(i);
+      for (const p of (this.extraPartials[i] || [])) this._connectPartialToChannels(i, p);
       for (const { node, target } of gains) {
         const t1 = target();
         node.gain.cancelScheduledValues(tAfter);
@@ -1871,7 +1996,75 @@ class AudioEngine {
   setRouting(oscIndex, outputChannel) {
     this.addRouting(oscIndex, outputChannel);
   }
-  
+
+  /**
+   * Set one drone's routing to an exact channel set in a single update.
+   * Used by the per-voice L/R/⊙ pan toggle in the drone tray. `channels`
+   * is a subset of [0, channelGains.length) — e.g. [0]=L, [1]=R, [0,1]=both.
+   * Empty/invalid sets fall back to the slot's alternating default so a
+   * voice can never be silenced through this control. In 'stereo' mode the
+   * connect helper keeps audio on L+R regardless; the map still updates so
+   * the choice takes effect when the user returns to 'lr'.
+   */
+  setVoiceRouting(oscIndex, channels) {
+    if (!this.isInitialized) return;
+    if (oscIndex < 0 || oscIndex >= this.oscillatorCount) return;
+    if (!this.gainNodes[oscIndex]) return;
+
+    const max = this.channelGains.length;
+    const clean = [...new Set(channels)]
+      .filter((c) => Number.isInteger(c) && c >= 0 && c < max)
+      .sort((a, b) => a - b);
+    this.routingMap[oscIndex] = clean.length ? clean : [oscIndex % max];
+
+    try {
+      // Both modes read the map now: 'lr' picks the primary's channel(s),
+      // 'stereo' decides split (both) vs mono-L/R for the detune pair.
+      // Reroute just this one voice click-free so the rest of the bed
+      // keeps sounding.
+      this._clickFreeVoiceRouteSwap(oscIndex);
+      if (this.onRoutingChange) {
+        this.onRoutingChange(oscIndex, this.routingMap[oscIndex]);
+      }
+    } catch (err) {
+      console.error('AudioEngine: Failed to set voice routing', err);
+    }
+  }
+
+  /**
+   * Reset every drone back to its origin L/R image: slot i → channel
+   * (i % channelCount), i.e. the alternating hard-pan the engine starts
+   * with. Fired by the drone-tray reset button and whenever the drone
+   * stereo mode is toggled. Pass { reconnect: false } when the caller
+   * performs its own reconnect afterward (the click-free mode swap does),
+   * so we only rewrite the map values without an extra disconnect.
+   */
+  resetRoutingToDefaults({ reconnect = true } = {}) {
+    if (!this.isInitialized) return;
+    const max = this.channelGains.length || 2;
+    // Origin depends on mode: 'lr' → alternating hard-pan (slot i → i%2);
+    // 'stereo' → the L/R split for every voice (channels [0,1], i.e. "both").
+    const stereo = droneStereo.mode === 'stereo';
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      const prev = this.routingMap[i] || [];
+      const def = stereo ? [0, 1] : [i % max];
+      const changed =
+        prev.length !== def.length || def.some((c, k) => prev[k] !== c);
+      this.routingMap[i] = def;
+      // Reroute only the voices that actually moved. reconnect:false is the
+      // mode-swap path — the caller's _clickFreeDroneRouteSwap handles the
+      // graph, so there we only rewrite the map values.
+      if (reconnect && changed && this.gainNodes[i]) {
+        try {
+          this._clickFreeVoiceRouteSwap(i);
+        } catch (err) {
+          console.error('AudioEngine: Failed to reset routing', err);
+        }
+      }
+      if (this.onRoutingChange) this.onRoutingChange(i, this.routingMap[i]);
+    }
+  }
+
   /**
    * Get current routing map
    */
@@ -1985,7 +2178,7 @@ class AudioEngine {
     for (let i = 0; i < this.gainNodes.length; i++) {
       if (!this.gainNodes[i]) continue;
       if (!this.routingMap[i] || this.routingMap[i].length === 0) {
-        this.routingMap[i] = [i % numChannels];
+        this.routingMap[i] = this._defaultRouting(i);
       }
       this._connectDroneToChannels(i);
       // Extras share the slot's routing — reconnect alongside.
@@ -2372,6 +2565,17 @@ class AudioEngine {
   }
 
   /**
+   * True while a frequency glide (Align / Load / save-state recall) is in
+   * flight. The glide writes every voice's target each frame, so listeners
+   * that would otherwise re-derive or re-propagate per-voice state (e.g.
+   * FrequencyManager's follow-root transpose) can skip their work and let
+   * the glide own the motion — avoids an O(N) listener storm per frame.
+   */
+  get isGliding() {
+    return this._glideRaf != null;
+  }
+
+  /**
    * Smoothly tween every oscillator's volume from its current value to a
    * per-osc target over `durationMs`, in linear space (0-1 scale). Same
    * ease curve as glideToFrequencies so a parallel freq+vol glide moves
@@ -2595,9 +2799,11 @@ class AudioEngine {
     this.isPaused = false;
     // Defensive: if something muted masterGain to 0 (e.g. a device
     // change called fadeOut and the user is now manually unpausing),
-    // restore master to user volume so sound actually returns.
+    // restore master to user volume so sound actually returns. Skip this
+    // when the final-output mute on the mixer is intentionally engaged —
+    // unpausing must not silently un-mute it.
     const t = this.audioContext.currentTime;
-    if (this.masterGainNode.gain.value < 0.01) {
+    if (!this._masterMuted && this.masterGainNode.gain.value < 0.01) {
       this.masterGainNode.gain.cancelScheduledValues(t);
       this.masterGainNode.gain.setValueAtTime(0.001, t);
       this.masterGainNode.gain.exponentialRampToValueAtTime(this.masterVolumeUser, t + 0.5);

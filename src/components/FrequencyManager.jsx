@@ -627,6 +627,7 @@ export function TuningPanel({
   const canUndo = frequencyManager.canUndo();
   const canRedo = frequencyManager.canRedo();
   const slots = frequencyManager.getSlots();
+  const followRoot = frequencyManager.followRoot;
   const anchorSlot = frequencyManager.anchorSlot;
   const anchorColor = palette.oscColor(anchorSlot, oscillatorCount);
   const handleUndo = useCallback(() => { frequencyManager.undo(); }, []);
@@ -642,6 +643,14 @@ export function TuningPanel({
 
   const recommended = activeSystemDef?.recommendedScale === 12 ? 12 : 7;
 
+  // Freeze the per-row inputs into plain text during ANY freq glide, not
+  // just orb-drag / Align (the `frozen` prop). Save-state recall glides
+  // through FrequencyManager and never set `isAligning`, so without this
+  // every row re-renders its 5 controlled inputs each frame — the recall
+  // lag. The panel re-renders every glide frame (bump listener), so this
+  // read stays current and flips back the frame after the glide ends.
+  const effFrozen = frozen || audioEngine.isGliding;
+
   return (
     <>
       <div
@@ -652,7 +661,7 @@ export function TuningPanel({
       >
         <div className="tuning-rows">
           {Array.from({ length: oscillatorCount }, (_, i) => (
-            <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} frozen={frozen} />
+            <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} frozen={effFrozen} />
           ))}
         </div>
         {/* TUNINGS: N rocker sits BETWEEN the row list and the system
@@ -660,24 +669,44 @@ export function TuningPanel({
             resizes this to match scaleSize, but the user can nudge it
             after. */}
         <div className="tuning-topbar">
-          <span className="tuning-topbar-label">TUNINGS: {oscillatorCount}</span>
-          <div className="tuning-chip-group" role="group" aria-label="Tuning count">
-            <button
-              type="button"
-              className="tuning-chip"
-              onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
-              disabled={oscillatorCount <= 2}
-              title="Remove the highest tuning"
-              aria-label="Remove tuning"
-            >−</button>
-            <button
-              type="button"
-              className="tuning-chip"
-              onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
-              disabled={oscillatorCount >= maxOscillators}
-              title="Add a tuning"
-              aria-label="Add tuning"
-            >+</button>
+          <span className="tuning-topbar-label">voices: {oscillatorCount}, root: #{anchorSlot + 1}</span>
+          <div className="tuning-topbar-right">
+            {/* Follow root — the "follow-#N" caption is plain text; the
+                [X]/[ ] checkbox to its right is the actual toggle. When on,
+                moving the root note transposes every voice (whole chord
+                tracks the root); when off, only ratio-locked voices follow. */}
+            <span className="tuning-follow">
+              <span className="tuning-follow-label">follow-#{anchorSlot + 1}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={followRoot}
+                aria-label={`Follow root voice ${anchorSlot + 1}`}
+                className={`tuning-follow-box${followRoot ? ' is-active' : ''}`}
+                onClick={() => frequencyManager.setFollowRoot(!followRoot)}
+                title={followRoot
+                  ? `Follow root: ON — moving root #${anchorSlot + 1} transposes every voice`
+                  : `Follow root: OFF — only ratio-locked voices follow root #${anchorSlot + 1}`}
+              >{followRoot ? '[X]' : '[ ]'}</button>
+            </span>
+            <div className="tuning-chip-group" role="group" aria-label="Tuning count">
+              <button
+                type="button"
+                className="tuning-chip"
+                onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+                disabled={oscillatorCount <= 2}
+                title="Remove the highest tuning"
+                aria-label="Remove tuning"
+              >−</button>
+              <button
+                type="button"
+                className="tuning-chip"
+                onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+                disabled={oscillatorCount >= maxOscillators}
+                title="Add a tuning"
+                aria-label="Add tuning"
+              >+</button>
+            </div>
           </div>
         </div>
         {/* Footer — system dropdown, scale radio (7/12), and Load all

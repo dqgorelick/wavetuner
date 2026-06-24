@@ -22,6 +22,15 @@ const VIZ_BUF_MIN_N = 128;
 const VIZ_BUF_MAX_N = 2048;
 const VIZ_BUF_N_STEP = 32;
 
+// Base amplitude scale for the 'audio'-source XY scope. The analyzer now
+// taps pre-master (so the final fader doesn't size the visualizer), which
+// means the time-domain signal it reads runs at full pre-fader level and
+// overflows the scope. Scale it down so the figure sits at a sane base
+// size; the individual source mixers (drone/keyboard/midi) still ride it
+// above/below this. Synth-source scopes are already normalized, so this
+// only applies to the audio path.
+const AUDIO_AMP_SCALE = 0.35;
+
 function adaptiveBufferSize(highestActiveFreq, sampleRate, targetCycles) {
   if (!(highestActiveFreq > 0)) return VIZ_BUF_MAX_N;
   const ideal = (targetCycles * sampleRate) / highestActiveFreq;
@@ -148,11 +157,12 @@ function drawStatic(
   // Each voice already carries its own phase + smoothed freq from
   // keyboardVoiceManager.updatePhases() in drawScope, so we just read
   // them. The keyboard pool's bus gain (kbd-on/off + volume) is folded
-  // in via getKeyboardEffectiveGain() below so muting the kbd bus
-  // hides voices visually too.
+  // in via getKeyboardVizGain() below so muting the kbd bus hides voices
+  // visually too. Viz gain excludes the master fader, so muting the final
+  // mixer leaves the scope visible (only the kbd/midi mixer fades it).
   const voices = keyboardVoiceManager.getVoicesForSynth();
-  const kbdEffectiveGain = audioEngine.getKeyboardEffectiveGain
-    ? audioEngine.getKeyboardEffectiveGain()
+  const kbdEffectiveGain = audioEngine.getKeyboardVizGain
+    ? audioEngine.getKeyboardVizGain()
     : 1;
 
   // Tween each oscillator's render volume toward its target so mute /
@@ -222,13 +232,12 @@ function drawStatic(
   const traceWidth = Math.min(width - 20, spectrumWidth * 1.5);
   const traceOffsetX = (width - traceWidth) / 2;
   const centerY = height * 0.5;
-  // Per-pool effective gain (master × pool bus) folds into each pool's
+  // Per-pool viz gain (pool bus only, NOT master) folds into each pool's
   // *contribution amount* below, so spacebar (pauses droneBusGain) fades
   // drone contributions out while leaving keyboard voices visible, and
-  // toggling the keyboard bus does the inverse. Master fade-out
-  // (routing/device changes) drops both since master is in both pool
-  // gains.
-  const droneScale = audioEngine.getDroneEffectiveGain();
+  // toggling the keyboard bus does the inverse. Master is deliberately
+  // excluded so muting the final mixer leaves the scope visible.
+  const droneScale = audioEngine.getDroneVizGain();
   const kbdScale = kbdEffectiveGain;
   // 'wave' keeps individuals at ±0.22·h (aggregate up to 1.75× that).
   // 'beating' renders only the aggregate and gets ~1.5× the amplitude so
@@ -469,13 +478,12 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   const partners = audioEngine.getDronePartnerData
     ? audioEngine.getDronePartnerData()
     : [];
-  // Per-pool effective gain: drones see master × droneBusGain (so they
-  // fade with spacebar/pause), keyboard sees master × keyboardBusGain
-  // (so they fade with the keyboard volume slider / on-off toggle).
-  // Reading the live values means the synth visually tracks every
-  // transition — pause ramp, master volume drag, etc.
-  const droneScale = audioEngine.getDroneEffectiveGain();
-  const keyboardScale = audioEngine.getKeyboardEffectiveGain();
+  // Per-pool viz gain (NOT master): drones see droneBusGain (so they fade
+  // with spacebar/pause), keyboard sees keyboardBusGain (so they fade with
+  // the keyboard volume slider / on-off toggle). Master is excluded so the
+  // scope stays visible when the final mixer is muted.
+  const droneScale = audioEngine.getDroneVizGain();
+  const keyboardScale = audioEngine.getKeyboardVizGain();
 
   const L = new Float32Array(N);
   const R = new Float32Array(N);
@@ -580,8 +588,9 @@ function synthHilbertData(bufferSize, sampleRate) {
   const freqs = audioEngine.getAllFrequencies();
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
-  const droneScale = audioEngine.getDroneEffectiveGain();
-  const keyboardScale = audioEngine.getKeyboardEffectiveGain();
+  // Viz gain (bus only, no master) so the polar scope survives a final-mixer mute.
+  const droneScale = audioEngine.getDroneVizGain();
+  const keyboardScale = audioEngine.getKeyboardVizGain();
 
   const X = new Float32Array(bufferSize);
   const Y = new Float32Array(bufferSize);
@@ -677,6 +686,9 @@ function drawXY(
   } = options;
   const cx = scopeOffsetX + scopeSize / 2;
   const cy = scopeOffsetY + scopeSize / 2;
+  // Pre-master audio runs hot; pull the audio figure down to its base size
+  // about the scope center. Synth data is already ~unit-normalized.
+  const ampScale = source === 'audio' ? AUDIO_AMP_SCALE : 1;
   const rotated = rotation === 1 || rotation === -1;
   const rotSign = rotation === -1 ? -1 : 1;
   const dataLen = timeData1.length;
@@ -734,8 +746,8 @@ function drawXY(
     let prevX = null;
     let prevY = null;
     for (let i = renderStart; i < dataLen; i += sampleStep) {
-      let x1 = ((timeData1[i] + 1) / 2) * scopeSize + scopeOffsetX;
-      let y1 = ((timeData2[i] + 1) / 2) * scopeSize + scopeOffsetY;
+      let x1 = ((timeData1[i] * ampScale + 1) / 2) * scopeSize + scopeOffsetX;
+      let y1 = ((timeData2[i] * ampScale + 1) / 2) * scopeSize + scopeOffsetY;
       if (rotated) {
         // Rotate ±45° around (cx, cy) and scale 1/√2 in one matrix:
         //   (dx', dy') = ((dx - s·dy)/2, (s·dx + dy)/2)

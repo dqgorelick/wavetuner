@@ -422,16 +422,6 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('showKbdLabels', showKbdLabels ? '1' : '0'); } catch { /* ignore */ }
   }, [showKbdLabels]);
-  // MIDI-input gate — when off, incoming MIDI messages are dropped at
-  // the source (MidiInput._handleMessage). Computer-keyboard and
-  // on-screen play paths are unaffected. The keyboard *bus* itself
-  // stays live so its volume fader is always interactive.
-  const [midiEnabled, setMidiEnabled] = useState(() => midiInput.enabled);
-  const handleMidiEnabledToggle = useCallback(() => {
-    const next = !midiInput.enabled;
-    midiInput.setEnabled(next);
-    setMidiEnabled(next);
-  }, []);
   // MIDI mappings panel. Opening it == entering learn mode (Ableton
   // style). Closing it cancels any in-progress arm. Tracked outside
   // React state for the button + dots so a CC stream doesn't trigger
@@ -992,6 +982,36 @@ function App() {
     }
   }, []);
 
+  // Per-voice L/R/⊙ pan toggle from the drone tray. The engine reroutes
+  // just that one voice click-free (a ~50 ms dip on that voice only), so
+  // no whole-bus fade here — the rest of the bed keeps sounding. Resync
+  // the routing map so the mixer's patch bay display stays consistent.
+  const handleSetVoiceRouting = useCallback((oscIndex, channels) => {
+    audioEngine.setVoiceRouting(oscIndex, channels);
+    setRoutingMap(audioEngine.getRoutingMap());
+  }, []);
+
+  // Reset button in the drone tray — every voice back to its origin L/R.
+  // Engine reroutes only the voices that moved, each click-free.
+  const handleResetVoiceRouting = useCallback(() => {
+    audioEngine.resetRoutingToDefaults();
+    setRoutingMap(audioEngine.getRoutingMap());
+  }, []);
+
+  // Toggling the drone stereo mode (Settings or Mixer) resets per-voice
+  // routing in the engine; mirror that into React state so the tray and
+  // patch bay reflect the defaults. queueMicrotask defers the read until
+  // after the engine's own mode listener has rewritten the map, regardless
+  // of listener order.
+  useEffect(() => {
+    const off = droneStereo.onChange((_inst, info) => {
+      if (info?.kind === 'mode') {
+        queueMicrotask(() => setRoutingMap(audioEngine.getRoutingMap()));
+      }
+    });
+    return off;
+  }, []);
+
   const handleDeviceChange = useCallback(async (deviceId) => {
     // Fade out audio before switching to prevent pops
     const wasPaused = audioEngine.paused;
@@ -1097,6 +1117,9 @@ function App() {
             onMixerToggle={() => setIsMixerOpen((v) => !v)}
             isTuningOpen={isTuningOpen}
             onTuningToggle={() => setIsTuningOpen((v) => !v)}
+            routingMap={routingMap}
+            onSetVoiceRouting={handleSetVoiceRouting}
+            onResetVoiceRouting={handleResetVoiceRouting}
           />
           <button
             className="help-toggle"
@@ -1216,7 +1239,7 @@ function App() {
           <button
             className={`midi-toggle${isMidiPanelOpen ? ' active' : ''}`}
             onClick={() => setIsMidiPanelOpen((v) => !v)}
-            title={isMidiPanelOpen ? 'Exit MIDI learn mode' : 'MIDI learn — click a drone, then move a CC knob'}
+            title={isMidiPanelOpen ? 'Close MIDI menu' : 'MIDI — devices, MPE output, and CC mappings'}
             aria-label="MIDI"
             aria-pressed={isMidiPanelOpen}
           >
@@ -1254,8 +1277,6 @@ function App() {
             onKbdKeyModeChange={setKbdKeyMode}
             kbdFillMode={kbdFillMode}
             onKbdFillModeChange={setKbdFillMode}
-            midiEnabled={midiEnabled}
-            onMidiEnabledToggle={handleMidiEnabledToggle}
             saturationCurve={saturationCurve}
             onSaturationCurveChange={handleSaturationCurveChange}
             saturationDrive={saturationDrive}

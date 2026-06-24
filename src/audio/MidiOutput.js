@@ -45,6 +45,7 @@
  */
 
 import audioEngine from './AudioEngine';
+import keyboardVoiceManager from './KeyboardVoiceManager';
 
 // ─── MPE / math constants ──────────────────────────────────────────────
 const MASTER_CH = 0;            // MIDI channel 1 — global/master
@@ -127,7 +128,29 @@ class MidiOutput {
     //   { active, note, lastBend, lastPressure }
     // `note` is the anchor MIDI note while the voice is held.
     this._voices = [];
+    // Played-voice channel allocator (computer keyboard + MIDI in). Maps
+    // a KeyboardVoiceManager voice id → { ch, note, lastBend, lastPressure }.
+    // Drones hold member channels 1..count; played voices take the rest
+    // (count+1..15) and steal the oldest played voice when exhausted.
+    this._kbdChan = new Map();
+    // Independent transport mutes. The drone's own play/pause sets
+    // _droneMuted; the master pause (spacebar) sets both. Each silences
+    // its half of the output on the synth without disturbing the other;
+    // un-muting re-triggers that half from live state on the next sync.
+    this._droneMuted = false;
+    this._kbdMuted = false;
     this._rafId = null;
+
+    // Kill all notes on the synth when the tab closes / reloads / navigates
+    // away. `pagehide` is the reliable one (covers close, reload, and the
+    // back/forward cache); `beforeunload` is a fallback. Deliberately NOT
+    // `visibilitychange` — that fires on tab switches too, and a music app
+    // should keep droning when the user just peeks at another tab.
+    if (typeof window !== 'undefined') {
+      const onExit = () => this.panic();
+      window.addEventListener('pagehide', onExit);
+      window.addEventListener('beforeunload', onExit);
+    }
 
     MidiOutput.instance = this;
   }
@@ -184,8 +207,75 @@ class MidiOutput {
   get enabled() { return this._enabled; }
   get bendRange() { return this._bendRange; }
   get sendZoneConfig() { return this._sendZoneConfig; }
+  get droneMuted() { return this._droneMuted; }
+  get kbdMuted() { return this._kbdMuted; }
+  /**
+   * Name of the live output port (e.g. "IAC Driver Bus 1"), or null.
+   * Used by MidiInput to drop messages that arrive on the same bus we're
+   * sending to — IAC/loopMIDI buses are both an input and an output with
+   * the same name (different port ids), so name matching catches the loop.
+   */
+  get activeOutputName() { return (this._port && this._port.name) || null; }
   /** True once a real port is selected and we're connected. */
   get ready() { return this._status === 'connected' && !!this._port; }
+
+  /**
+   * Mute only the drones on the synth, leaving played notes sounding.
+   * Drives the drone's own play/pause. Muting sends note-offs for the
+   * held drone voices and clears their bookkeeping; un-muting lets the
+   * sync loop re-anchor them from current AudioEngine state.
+   */
+  setDroneMuted(on) {
+    const next = !!on;
+    if (next === this._droneMuted) return;
+    this._droneMuted = next;
+    if (next && this._enabled && this._port) {
+      for (let slot = 0; slot < this._voices.length; slot++) {
+        const v = this._voices[slot];
+        if (v && v.active) this._noteOff(this._channelFor(slot), v.note);
+      }
+      this._voices = [];
+    }
+    this._fire();
+  }
+
+  /**
+   * Mute only the played voices (computer keyboard + MIDI in) on the
+   * synth, leaving the drones sounding. Un-muting lets the sync loop
+   * re-trigger whatever is still held.
+   */
+  setKbdMuted(on) {
+    const next = !!on;
+    if (next === this._kbdMuted) return;
+    this._kbdMuted = next;
+    if (next && this._enabled && this._port) {
+      for (const st of this._kbdChan.values()) this._noteOff(st.ch, st.note);
+      this._kbdChan.clear();
+    }
+    this._fire();
+  }
+
+  /**
+   * MIDI panic — silence the synth no matter what's held. Sends explicit
+   * Note Offs for the voices we're tracking, then All Sound Off (CC 120)
+   * and All Notes Off (CC 123) on every channel as a belt-and-suspenders
+   * for any note we may have lost track of, and recenters pitch bend.
+   * Wired to page unload so closing/reloading the tab never leaves a hung
+   * note droning on the external synth. Safe to call anytime; no-ops with
+   * no port. Does NOT clear the enabled/mute flags — a live session keeps
+   * running and the sync loop re-triggers from current state next frame.
+   */
+  panic() {
+    if (!this._port) return;
+    this._allNotesOff();
+    for (let ch = 0; ch <= MEMBER_COUNT; ch++) {
+      this._cc(ch, 120, 0);            // All Sound Off
+      this._cc(ch, 123, 0);            // All Notes Off
+      this._pitchBend(ch, BEND_CENTER); // recenter bend
+    }
+    this._voices = [];
+    this._kbdChan.clear();
+  }
 
   /**
    * Toggle whether the MPE Configuration Message + pitch-bend-range RPN
@@ -450,6 +540,7 @@ class MidiOutput {
     if (this._sendZoneConfig) this._configureZone();
     // Reset voice bookkeeping so the loop re-triggers everything fresh.
     this._voices = [];
+    this._kbdChan.clear();
     this._startLoop();
   }
 
@@ -458,6 +549,7 @@ class MidiOutput {
     this._stopLoop();
     this._allNotesOff();
     this._voices = [];
+    this._kbdChan.clear();
   }
 
   /**
@@ -510,6 +602,9 @@ class MidiOutput {
       const v = this._voices[slot];
       if (v && v.active) this._noteOff(this._channelFor(slot), v.note);
     }
+    for (const st of this._kbdChan.values()) {
+      this._noteOff(st.ch, st.note);
+    }
   }
 
   // ─── poll loop ────────────────────────────────────────────────────
@@ -538,6 +633,9 @@ class MidiOutput {
 
     const count = audioEngine.getOscillatorCount();
 
+    // Drone reconcile — skipped entirely while the drones are paused on
+    // the synth (setDroneMuted already sent their note-offs).
+    if (!this._droneMuted) {
     // Release voices for slots that no longer exist (count shrank).
     for (let slot = count; slot < this._voices.length; slot++) {
       const v = this._voices[slot];
@@ -614,6 +712,107 @@ class MidiOutput {
         this._dbg(`press   ch${ch + 1} → ${pressure} (slot${slot})`);
       }
     }
+    } // end drone reconcile (this._droneMuted)
+
+    // Played voices (computer keyboard + incoming MIDI) ride the member
+    // channels the drones don't occupy.
+    this._syncKbdVoices(count);
+  }
+
+  /**
+   * Mirror the live KeyboardVoiceManager voices out as MPE. Each voice
+   * anchors at the MIDI note that was actually played and bends by the
+   * microtonal offset of its retuned frequency — so the synth plays the
+   * JI / meantone pitch, not equal temperament. Both `kbd` and `midi`
+   * source voices flow through here, which is what makes the computer
+   * keyboard AND an incoming controller drive the external synth.
+   *
+   * Channel sharing: drones hold member channels 1..droneCount; played
+   * voices allocate from droneCount+1..MEMBER_COUNT and steal the oldest
+   * played voice when the pool is exhausted.
+   */
+  _syncKbdVoices(droneCount) {
+    if (this._kbdMuted) return; // played notes paused; drones unaffected
+    const voices = keyboardVoiceManager.getActiveVoices();
+
+    // Live = sounding and not yet in its release tail. A voice that has
+    // released (or vanished) gets a Note Off and frees its channel.
+    const liveIds = new Set();
+    for (const v of voices) {
+      if (!v.released) liveIds.add(v.id);
+    }
+
+    const minCh = droneCount + 1;
+    const maxCh = MEMBER_COUNT;
+    for (const [id, st] of this._kbdChan) {
+      // Released / gone, or the channel fell into the drone range because
+      // the drone count grew — release it either way.
+      if (!liveIds.has(id) || st.ch < minCh || st.ch > maxCh) {
+        this._noteOff(st.ch, st.note);
+        this._kbdChan.delete(id);
+      }
+    }
+
+    if (minCh > maxCh) return; // drones fill every member channel
+
+    const occupied = new Set();
+    for (const st of this._kbdChan.values()) occupied.add(st.ch);
+
+    for (const v of voices) {
+      if (v.released) continue;
+      let st = this._kbdChan.get(v.id);
+
+      if (!st) {
+        let ch = -1;
+        for (let c = minCh; c <= maxCh; c++) {
+          if (!occupied.has(c)) { ch = c; break; }
+        }
+        if (ch < 0) {
+          // Pool full — steal the oldest held played voice.
+          const steal = this._oldestKbdVoice(voices);
+          if (!steal) continue;
+          const stolen = this._kbdChan.get(steal.id);
+          this._noteOff(stolen.ch, stolen.note);
+          ch = stolen.ch;
+          this._kbdChan.delete(steal.id);
+        }
+        occupied.add(ch);
+        const note = clampNote(v.midiNote);
+        const bend = bendValue(v.freq, note, this._bendRange);
+        const vel = Math.max(1, Math.min(127, Math.round((v.peak || 1) * 127)));
+        const pressure = volToPressure(v.amp);
+        this._pitchBend(ch, bend);
+        this._noteOn(ch, note, vel);
+        // Re-send bend after Note On — same synth workaround as the drone path.
+        this._pitchBend(ch, bend);
+        this._pressure(ch, pressure);
+        this._kbdChan.set(v.id, { ch, note, lastBend: bend, lastPressure: pressure });
+        this._dbg(`kbd noteOn ch${ch + 1} note${note} bend${bend} (voice${v.id} ${v.freq.toFixed(2)}Hz ${v.source})`);
+        continue;
+      }
+
+      // Held — update bend + pressure as the voice retunes / swells.
+      const bend = bendValue(v.freq, st.note, this._bendRange);
+      if (bend !== st.lastBend) {
+        this._pitchBend(st.ch, bend);
+        st.lastBend = bend;
+      }
+      const pressure = volToPressure(v.amp);
+      if (pressure !== st.lastPressure) {
+        this._pressure(st.ch, pressure);
+        st.lastPressure = pressure;
+      }
+    }
+  }
+
+  /** Oldest currently-channelled played voice (lowest startTime), or null. */
+  _oldestKbdVoice(voices) {
+    let oldest = null;
+    for (const v of voices) {
+      if (!this._kbdChan.has(v.id)) continue;
+      if (oldest === null || v.startTime < oldest.startTime) oldest = v;
+    }
+    return oldest;
   }
 }
 

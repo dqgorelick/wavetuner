@@ -9,6 +9,7 @@ import { droneStereo, keyboardStereo } from './audio/StereoMode';
 import frequencyManager from './audio/FrequencyManager';
 import { getSystem } from './audio/jiRatios';
 import midiInput from './audio/MidiInput';
+import midiOutput from './audio/MidiOutput';
 import midiCCMap from './audio/MidiCCMap';
 import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
@@ -768,6 +769,11 @@ function App() {
     // it from the click is safe regardless. Status / devices are
     // surfaced in SettingsPanel.
     midiInput.connect();
+    // Same access request for the output side (drone → MPE out). Stays
+    // dormant until the user enables it in Settings; connect() just
+    // enumerates ports and, if output was enabled in a prior session,
+    // brings the MPE zone up.
+    midiOutput.connect();
 
     // Apply routing from URL if present
     if (routing) {

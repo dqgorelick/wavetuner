@@ -29,7 +29,7 @@ const VIZ_BUF_N_STEP = 32;
 // size; the individual source mixers (drone/keyboard/midi) still ride it
 // above/below this. Synth-source scopes are already normalized, so this
 // only applies to the audio path.
-const AUDIO_AMP_SCALE = 0.35;
+const AUDIO_AMP_SCALE = 0.315;
 
 function adaptiveBufferSize(highestActiveFreq, sampleRate, targetCycles) {
   if (!(highestActiveFreq > 0)) return VIZ_BUF_MAX_N;
@@ -683,12 +683,17 @@ function drawXY(
     lineWidthScale = 1,
     outlineScale = 1,
     rotation = 0,
+    ampScale: ampScaleOpt = null,
   } = options;
   const cx = scopeOffsetX + scopeSize / 2;
   const cy = scopeOffsetY + scopeSize / 2;
   // Pre-master audio runs hot; pull the audio figure down to its base size
-  // about the scope center. Synth data is already ~unit-normalized.
-  const ampScale = source === 'audio' ? AUDIO_AMP_SCALE : 1;
+  // about the scope center. Synth data is already ~unit-normalized. Callers
+  // can force a specific scale (e.g. the Hilbert scope matches the audio
+  // Lissajous) via options.ampScale.
+  const ampScale = ampScaleOpt != null
+    ? ampScaleOpt
+    : (source === 'audio' ? AUDIO_AMP_SCALE : 1);
   const rotated = rotation === 1 || rotation === -1;
   const rotSign = rotation === -1 ? -1 : 1;
   const dataLen = timeData1.length;
@@ -1138,18 +1143,19 @@ export default function Oscilloscope({
       } else if (vizMode === 3) {
         // ── MODE 3: Hilbertscope ─────────────────────────────────────
         // Analytic-signal plot: each osc traces a circle, composite is
-        // a Fourier epicycle. Reuses drawXY for visual consistency.
-        // Sized smaller than the other XY scopes because the analytic
-        // envelope sums osc amplitudes, so multi-osc figures naturally
-        // fill more of the [-1, 1] box than the L/R-stereo modes do.
+        // a Fourier epicycle. Reuses drawXY for visual consistency, and
+        // shares the audio Lissajous box (0.95) + amplitude scale
+        // (AUDIO_AMP_SCALE) so the polar scope reads at the same size as
+        // mode 0 instead of an ad-hoc shrink.
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(0, 0, width, usableHeight);
-        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * 0.6 * vizScaleRef.current);
+        const scopeSize = Math.max(0, Math.min(width, usableHeight) * 0.95 * vizScaleRef.current);
         const scopeX = (width - scopeSize) / 2;
         const scopeY = (usableHeight - scopeSize) / 2;
         const { X, Y } = getHilbertXY('synth');
         drawXY(ctx, scopeSize, scopeX, scopeY, lineScale, r, g, b, X, Y, {
           source: 'synth',
+          ampScale: AUDIO_AMP_SCALE,
           lineWidthScale: vizLineWidthRef.current,
           outlineScale: vizOutlineRef.current,
           rotation: vizRotationRef.current,

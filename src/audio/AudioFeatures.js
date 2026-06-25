@@ -1,5 +1,6 @@
 import keyboardVoiceManager from './KeyboardVoiceManager';
 import { SATURATION_CURVES } from './AudioEngine';
+import { pairDissonance as _pairwiseDissonance } from './dissonanceModel';
 
 /**
  * Per-frame audio features for visualizer reactivity.
@@ -25,23 +26,10 @@ import { SATURATION_CURVES } from './AudioEngine';
  * frequency (e.g. audio.centroid / 1000).
  */
 
-// Sethares dissonance curve: d(x) = e^(-Ax) - e^(-Bx) where x is the
-// frequency difference scaled by critical bandwidth. Peaks near x ≈ 0.22.
-const _A = 3.5;
-const _B = 5.75;
-const _PEAK = Math.exp(-_A * 0.221) - Math.exp(-_B * 0.221);
-
-function _criticalBandwidth(f) {
-  return 1.72 * Math.pow(f, 0.65);
-}
-
-function _pairwiseDissonance(f1, f2, a1, a2) {
-  const fMin = Math.min(f1, f2);
-  const cb = _criticalBandwidth(fMin);
-  const x = Math.abs(f1 - f2) / cb;
-  const d = Math.exp(-_A * x) - Math.exp(-_B * x);
-  return Math.min(a1, a2) * d / _PEAK;
-}
+// Sethares sensory-dissonance kernel now lives in dissonanceModel.js so the
+// live meter and the predictive spectrum-bar HUD share one implementation.
+// `_pairwiseDissonance` is imported (aliased) above; the loop below is
+// unchanged.
 
 // Saturation curve mirrored from /public/soft-limiter-worklet.js so we
 // can predict how much the master is being squashed without tapping the

@@ -3344,14 +3344,14 @@ kbd {
 
 /* Side adornments line up with the bar's frequency strip — not the
    full spectrum component (which also includes the orb row up top).
-   Height matches BAR_LINE_HEIGHT (30) and the 4px bottom margin matches
+   Height matches BAR_LINE_HEIGHT (21) and the 4px bottom margin matches
    the post-track padding inside .freq-spectrum-bar, so each side spans
    the same vertical range as .fsb-track. */
 .fsb-side {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
+  height: 21px;
   margin-bottom: 4px;
 }
 .fsb-side-right {
@@ -3400,10 +3400,35 @@ kbd {
    removed because the shift felt like the spectrum was being pushed
    around when the user just wanted to peek at settings.) */
 
+/* Dissonance HUD canvas. Absolutely positioned inside the (overflow:visible)
+   spectrum bar, baseline on the spectrum line, rising upward behind the orbs.
+   No z-index so DOM order keeps it behind the track/lines/dots/labels that
+   follow it. Fades in only while an orb is grabbed/dragged. */
+.fsb-diss-curve {
+  position: absolute;
+  pointer-events: none;
+  /* Dissolve the left/right ends, matching the spectrum track's fade. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 30px,
+    black calc(100% - 30px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 30px,
+    black calc(100% - 30px),
+    transparent 100%
+  );
+}
+
 .fsb-track {
   position: absolute;
   top: 0;
-  background: rgba(255, 255, 255, 0.08);
+  /* No fill of its own — the dissonance curve's colors bleed up behind the
+     track and serve as the bar's background. Ticks/markers render on top. */
   border-radius: 2px;
   /* Soft fade at left/right ends so ticks dissolve into the backdrop
      instead of clipping abruptly at the bar's edges. */

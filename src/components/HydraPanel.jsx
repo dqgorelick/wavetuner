@@ -58,6 +58,8 @@ export default function HydraPanel({
   onVizCyclesChange,
   vizRotation,
   onVizRotationChange,
+  vizQuality,
+  onVizQualityChange,
   vfxScale,
   onVfxScaleChange,
   vfxBlend,
@@ -170,61 +172,54 @@ export default function HydraPanel({
       className={`hydra-panel${isOpen ? ' open' : ''}`}
       aria-hidden={!isOpen}
     >
-      <header className="hydra-header">
-        <h3>Hydra</h3>
-        <div className="hydra-header-actions">
-          <button
-            type="button"
-            className={`hydra-action-btn hydra-enable-btn ${isRunning ? 'on' : 'off'}`}
-            onClick={handleToggleEnable}
-            title={isRunning
-              ? 'Hydra is on — click to switch back to the plain oscilloscope'
-              : 'Hydra is off — click to start the video synth'}
-            aria-pressed={isRunning}
-          >
-            {isRunning ? 'on' : 'off'}
-          </button>
-          <button type="button" className="hydra-action-btn" onClick={runCode} title="Run (Cmd-Enter)">
-            run
-          </button>
-          <button type="button" className="hydra-action-btn" onClick={handleSave} title="Save current sketch">
-            save
-          </button>
-          <button
-            type="button"
-            className="hydra-close"
-            onClick={onClose}
-            aria-label="Close hydra"
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-              <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-            </svg>
-          </button>
-        </div>
+      <header className="hydra-panel-header">
+        <h3>Visuals</h3>
+        <button
+          type="button"
+          className="hydra-close"
+          onClick={onClose}
+          aria-label="Close visuals"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+            <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+          </svg>
+        </button>
       </header>
 
-      <div className="hydra-editor-wrap">
-        <CodeMirror
-          value={code}
-          onChange={setCode}
-          extensions={cmExtensions}
-          theme="dark"
-          basicSetup={{
-            lineNumbers: true,
-            foldGutter: false,
-            highlightActiveLine: true,
-            indentOnInput: true,
-          }}
-          height="240px"
-        />
-      </div>
-
-      <div className={`hydra-status hydra-status-${status.kind}`}>
-        {status.text || (isRunning ? 'Hydra ready. Cmd-Enter to run.' : 'Hydra not enabled.')}
+      <div
+        className="hydra-quality-row hydra-quality-top"
+        title="Render quality. Pretty: full per-frame detail. Performance: skips work the active mode doesn't need (phase calibration on the plain Lissajous, audio-feature analysis when nothing reads it) and halves the feature rate — looks ~the same, costs much less. Off: blanks the scope and stops the render loop."
+      >
+        <span className="tune-slider-label">Quality</span>
+        <div className="settings-toggle-row hydra-quality-toggle">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${vizQuality === 'pretty' ? 'on' : 'off'}`}
+            onClick={() => onVizQualityChange('pretty')}
+            aria-pressed={vizQuality === 'pretty'}
+          >
+            pretty
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${vizQuality === 'performance' ? 'on' : 'off'}`}
+            onClick={() => onVizQualityChange('performance')}
+            aria-pressed={vizQuality === 'performance'}
+          >
+            perf
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${vizQuality === 'off' ? 'on' : 'off'}`}
+            onClick={() => onVizQualityChange('off')}
+            aria-pressed={vizQuality === 'off'}
+          >
+            off
+          </button>
+        </div>
       </div>
 
       <section className="hydra-section">
-        <h5 className="hydra-section-title">Visualizer</h5>
         <VizSlider
           label="Scale"
           value={vizScale}
@@ -298,6 +293,57 @@ export default function HydraPanel({
           </div>
         </div>
       </section>
+
+      <header className="hydra-header">
+        <h3>Hydra</h3>
+        <div className="hydra-header-actions">
+          <button
+            type="button"
+            className={`hydra-action-btn hydra-enable-btn ${isRunning ? 'on' : 'off'}`}
+            onClick={handleToggleEnable}
+            title={isRunning
+              ? 'Hydra is on — click to switch back to the plain oscilloscope'
+              : 'Hydra is off — click to start the video synth'}
+            aria-pressed={isRunning}
+          >
+            {isRunning ? 'on' : 'off'}
+          </button>
+          {isRunning && (
+            <>
+              <button type="button" className="hydra-action-btn" onClick={runCode} title="Run (Cmd-Enter)">
+                run
+              </button>
+              <button type="button" className="hydra-action-btn" onClick={handleSave} title="Save current sketch">
+                save
+              </button>
+            </>
+          )}
+        </div>
+      </header>
+
+      {isRunning && (
+        <>
+          <div className="hydra-editor-wrap">
+            <CodeMirror
+              value={code}
+              onChange={setCode}
+              extensions={cmExtensions}
+              theme="dark"
+              basicSetup={{
+                lineNumbers: true,
+                foldGutter: false,
+                highlightActiveLine: true,
+                indentOnInput: true,
+              }}
+              height="240px"
+            />
+          </div>
+
+          <div className={`hydra-status hydra-status-${status.kind}`}>
+            {status.text || 'Hydra ready. Cmd-Enter to run.'}
+          </div>
+        </>
+      )}
 
       <section className="hydra-section">
         <h5 className="hydra-section-title">Feedback</h5>

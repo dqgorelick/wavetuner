@@ -61,6 +61,22 @@ const SAVE_LIMIT = 8;
 const DEFAULT_RECALL_GLIDE_MS = 800;
 const MAX_RECALL_GLIDE_MS = 10000;
 
+// Easing curves for the recall glide, cycled via the "curve:" button
+// beside the glide slider. `id` is persisted; `fn` maps normalized time
+// t∈[0,1] → eased progress. ease-in-out (smooth at both ends) matches the
+// engine's historical glide shape and stays the default.
+const RECALL_CURVES = [
+  { id: 'linear', label: 'linear', fn: (t) => t },
+  { id: 'ease-in', label: 'ease in', fn: (t) => t * t },
+  { id: 'ease-out', label: 'ease out', fn: (t) => t * (2 - t) },
+  {
+    id: 'ease-in-out',
+    label: 'ease in-out',
+    fn: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+  },
+];
+const DEFAULT_RECALL_CURVE = 'ease-in-out';
+
 class FrequencyManager {
   constructor() {
     if (FrequencyManager.instance) return FrequencyManager.instance;
@@ -87,10 +103,14 @@ class FrequencyManager {
     this._snapTimer = null;
     this._inUndoRestore = false;
 
-    // In-memory named save slots. Lost on reload by design.
-    this._saveSlots = [];
-    this._saveSeq = 0;           // monotonic counter for auto-names
-    this._recallGlideMs = DEFAULT_RECALL_GLIDE_MS;
+    // Named save slots — persisted across reloads so the states the user
+    // builds in the tuning panel survive a refresh (see the _load/_persist
+    // helpers below). Snapshots are JSON-serialized; the slotRatios Map is
+    // stored as an entries array and rehydrated on load.
+    this._saveSlots = FrequencyManager._loadSaveSlots();
+    this._saveSeq = FrequencyManager._loadSaveSeq(); // monotonic counter for auto-names
+    this._recallGlideMs = FrequencyManager._loadRecallGlideMs();
+    this._recallCurve = FrequencyManager._loadRecallCurve();
 
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
 
@@ -121,6 +141,83 @@ class FrequencyManager {
   }
   _persistFollowRoot() {
     try { localStorage.setItem('tuningFollowRoot', this._followRoot ? '1' : '0'); } catch { /* ignore */ }
+  }
+
+  // Save-slot persistence. Snapshots hold a slotRatios Map, which JSON
+  // can't represent directly — store it as an entries array and rebuild
+  // the Map on load. All reads tolerate missing/corrupt data and fall
+  // back to an empty slot list.
+  static _loadSaveSlots() {
+    try {
+      const arr = JSON.parse(localStorage.getItem('tuningSaveSlots'));
+      if (!Array.isArray(arr)) return [];
+      const out = [];
+      for (const s of arr) {
+        if (!s || typeof s.id !== 'string' || !s.snapshot) continue;
+        const snap = s.snapshot;
+        if (!Array.isArray(snap.frequencies)) continue;
+        out.push({
+          id: s.id,
+          name: typeof s.name === 'string' ? s.name : 'Save',
+          createdAt: Number(s.createdAt) || Date.now(),
+          snapshot: {
+            frequencies: snap.frequencies.slice(),
+            slotRatios: new Map(Array.isArray(snap.slotRatios) ? snap.slotRatios : []),
+            anchorSlot: Number.isInteger(snap.anchorSlot) ? snap.anchorSlot : 0,
+            tuningSystem: snap.tuningSystem || DEFAULT_SYSTEM,
+          },
+        });
+      }
+      return out.slice(-SAVE_LIMIT);
+    } catch { return []; }
+  }
+  static _loadSaveSeq() {
+    try {
+      const v = parseInt(localStorage.getItem('tuningSaveSeq'), 10);
+      if (Number.isInteger(v) && v >= 0) return v;
+    } catch { /* ignore */ }
+    return 0;
+  }
+  _persistSaveSlots() {
+    try {
+      const serial = this._saveSlots.map((s) => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        snapshot: {
+          frequencies: Array.from(s.snapshot.frequencies),
+          slotRatios: Array.from(s.snapshot.slotRatios.entries()),
+          anchorSlot: s.snapshot.anchorSlot,
+          tuningSystem: s.snapshot.tuningSystem,
+        },
+      }));
+      localStorage.setItem('tuningSaveSlots', JSON.stringify(serial));
+      localStorage.setItem('tuningSaveSeq', String(this._saveSeq));
+    } catch { /* ignore */ }
+  }
+
+  // Recall-glide persistence. Falls back to the default when unset.
+  static _loadRecallGlideMs() {
+    try {
+      const v = parseFloat(localStorage.getItem('tuningRecallGlideMs'));
+      if (Number.isFinite(v)) return Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, v));
+    } catch { /* ignore */ }
+    return DEFAULT_RECALL_GLIDE_MS;
+  }
+  _persistRecallGlideMs() {
+    try { localStorage.setItem('tuningRecallGlideMs', String(this._recallGlideMs)); } catch { /* ignore */ }
+  }
+
+  // Recall-curve persistence. Falls back to the default for unknown ids.
+  static _loadRecallCurve() {
+    try {
+      const v = localStorage.getItem('tuningRecallCurve');
+      if (RECALL_CURVES.some((c) => c.id === v)) return v;
+    } catch { /* ignore */ }
+    return DEFAULT_RECALL_CURVE;
+  }
+  _persistRecallCurve() {
+    try { localStorage.setItem('tuningRecallCurve', this._recallCurve); } catch { /* ignore */ }
   }
 
   get followRoot() { return this._followRoot; }
@@ -360,6 +457,7 @@ class FrequencyManager {
     };
     this._saveSlots.push(slot);
     if (this._saveSlots.length > SAVE_LIMIT) this._saveSlots.shift();
+    this._persistSaveSlots();
     this._fire();
     return id;
   }
@@ -401,13 +499,41 @@ class FrequencyManager {
     const clamped = Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, n));
     if (clamped === this._recallGlideMs) return;
     this._recallGlideMs = clamped;
+    this._persistRecallGlideMs();
+    this._fire();
+  }
+
+  // ─── Recall easing curve ─────────────────────────────────────────────
+  get recallCurve() { return this._recallCurve; }
+
+  get recallCurveLabel() {
+    const c = RECALL_CURVES.find((x) => x.id === this._recallCurve);
+    return c ? c.label : this._recallCurve;
+  }
+
+  // The easing function for the current curve, passed to the engine glide.
+  _recallCurveFn() {
+    const c = RECALL_CURVES.find((x) => x.id === this._recallCurve);
+    return c ? c.fn : RECALL_CURVES[RECALL_CURVES.length - 1].fn;
+  }
+
+  // Advance to the next curve in the list (wraps). Drives the "curve:"
+  // cycle button beside the glide slider.
+  cycleRecallCurve() {
+    const idx = RECALL_CURVES.findIndex((c) => c.id === this._recallCurve);
+    const next = RECALL_CURVES[(idx + 1) % RECALL_CURVES.length];
+    this._recallCurve = next.id;
+    this._persistRecallCurve();
     this._fire();
   }
 
   deleteSlot(id) {
     const before = this._saveSlots.length;
     this._saveSlots = this._saveSlots.filter((s) => s.id !== id);
-    if (this._saveSlots.length !== before) this._fire();
+    if (this._saveSlots.length !== before) {
+      this._persistSaveSlots();
+      this._fire();
+    }
   }
 
   renameSlot(id, name) {
@@ -416,6 +542,7 @@ class FrequencyManager {
     const trimmed = String(name || '').trim();
     if (!trimmed || trimmed === slot.name) return;
     slot.name = trimmed;
+    this._persistSaveSlots();
     this._fire();
   }
 
@@ -483,7 +610,7 @@ class FrequencyManager {
     // Fire once now so the UI reflects the new anchor / ratios while
     // the glide is in motion.
     this._fire();
-    audioEngine.glideToFrequencies(targets, durationMs, finish);
+    audioEngine.glideToFrequencies(targets, durationMs, finish, this._recallCurveFn());
   }
 
   _snapshotsEqual(a, b) {

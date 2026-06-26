@@ -1,11 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  audioFeatures,
-  getAuraThreshold,
-  setAuraThreshold,
-  AURA_THRESHOLD_MIN,
-  AURA_THRESHOLD_MAX,
-} from '../audio/AudioFeatures';
+import { useEffect, useRef } from 'react';
+import { audioFeatures } from '../audio/AudioFeatures';
 
 /**
  * Thin horizontal meter showing Sethares dissonance of the current
@@ -26,105 +20,12 @@ function _updateMeter(fillRef, labelRef, lastRef, pct, labelText) {
   }
 }
 
-// Draw the aura-target curve as a function of dissonance, with the
-// current dissonance + aura plotted on top so the user can see exactly
-// where they sit on the curve. The curve itself is re-rasterized only
-// when the threshold changes (rare); the marker dot redraws every
-// frame off the live audioFeatures values.
-function _drawCurve(canvas) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth;
-  const cssH = canvas.clientHeight;
-  if (cssW <= 0 || cssH <= 0) return;
-  const w = Math.round(cssW * dpr);
-  const h = Math.round(cssH * dpr);
-  if (canvas.width !== w) canvas.width = w;
-  if (canvas.height !== h) canvas.height = h;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  const threshold = getAuraThreshold();
-  ctx.clearRect(0, 0, cssW, cssH);
-
-  // Axes: dissonance 0..1 on X, aura-target 0..1 on Y (Y inverted).
-  // We map directly to the canvas extents — no padding — so the curve
-  // touches the corners and reads as the small inline plot it is.
-  const x = (d) => d * (cssW - 1);
-  const y = (t) => (1 - t) * (cssH - 1);
-
-  // Faint baseline grid: vertical at threshold, horizontals at .25/.5/.75.
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-  ctx.lineWidth = 1;
-  for (const g of [0.25, 0.5, 0.75]) {
-    ctx.beginPath();
-    ctx.moveTo(0, y(g));
-    ctx.lineTo(cssW, y(g));
-    ctx.stroke();
-  }
-  // Threshold line — a softer gold.
-  ctx.strokeStyle = 'rgba(255, 216, 107, 0.45)';
-  ctx.beginPath();
-  ctx.moveTo(x(threshold) + 0.5, 0);
-  ctx.lineTo(x(threshold) + 0.5, cssH);
-  ctx.stroke();
-
-  // The aura-target curve: target(d) = 1 / (1 + (d/threshold)²).
-  // Sample at ~1 px per step.
-  ctx.strokeStyle = '#ffd86b';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  const steps = Math.max(32, Math.floor(cssW));
-  for (let i = 0; i <= steps; i++) {
-    const d = i / steps;
-    const dr = d / threshold;
-    const t = 1 / (1 + dr * dr);
-    if (i === 0) ctx.moveTo(x(d), y(t));
-    else ctx.lineTo(x(d), y(t));
-  }
-  ctx.stroke();
-
-  // Live marker: where we are RIGHT NOW on the curve.
-  // X = current dissonance, Y on the curve = ceiling at this dissonance;
-  // a second small line shows the actual aura level (which lerps toward
-  // the ceiling). When the chord is steady, the dot and the aura tick
-  // converge.
-  const diss = Math.max(0, Math.min(1, audioFeatures.dissonance));
-  const dr = diss / threshold;
-  const targetCeiling = 1 / (1 + dr * dr);
-  const aura = Math.max(0, Math.min(1, audioFeatures.aura));
-
-  // Aura-level horizontal tick (where the meter currently sits).
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x(diss) - 5, y(aura));
-  ctx.lineTo(x(diss) + 5, y(aura));
-  ctx.stroke();
-
-  // Current-position dot on the ceiling curve.
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(x(diss), y(targetCeiling), 2.5, 0, Math.PI * 2);
-  ctx.fill();
-}
-
 export default function DissonanceMeter() {
-  // Threshold is stored 0..1 (same units as dissonance) but the slider
-  // shows 1..100 to match the meter's 0..100% display.
-  const [threshold, setThreshold] = useState(() => getAuraThreshold());
-  const handleThreshold = (e) => {
-    const pct = parseFloat(e.target.value);
-    const v = pct / 100;
-    setThreshold(v);
-    setAuraThreshold(v);
-  };
   // Refs for each meter row's fill + label, plus last-displayed values
   // so we skip DOM text writes when unchanged.
   const refs = {
     ampFill: useRef(null), ampLabel: useRef(null), lastAmp: useRef(-1),
     satFill: useRef(null), satLabel: useRef(null), lastSat: useRef(-1),
-    loudFill: useRef(null), loudLabel: useRef(null), lastLoud: useRef(-1),
     dissFill: useRef(null), dissLabel: useRef(null), lastDiss: useRef(-1),
     beat: useRef(null), lastBeat: useRef(-1),
     centFill: useRef(null), centLabel: useRef(null), lastCent: useRef(-1),
@@ -132,8 +33,6 @@ export default function DissonanceMeter() {
     auraFill: useRef(null), auraLabel: useRef(null), lastAura: useRef(-1),
     densFill: useRef(null), densLabel: useRef(null), lastDens: useRef(-1),
   };
-  // Canvas ref for the aura curve + marker viz under the threshold slider.
-  const curveCanvasRef = useRef(null);
 
   useEffect(() => {
     let raf = null;
@@ -142,8 +41,6 @@ export default function DissonanceMeter() {
         Math.round(Math.min(1, audioFeatures.amp) * 100));
       _updateMeter(refs.satFill, refs.satLabel, refs.lastSat,
         Math.round(audioFeatures.saturation * 100));
-      _updateMeter(refs.loudFill, refs.loudLabel, refs.lastLoud,
-        Math.round(audioFeatures.loudness * 100));
       _updateMeter(refs.dissFill, refs.dissLabel, refs.lastDiss,
         Math.round(audioFeatures.dissonance * 100));
       // Beat Hz — separate label inside the dissonance row.
@@ -172,7 +69,6 @@ export default function DissonanceMeter() {
         Math.round(audioFeatures.density * 100));
       _updateMeter(refs.auraFill, refs.auraLabel, refs.lastAura,
         Math.round(audioFeatures.aura * 100));
-      _drawCurve(curveCanvasRef.current);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -205,18 +101,6 @@ export default function DissonanceMeter() {
         </div>
         <div className="dissonance-meter-track">
           <div className="dissonance-meter-fill sat" ref={refs.satFill} />
-        </div>
-      </div>
-      <div
-        className="dissonance-meter-row"
-        title="RMS-like loudness from the post-everything FFT (after wave shape, folder, and saturation). Matches what the listener actually hears."
-      >
-        <div className="dissonance-meter-head">
-          <span className="dissonance-meter-label">Loudness</span>
-          <span className="dissonance-meter-value" ref={refs.loudLabel}>0</span>
-        </div>
-        <div className="dissonance-meter-track">
-          <div className="dissonance-meter-fill loud" ref={refs.loudFill} />
         </div>
       </div>
       <div
@@ -279,27 +163,6 @@ export default function DissonanceMeter() {
         <div className="dissonance-meter-track">
           <div className="dissonance-meter-fill aura" ref={refs.auraFill} />
         </div>
-        <div
-          className="dissonance-meter-slider-row"
-          title="Aura threshold — the dissonance value at which the aura's ceiling crosses 50%. Lower = stricter (only pristine intervals charge); higher = more permissive."
-        >
-          <span className="dissonance-meter-slider-label">Threshold</span>
-          <input
-            type="range"
-            min={Math.round(AURA_THRESHOLD_MIN * 100)}
-            max={Math.round(AURA_THRESHOLD_MAX * 100)}
-            step={1}
-            value={Math.round(threshold * 100)}
-            onChange={handleThreshold}
-            className="dissonance-meter-slider"
-          />
-          <span className="dissonance-meter-slider-value">{Math.round(threshold * 100)}</span>
-        </div>
-        <canvas
-          ref={curveCanvasRef}
-          className="dissonance-meter-curve"
-          title="Aura ceiling vs dissonance. Vertical gold line = threshold. White dot = current ceiling at your current dissonance; horizontal tick = actual aura value (lerps toward the dot)."
-        />
       </div>
     </div>
   );

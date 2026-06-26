@@ -801,6 +801,14 @@ export default function Oscilloscope({
   // (+45°), −1 = mirror diamond (−45°). Diamond modes scale by 1/√2
   // so the figure stays within the original scope bounds.
   vizRotation = 0,
+  // Render quality tier: 'pretty' (full), 'performance' (skip work the
+  // active mode doesn't consume + half-rate features), 'off' (blank the
+  // scope, skip the loop). See drawScope for what each tier gates.
+  vizQuality = 'pretty',
+  // True when something actually reads window.audio this frame (Hydra
+  // running or the settings DissonanceMeter open). In performance mode
+  // the per-frame audio-feature FFT is skipped entirely when false.
+  featuresActive = true,
   // Drag-on-scope → Feedback sliders. App owns the slider state and
   // passes this callback; the pointer handlers below compute the slider
   // values from the drag position so the gesture and the sliders stay
@@ -836,6 +844,16 @@ export default function Oscilloscope({
   useEffect(() => { vizOutlineRef.current = vizOutline; }, [vizOutline]);
   const vizRotationRef = useRef(vizRotation);
   useEffect(() => { vizRotationRef.current = vizRotation; }, [vizRotation]);
+  const vizQualityRef = useRef(vizQuality);
+  useEffect(() => { vizQualityRef.current = vizQuality; }, [vizQuality]);
+  const featuresActiveRef = useRef(featuresActive);
+  useEffect(() => { featuresActiveRef.current = featuresActive; }, [featuresActive]);
+  // Tracks whether the scope has already been blanked once for the 'off'
+  // tier, so we clear a single frame and then idle instead of clearing
+  // every frame.
+  const offClearedRef = useRef(false);
+  // Half-rate tick for the performance-mode audio-feature update.
+  const featuresTickRef = useRef(0);
 
   // Visualizer mode (controlled by parent via prop):
   //   0 — single centered synthesized XY scope (circle)
@@ -903,27 +921,63 @@ export default function Oscilloscope({
 
       if (!audioEngine.initialized) return;
 
+      const quality = vizQualityRef.current;
+
+      // ── Quality tier: 'off' ──────────────────────────────────────────
+      // Blank the scope once, then idle. The rAF stays alive (cheap early
+      // return) so flipping back to pretty/performance resumes instantly
+      // without re-mounting the canvas.
+      if (quality === 'off') {
+        if (!offClearedRef.current) {
+          const { width, height } = dimensionsRef.current;
+          ctx.clearRect(0, 0, width, height);
+          offClearedRef.current = true;
+        }
+        return;
+      }
+      offClearedRef.current = false;
+
+      const perf = quality === 'performance';
+      const vizMode = vizModeRef.current;
+
       // Advance per-oscillator phase accumulators once per frame so the
       // static waveform draws the actual audio phase (and therefore the
       // real beat pattern), not an idealized all-phases-aligned snapshot.
-      audioEngine.updatePhases();
       // Same advance for keyboard voices so their contributions in the
       // synth XY / Hilbert paths render in the right phase relationship
-      // with the drone.
-      keyboardVoiceManager.updatePhases();
-      // Then rebase the accumulator from what the analyzer actually
-      // sees, eliminating drift from Web Audio start-phase uncertainty
-      // and freq-smoothing approximation. Oscillators routed only to
-      // output channels > 1 stay on the accumulator (no analyzer to
-      // measure them from). Run at half rate — the 20%-per-frame blend
-      // cap already spreads corrections over ~5 frames, so doubling the
-      // gap to ~33 ms is invisible while halving the LSQ cost.
-      calibrateTickRef.current = (calibrateTickRef.current + 1) & 1;
-      if (calibrateTickRef.current === 0) audioEngine.calibratePhases();
-      // Tier-3 audio features (dissonance, consonance, beating) for the
-      // dissonance meter under the spectrum and for Hydra sketches
-      // referencing `audio.dissonance` etc. via callback uniforms.
-      updateAudioFeatures(audioEngine);
+      // with the drone. Then rebase the accumulator from what the analyzer
+      // actually sees, eliminating drift from Web Audio start-phase
+      // uncertainty and freq-smoothing approximation (run at half rate —
+      // the 20%-per-frame blend cap already spreads corrections over ~5
+      // frames, so doubling the gap to ~33 ms is invisible while halving
+      // the LSQ cost).
+      //
+      // Only the phase-synthesizing modes consume any of this: the
+      // standing wave (1), the face mouth (2), and the Hilbert scope (3).
+      // The plain Lissajous (0) reads the analyzer directly and ignores
+      // phase entirely, so performance mode skips all of it there. Pretty
+      // mode keeps the original always-on behavior so the look can't shift.
+      if (!perf || vizMode !== 0) {
+        audioEngine.updatePhases();
+        keyboardVoiceManager.updatePhases();
+        calibrateTickRef.current = (calibrateTickRef.current + 1) & 1;
+        if (calibrateTickRef.current === 0) audioEngine.calibratePhases();
+      }
+
+      // Tier-3 audio features (dissonance, consonance, beating, centroid,
+      // flux, …) for the dissonance meter under the spectrum and for Hydra
+      // sketches referencing `audio.dissonance` etc. via callback uniforms.
+      // The scan is a full FFT walk every frame; in performance mode skip
+      // it unless something is actually reading window.audio (Hydra running
+      // or settings panel open), and when it is, run at half rate — the
+      // meter and sketches tween fine off ~30 Hz. Pretty mode runs it every
+      // frame as before.
+      let runFeatures = true;
+      if (perf) {
+        featuresTickRef.current = (featuresTickRef.current + 1) & 1;
+        runFeatures = featuresActiveRef.current && featuresTickRef.current === 0;
+      }
+      if (runFeatures) updateAudioFeatures(audioEngine);
 
       const { width, height, scaleX, scaleY } = dimensionsRef.current;
 
@@ -957,8 +1011,6 @@ export default function Oscilloscope({
       // what mode the visualizer is in.
       ctx.fillStyle = 'rgba(0, 0, 0, 1)';
       ctx.fillRect(0, usableHeight, width, height - usableHeight);
-
-      const vizMode = vizModeRef.current;
 
       // Adaptive synth-buffer length — driven by the highest active
       // freq + the user's "cycles" slider. Computed once per frame so

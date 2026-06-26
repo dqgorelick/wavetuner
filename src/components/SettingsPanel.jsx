@@ -8,8 +8,13 @@ import EnvelopeControls from './EnvelopeControls';
 import WaveControls from './WaveControls';
 import StereoModeControls from './StereoModeControls';
 import RoutingPatchBay from './RoutingPatchBay';
-import SpectrumAnalyzer from './SpectrumAnalyzer';
 import DissonanceMeter from './DissonanceMeter';
+import {
+  getMovingImpact,
+  setMovingImpact,
+  MOVING_IMPACT_MIN,
+  MOVING_IMPACT_MAX,
+} from '../audio/dissonanceSettings';
 
 /**
  * SettingsPanel - Expandable settings panel from bottom-right.
@@ -53,6 +58,8 @@ export default function SettingsPanel({
   const [selectedDevice, setSelectedDevice] = useState('');
   const [maxChannels, setMaxChannels] = useState(2);
   const [needsPermission, setNeedsPermission] = useState(false);
+  // Dissonance HUD — moving-voice impact (0..1), persisted in dissonanceSettings.
+  const [movingImpact, setMovingImpactState] = useState(() => getMovingImpact());
 
   // Enumerate audio output devices
   const enumerateDevices = useCallback(async (requestPermission = false) => {
@@ -389,8 +396,28 @@ export default function SettingsPanel({
         </div>
       </div>
 
-      <div className="settings-section settings-section-analyzer">
-        <SpectrumAnalyzer />
+      <div className="settings-section">
+        <label className="settings-label">Dissonance HUD</label>
+        <div
+          className="tune-slider-row"
+          title="How much the voice you're dragging counts toward the consonance curve. 0% = ignored (shows where it can land against the others); 100% = counts like any other voice."
+        >
+          <span className="tune-slider-label">Moving voice impact</span>
+          <input
+            type="range"
+            min={MOVING_IMPACT_MIN}
+            max={MOVING_IMPACT_MAX}
+            step="0.01"
+            value={movingImpact}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setMovingImpactState(v);
+              setMovingImpact(v);
+            }}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{Math.round(movingImpact * 100)}%</span>
+        </div>
       </div>
 
       <div className="settings-section settings-section-analyzer">

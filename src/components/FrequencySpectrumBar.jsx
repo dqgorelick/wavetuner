@@ -3,6 +3,7 @@ import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
 import { activeProfile } from '../audio/timbreProfiles';
+import { getMovingImpact } from '../audio/dissonanceSettings';
 import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 import GlobalDetuneOrb from './GlobalDetuneOrb';
@@ -115,18 +116,16 @@ function formatActiveFreq(freq) {
   return freq.toFixed(2);
 }
 
-const DOT_CENTER_Y = DOT_SIZE / 2;
 const BAR_TOP_Y = DOT_SIZE + DOT_GAP;
 const TOTAL_HEIGHT = BAR_TOP_Y + BAR_LINE_HEIGHT + 4;
 
 // ── Dissonance HUD curve ─────────────────────────────────────────────────
-// A transient sensory-dissonance field drawn behind the orbs while one (or
-// more) orbs are grabbed/dragged. Baseline sits on the spectrum line and the
-// field rises upward into the orb band (canvas overflows up; orbs z-index on
-// top). Valleys mark consonant landing spots for the moving voice against the
-// frozen background of the other sounding voices. Sine-world: each voice is a
-// single partial at its fundamental. See research/dissonance-curves.md.
-const DISS_CURVE_HEIGHT = 60;
+// A sensory-dissonance hot-spot field drawn behind the orbs. Its baseline is
+// lifted above the spectrum bar; the field rises from there and bleeds down
+// into the bar. The orbs float ABOVE the curve's max peak, each tethered to
+// the curve surface by a short dynamic connector line. See
+// research/dissonance-curves.md.
+const DISS_CURVE_HEIGHT = 25;
 // The fill bleeds DOWN past the spectrum line to fill the spectrum bar — its
 // colors become the bar's background now that the track has no fill of its own.
 const DISS_CURVE_DOWN = BAR_LINE_HEIGHT;
@@ -140,6 +139,28 @@ const DISS_CURVE_STEP = 2;
 // Peak exponent applied to the displayed level. Higher = the consonant peaks
 // tower while everything below them collapses toward the baseline.
 const DISS_PEAK_POW = 3;
+// Level floor: dissonance never fully saturates, so troughs land a bit above
+// the baseline. Map levels below this straight to 0 (and rescale the rest) so
+// troughs sit on the baseline. Live-tunable via window.__dissFloor(v).
+let DISS_LEVEL_FLOOR = 0;
+if (typeof window !== 'undefined') {
+  window.__dissFloor = (v) => {
+    if (Number.isFinite(v)) DISS_LEVEL_FLOOR = Math.max(0, Math.min(0.95, v));
+    return DISS_LEVEL_FLOOR;
+  };
+}
+
+// ── Derived curve geometry (row coordinates, y down) ─────────────────────
+// Baseline = the level-0 flat line (lifted above the bar). Max = the level-1
+// peak. Orbs float ORB_FLOAT_GAP above the max so they always clear the curve.
+const DISS_BASELINE_Y = BAR_TOP_Y - DISS_LINE_LIFT;
+const DISS_CURVE_MAX_Y = DISS_BASELINE_Y - DISS_CURVE_HEIGHT;
+const ORB_FLOAT_GAP = 8;
+const DOT_CENTER_Y = DISS_CURVE_MAX_Y - ORB_FLOAT_GAP - DOT_SIZE / 2;
+// Row Y of the curve surface for a displayed level ∈ [0,1].
+function _curveTopY(level) {
+  return DISS_BASELINE_Y - DISS_CURVE_HEIGHT * level;
+}
 // Reused per-column level buffer (avoids per-frame allocation now that the
 // curve draws continuously). _dissLevels holds the freshly computed target;
 // _dissDisplay is the on-screen value that eases toward it each frame so
@@ -167,16 +188,19 @@ const DISS_MAX_FREQ = 20000;
 //
 //   HALF             — soft compression half-point. Lower = valleys/peaks
 //                      separate at lower roughness (more sensitive).
-//   CONTRAST         — base gamma (1 voice) that extenuates the local minima:
-//                      drives dips toward the baseline so consonant troughs
-//                      read near-empty and dissonant peaks spike.
-//   CONTRAST_PER_VOICE — how much MORE the dips are exaggerated per extra
-//                      active voice, so dense chords deepen rather than wash
-//                      out. (A root < 1 would lift valleys instead.)
+//   CONTRAST         — gamma that extenuates the local minima: drives dips
+//                      toward the baseline so consonant troughs read near-empty
+//                      and dissonant peaks spike.
+//   CONTRAST_PER_VOICE — extra gamma per active voice. Kept at 0 so the peak
+//                      BRIGHTNESS is consistent across voice counts (a positive
+//                      slope made white peaks only appear once ~5 voices pushed
+//                      gamma high enough). The dn = d/V normalization already
+//                      keeps the per-voice roughness comparable, so one fixed
+//                      gamma renders the same color whether 1 or 12 voices play.
 // Live-tunable while exploring:  window.__dissTune(half, contrast, perVoice)
 let DISS_HALF = 0.35;
-let DISS_CONTRAST = 2.4;
-let DISS_CONTRAST_PER_VOICE = 0.7;
+let DISS_CONTRAST = 5.2;          // ≈ the old 5-voice gamma, now used for all V
+let DISS_CONTRAST_PER_VOICE = 0;  // 0 → voice-count-independent colors
 const DISS_CONTRAST_MAX = 9;
 if (typeof window !== 'undefined') {
   window.__dissTune = (half, contrast, perVoice) => {
@@ -233,17 +257,10 @@ let DISS_SHOW_HOTSPOTS = true;
 if (typeof window !== 'undefined') {
   window.__dissHotSpots = (on) => { DISS_SHOW_HOTSPOTS = !!on; return DISS_SHOW_HOTSPOTS; };
 }
-
-// Include the voice(s) being moved in the displayed field, so the whole
-// consonance map recalculates live as you drag (full current-chord view). A
-// hot spot sits at the moving voice's own position (it's consonant with
-// itself). NOTE: the drag damping still measures against the OTHER voices only
-// (see consonanceSlowdown) so the orb stays free to move. Flip to the
-// "landing guide" (exclude the mover): window.__dissIncludeMoving(false).
-let DISS_INCLUDE_MOVING = true;
-if (typeof window !== 'undefined') {
-  window.__dissIncludeMoving = (on) => { DISS_INCLUDE_MOVING = !!on; return DISS_INCLUDE_MOVING; };
-}
+// How much the voice(s) being moved contribute to the displayed field is the
+// user-facing "Moving voice impact" setting (dissonanceSettings.getMovingImpact)
+// applied per-voice in _buildBackground. The drag damping still measures against
+// the OTHER voices only (impact 0 in consonanceSlowdown) so the orb stays free.
 
 // Register fall-off: roll the consonance reading off at both ends so the very
 // high and very low registers stop reading uniformly consonant. Per-octave
@@ -274,17 +291,22 @@ if (typeof window !== 'undefined') {
   };
 }
 
-// Build the frozen background as a flat partial list { f, a }: every unmuted,
-// audible drone voice NOT in the exclude set (the grabbed/dragged orbs) plus
-// all sounding keyboard/MIDI voices, each expanded into the ASSUMED timbre's
-// partials. `profile` is a list of { ratio, amp } (see timbreProfiles.js) —
-// decoupled from the actual synth so it works for MIDI-out and inharmonic
-// timbres alike.
-function _buildBackground(count, excludeSet, profile) {
+// Build the background as a flat partial list { f, a }: every unmuted, audible
+// drone voice plus all sounding keyboard/MIDI voices, each expanded into the
+// ASSUMED timbre's partials. `profile` is a list of { ratio, amp } (see
+// timbreProfiles.js) — decoupled from the actual synth so it works for MIDI-out
+// and inharmonic timbres alike.
+//
+// Voices in `movingSet` (the grabbed/dragged orbs) have their amplitude AND
+// their voice-count weight scaled by `impact` ∈ [0,1]: 1 = full (counts like
+// any voice), 0 = excluded (the old landing-guide), in between = proportional.
+// Scaling amplitude shrinks both the mover's clash contribution and its
+// self-hot-spot; scaling the weight keeps the dn = d/V normalization honest.
+function _buildBackground(count, movingSet, impact, profile) {
   const bg = [];
   let voices = 0;
-  const expand = (f0, amp) => {
-    voices++;
+  const expand = (f0, amp, weight) => {
+    voices += weight;
     for (let h = 0; h < profile.length; h++) {
       const f = f0 * profile[h].ratio;
       if (f > DISS_MAX_FREQ) continue;
@@ -292,19 +314,39 @@ function _buildBackground(count, excludeSet, profile) {
     }
   };
   for (let i = 0; i < count; i++) {
-    if (excludeSet.has(i)) continue;
     if (audioEngine.isMuted(i)) continue;
     const f0 = audioEngine.getFrequency(i);
     const vol = audioEngine.getVolume(i);
-    if (f0 > 0 && vol > 0) expand(f0, vol);
+    if (!(f0 > 0) || !(vol > 0)) continue;
+    if (movingSet.has(i)) {
+      if (impact <= 0) continue;            // excluded
+      expand(f0, vol * impact, impact);
+    } else {
+      expand(f0, vol, 1);
+    }
   }
   const kv = keyboardVoiceManager.getVoicesForSynth
     ? keyboardVoiceManager.getVoicesForSynth()
     : [];
   for (const v of kv) {
-    if (v.freq > 0 && v.amp > 0) expand(v.freq, v.amp);
+    if (v.freq > 0 && v.amp > 0) expand(v.freq, v.amp, 1);
   }
   return { parts: bg, voices };
+}
+
+// Count currently-sounding voices (unmuted, audible drones + keyboard/MIDI),
+// regardless of the moving-impact weighting. Used to give a lone moving voice
+// full impact so the curve doesn't vanish with nothing else to show against.
+function _activeVoiceCount(count) {
+  let n = 0;
+  for (let i = 0; i < count; i++) {
+    if (!audioEngine.isMuted(i) && audioEngine.getFrequency(i) > 0 && audioEngine.getVolume(i) > 0) n++;
+  }
+  const kv = keyboardVoiceManager.getVoicesForSynth
+    ? keyboardVoiceManager.getVoicesForSynth()
+    : [];
+  for (const v of kv) if (v.freq > 0 && v.amp > 0) n++;
+  return n;
 }
 
 // Raw (uncompressed) dissonance of a probe voice at fundamental f0 against a
@@ -381,7 +423,7 @@ function _dampFactor(freq, background, profile, voiceCount) {
 // The canvas extends DISS_CURVE_DOWN px past the spectrum line so the column
 // colors bleed down into the spectrogram (fading out lower down). The peak
 // levels are lightly smoothed so the tops read as rounded rather than pointy.
-function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile, voiceCount) {
+function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile, voiceCount, orbLines, tickLines) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -417,7 +459,9 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
     // Hot-spot (inverse) view rises where consonant; the original view rises
     // where dissonant. Raised to a power so the peaks tower over everything.
     const base = DISS_SHOW_HOTSPOTS ? 1 - v : v;
-    lv[i] = Math.pow(base, DISS_PEAK_POW);
+    const raw = Math.pow(base, DISS_PEAK_POW);
+    // Floor-and-rescale so troughs reach the baseline instead of floating above.
+    lv[i] = raw > DISS_LEVEL_FLOOR ? (raw - DISS_LEVEL_FLOOR) / (1 - DISS_LEVEL_FLOOR) : 0;
   }
 
   // Pass 1.5 — light [0.25, 0.5, 0.25] smoothing so peak tops round off
@@ -475,6 +519,72 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
   ctx.fillStyle = grad;
   ctx.fillRect(0, cssUp, cssW, cssDown);
   ctx.globalCompositeOperation = 'source-over';
+
+  // Vertical guides rising to the curve surface: white at each frequency tick,
+  // colored at each orb. Drawn from the curve top (same per-column level the
+  // connectors use, so they meet exactly) down through the bar. After the fade
+  // so they stay crisp.
+  const yAtCol = (px) => {
+    const col = Math.round(px / DISS_CURVE_STEP);
+    const lvl = (col >= 0 && col < cols) ? disp[col] : 0;
+    return cssUp * (1 - lvl);
+  };
+  ctx.lineWidth = 1.5;
+  if (tickLines && tickLines.length) {
+    ctx.strokeStyle = '#ffffff';
+    for (let i = 0; i < tickLines.length; i++) {
+      const t = tickLines[i];
+      ctx.globalAlpha = Math.min(0.5, t.opacity * 0.45);
+      ctx.beginPath();
+      ctx.moveTo(t.px, yAtCol(t.px));
+      ctx.lineTo(t.px, cssH);
+      ctx.stroke();
+    }
+  }
+  if (orbLines && orbLines.length) {
+    ctx.globalAlpha = 0.55;
+    for (let i = 0; i < orbLines.length; i++) {
+      const o = orbLines[i];
+      ctx.strokeStyle = o.color;
+      // Muted orbs stay at the baseline (cssUp) instead of rising to the curve.
+      const yTop = o.muted ? cssUp : yAtCol(o.px);
+      ctx.beginPath();
+      ctx.moveTo(o.px, yTop);
+      ctx.lineTo(o.px, cssH);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Point each orb's connector line (an SVG <line> ref) at the curve surface
+// directly below it: look up the eased level at the orb's pixel column in
+// _dissDisplay, map to a row Y via _curveTopY, and set the line endpoints
+// (trimmed to the orb's edge). Hides the line if the orb sits on the curve.
+function _updateConnectors(lineEls, dotXs, freqXs) {
+  const levels = _dissDisplay;
+  const hasLevels = levels && levels.length > 0;
+  for (let i = 0; i < lineEls.length; i++) {
+    const el = lineEls[i];
+    if (!el) continue;
+    const dotX = dotXs[i];
+    const freqX = freqXs[i];
+    if (!(dotX >= 0) || !(freqX >= 0)) { el.style.display = 'none'; continue; }
+    // Muted orbs don't contribute to the curve, so their line stops at the
+    // baseline (level 0) rather than riding up to the curve surface.
+    let level = 0;
+    if (hasLevels && !audioEngine.isMuted(i)) {
+      const col = Math.round((freqX - BAR_H_PADDING) / DISS_CURVE_STEP);
+      if (col >= 0 && col < levels.length) level = levels[col];
+    }
+    const seg = offsetLine(dotX, DOT_CENTER_Y, freqX, _curveTopY(level), DOT_SIZE / 2, 0);
+    if (!seg) { el.style.display = 'none'; continue; }
+    el.style.display = '';
+    el.setAttribute('x1', seg.x1);
+    el.setAttribute('y1', seg.y1);
+    el.setAttribute('x2', seg.x2);
+    el.setAttribute('y2', seg.y2);
+  }
 }
 
 function computeEdgeRate(clientX) {
@@ -682,6 +792,11 @@ function FrequencySpectrumBar({
   // dragging set so the per-frame draw loop can read it without restarting.
   const dissCanvasRef = useRef(null);
   const draggingRef = useRef(draggingDots);
+  // Connector lines (orb → curve top) updated imperatively each frame, plus
+  // refs caching the current orb x-positions the draw loop reads.
+  const dot2barRefs = useRef([]);
+  const dotXsRef = useRef([]);
+  const freqXsRef = useRef([]);
 
   useEffect(() => { barWidthRef.current = barWidth; }, [barWidth]);
   useEffect(() => { grabbedRef.current = grabbedOscs; }, [grabbedOscs]);
@@ -693,7 +808,8 @@ function FrequencySpectrumBar({
   // continuously (always shown) so it maps the current chord even at rest.
   // Redraws every frame off live refs so auto-zoom / edge-pan stay aligned and
   // playing notes update it live. The displayed field includes the moving
-  // voice(s) (DISS_INCLUDE_MOVING); only the drag damping excludes them.
+  // voice(s) scaled by the "Moving voice impact" setting; the drag damping
+  // always excludes them.
   useEffect(() => {
     let raf = null;
     const draw = () => {
@@ -704,12 +820,41 @@ function FrequencySpectrumBar({
         // the probe share it for now. Read each frame so a live timbre swap
         // (e.g. __dissTimbre('bell')) reshapes the field immediately.
         const profile = activeProfile();
-        const exclude = DISS_INCLUDE_MOVING
-          ? new Set()
-          : new Set([...draggingRef.current, ...grabbedRef.current]);
-        const { parts, voices } = _buildBackground(oscillatorCount, exclude, profile);
-        _drawDissonanceCurve(c, rangeRef.current, barWidthRef.current, parts, profile, voices);
+        const movingSet = new Set([...draggingRef.current, ...grabbedRef.current]);
+        // A lone active voice drives the curve at full impact — at the reduced
+        // slider impact with nothing else sounding the curve would near-vanish.
+        const impact = _activeVoiceCount(oscillatorCount) <= 1 ? 1 : getMovingImpact();
+        // When paused, force an empty field so the line eases down to flat zero.
+        const { parts, voices } = audioEngine.paused
+          ? { parts: [], voices: 0 }
+          : _buildBackground(oscillatorCount, movingSet, impact, profile);
+        // Vertical guides (canvas px): colored at each orb's frequency, white at
+        // each tick. They rise to the curve surface to meet the connectors.
+        const r = rangeRef.current;
+        const bw = barWidthRef.current;
+        const fxs = freqXsRef.current;
+        const orbLines = [];
+        for (let i = 0; i < fxs.length; i++) {
+          if (fxs[i] >= 0) {
+            orbLines.push({
+              px: fxs[i] - BAR_H_PADDING,
+              color: palette.oscColor(i, oscillatorCount),
+              muted: audioEngine.isMuted(i),
+            });
+          }
+        }
+        const tickLines = computeTicks(r.logMin, r.logMax).map((t) => ({
+          px: freqToFraction(t.freq, r.logMin, r.logMax) * bw,
+          opacity: t.opacity,
+        }));
+        _drawDissonanceCurve(c, r, bw, parts, profile, voices, orbLines, tickLines);
       }
+      // Tether each orb to the curve surface at its own frequency. _dissDisplay
+      // holds the eased per-column levels just computed above; we look up the
+      // level at each orb's pixel column and point its connector there. When
+      // the curve is flat (paused / silent) the levels are 0 → connectors land
+      // on the baseline.
+      _updateConnectors(dot2barRefs.current, dotXsRef.current, freqXsRef.current);
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
@@ -960,6 +1105,7 @@ function FrequencySpectrumBar({
     () => resolveCollisions(freqXs, DOT_SIZE),
     [freqXs]
   );
+  useEffect(() => { dotXsRef.current = dotXs; freqXsRef.current = freqXs; }, [dotXs, freqXs]);
 
   const getSensitivity = () =>
     (fineTuneRef.current || shiftRef.current) ? SENSITIVITY_FINE : SENSITIVITY_NORMAL;
@@ -972,8 +1118,11 @@ function FrequencySpectrumBar({
   const consonanceSlowdown = (freq) => {
     if (typeof window !== 'undefined' && window.__dissDamping === false) return 1;
     const profile = activeProfile();
-    const exclude = new Set([...draggingRef.current, ...grabbedRef.current]);
-    const { parts, voices } = _buildBackground(audioEngine.getOscillatorCount(), exclude, profile);
+    // Damping always measures against the OTHER voices (mover impact 0),
+    // independent of the display's "Moving voice impact" setting, so the orb
+    // never gets stuck on its own self-consonance.
+    const movingSet = new Set([...draggingRef.current, ...grabbedRef.current]);
+    const { parts, voices } = _buildBackground(audioEngine.getOscillatorCount(), movingSet, 0, profile);
     if (!parts.length) return 1;
     return _dampFactor(freq, parts, profile, voices);
   };
@@ -1470,24 +1619,20 @@ function FrequencySpectrumBar({
         return (
           <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
             {frequencies.map((_, i) => {
-              // Lines stay visible for muted orbs too — same opacity treatment
-              // as unmuted, since the line just maps the orb to its position on
-              // the spectrum bar (it's not a "playing" signifier).
+              // Connector from the orb down to the curve surface at its own
+              // frequency. Coordinates are owned by the draw rAF
+              // (_updateConnectors) so the endpoint rides the live curve; here
+              // we only render the element + style. Stays visible for muted orbs.
               const color = palette.oscColor(i, oscillatorCount);
               const isActive = draggingDots.has(i) || grabbedOscs.has(i);
               const opacity = isActive ? 0.6 : 0.35;
-              const seg = offsetLine(dotXs[i], homeY, freqXs[i], BAR_TOP_Y, homeR, 0);
-              if (!seg) return null;
               return (
                 <line
                   key={`dot2bar-${i}`}
-                  x1={seg.x1}
-                  y1={seg.y1}
-                  x2={seg.x2}
-                  y2={seg.y2}
+                  ref={(el) => { dot2barRefs.current[i] = el; }}
                   stroke={color}
                   strokeOpacity={opacity}
-                  strokeWidth={isActive ? 1.5 : 1}
+                  strokeWidth={1.5}
                 />
               );
             })}
@@ -1602,7 +1747,7 @@ function FrequencySpectrumBar({
             key={`label-${i}`}
             ref={(el) => { labelElsRef.current[i] = el; }}
             className={`fsb-dot-label ${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''}`}
-            style={{ left: dotXs[i], top: -2, color }}
+            style={{ left: dotXs[i], top: DOT_CENTER_Y - DOT_SIZE / 2 - 2, color }}
           >
             {/* Octave columns flanking the number. Vertical stacks of
                 up to 5 bubbles per side. Looked up by `data-octave`

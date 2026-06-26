@@ -53,11 +53,6 @@ class AudioEngine {
     this.preMasterTap = null;
     this.analyserNode1 = null;   // Left channel visualization
     this.analyserNode2 = null;   // Right channel visualization
-    // High-resolution FFT analysers dedicated to the spectrum panel.
-    // Separate from analyserNode1/2 so we can crank the FFT size for
-    // bin precision without affecting calibratePhases() or scope timing.
-    this.spectrumAnalyserL = null;
-    this.spectrumAnalyserR = null;
     this.isInitialized = false;
     this.isPaused = false;
     // Drone bus on/off — independent of pause. Effective drone audio
@@ -458,19 +453,6 @@ class AudioEngine {
     splitter.connect(this.analyserNode1, 0);
     splitter.connect(this.analyserNode2, 1);
 
-    // High-resolution spectrum analysers tap the same pre-master split.
-    // 32768 → ~1.35 Hz bins at 44.1k. Latency tradeoff is ~743 ms window
-    // length but for drone visualization that's fine (slower envelope
-    // changes read better than a jittery short window).
-    this.spectrumAnalyserL = this.audioContext.createAnalyser();
-    this.spectrumAnalyserR = this.audioContext.createAnalyser();
-    this.spectrumAnalyserL.fftSize = 32768;
-    this.spectrumAnalyserR.fftSize = 32768;
-    this.spectrumAnalyserL.smoothingTimeConstant = 0.6;
-    this.spectrumAnalyserR.smoothingTimeConstant = 0.6;
-    splitter.connect(this.spectrumAnalyserL, 0);
-    splitter.connect(this.spectrumAnalyserR, 1);
-    
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;
     console.debug('Max output channels available:', this.outputChannelCount);
@@ -2508,7 +2490,7 @@ class AudioEngine {
    * @param {number}   durationMs    Glide length in ms. 0 = instant.
    * @param {Function} [onComplete]  Invoked when the glide finishes or is cancelled.
    */
-  glideToFrequencies(targets, durationMs = 1000, onComplete = null) {
+  glideToFrequencies(targets, durationMs = 1000, onComplete = null, easing = null) {
     if (!this.isInitialized) return;
     if (this._glideRaf != null) {
       cancelAnimationFrame(this._glideRaf);
@@ -2530,8 +2512,12 @@ class AudioEngine {
     const logStarts = starts.map((f) => Math.log2(Math.max(0.001, f)));
     const logTargets = safeTargets.map((f) => Math.log2(f));
     const startMs = performance.now();
-    // Smooth ease-in-out cubic: slow departure, fast middle, slow landing.
-    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+    // Caller may supply an easing function t∈[0,1]→[0,1] (e.g. the
+    // recall-curve selector in the tuning panel). Default: the historical
+    // smooth ease-in-out cubic — slow departure, fast middle, slow landing.
+    const ease = typeof easing === 'function'
+      ? easing
+      : (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
     const step = () => {
       const elapsed = performance.now() - startMs;

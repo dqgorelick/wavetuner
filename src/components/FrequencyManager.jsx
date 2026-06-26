@@ -16,6 +16,23 @@ import { isEditableTarget } from '../hooks/keyboardUtils';
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const LETTER_TO_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 
+// Recall-glide slider mapping. The slider runs a normalized 0..1 position;
+// a logarithmic curve maps it to 0..10 s so the low end (where small
+// differences matter most) gets the bulk of the travel. The formula passes
+// exactly through (0 → 0 s) and (1 → 10 s); a higher base skews more
+// resolution toward short glides.
+const GLIDE_MAX_S = 10;
+const GLIDE_CURVE_BASE = 200;
+const glidePosToSec = (pos) =>
+  ((GLIDE_CURVE_BASE ** Math.max(0, Math.min(1, pos)) - 1) / (GLIDE_CURVE_BASE - 1)) * GLIDE_MAX_S;
+const glideSecToPos = (sec) => {
+  const clamped = Math.max(0, Math.min(GLIDE_MAX_S, sec));
+  return Math.log((clamped / GLIDE_MAX_S) * (GLIDE_CURVE_BASE - 1) + 1) / Math.log(GLIDE_CURVE_BASE);
+};
+// Sub-second glides read with 2 decimals (the log scale resolves them);
+// longer ones with 1.
+const formatGlide = (sec) => (sec < 1 ? `${sec.toFixed(2)}s` : `${sec.toFixed(1)}s`);
+
 function freqToNote(freq) {
   if (!Number.isFinite(freq) || freq <= 0) return { note: '--', octave: 0, cents: 0, midi: 0 };
   const semitonesFromA4 = 12 * Math.log2(freq / 440);
@@ -842,18 +859,31 @@ export function TuningPanel({
           id="freq-rail-glide-slider"
           type="range"
           min="0"
-          max="10"
-          step="0.1"
-          value={(frequencyManager.recallGlideMs / 1000).toFixed(1)}
+          max="1"
+          step="0.001"
+          value={glideSecToPos(frequencyManager.recallGlideMs / 1000)}
           onChange={(e) => {
-            frequencyManager.setRecallGlideMs(parseFloat(e.target.value) * 1000);
+            frequencyManager.setRecallGlideMs(glidePosToSec(parseFloat(e.target.value)) * 1000);
           }}
           className="freq-rail-glide-slider"
           aria-label="Recall glide seconds"
         />
         <span className="freq-rail-glide-value">
-          {(frequencyManager.recallGlideMs / 1000).toFixed(1)}s
+          {formatGlide(frequencyManager.recallGlideMs / 1000)}
         </span>
+      </div>
+      <div
+        className="freq-rail-glide freq-rail-curve-row"
+        title="Easing curve applied when a saved state is recalled. Click to cycle: linear, ease in, ease out, ease in-out."
+      >
+        <span className="freq-rail-glide-label">curve</span>
+        <button
+          type="button"
+          className="freq-rail-glide-curve"
+          onClick={() => frequencyManager.cycleRecallCurve()}
+        >
+          {frequencyManager.recallCurveLabel}
+        </button>
       </div>
     </>
   );

@@ -128,6 +128,31 @@ function getInitialStateFromURL() {
 // Compute once at module load
 const INITIAL_URL_STATE = getInitialStateFromURL();
 
+// ── Visualizer-settings persistence ──────────────────────────────────
+// The Visualizer / Feedback panel settings persist to localStorage so
+// they survive a reload. Shared-link URL params still win at init (see
+// the `?? lsNum(...)` precedence in the state initializers below).
+function lsNum(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw != null) {
+      const n = parseFloat(raw);
+      if (Number.isFinite(n)) return n;
+    }
+  } catch { /* ignore */ }
+  return fallback;
+}
+function lsStr(key, allowed, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    if (v != null && (!allowed || allowed.includes(v))) return v;
+  } catch { /* ignore */ }
+  return fallback;
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, String(value)); } catch { /* ignore */ }
+}
+
 // Push envelope params from the URL into the singletons immediately, so
 // the first audio scheduled (initial drone fade-in, default keyboard
 // state) already uses the user's saved values rather than the
@@ -227,7 +252,12 @@ function App() {
   // oscilloscope still draws into its (hidden) canvas as Hydra's s0
   // source. Panel toggle is independent from the enable state so the
   // editor can be opened/closed without disrupting playback.
-  const [isHydraEnabled, setIsHydraEnabled] = useState(true);
+  const [isHydraEnabled, setIsHydraEnabled] = useState(() => {
+    try { return localStorage.getItem('hydraEnabled') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('hydraEnabled', isHydraEnabled ? '1' : '0'); } catch { /* ignore */ }
+  }, [isHydraEnabled]);
   const [isHydraPanelOpen, setIsHydraPanelOpen] = useState(false);
   const hydraCanvasRef = useRef(null);
   // Mixer visibility toggle — persisted so the user's preference survives
@@ -292,29 +322,46 @@ function App() {
   // 'wave' shows per-oscillator colored lines + aggregate; 'off' hides
   // the static entirely. Number of periods visible is user-controlled
   // via staticPeriods.
-  const [staticMode, setStaticMode] = useState('beating');
+  const [staticMode, setStaticMode] = useState(() => lsStr('staticMode', ['beating', 'wave', 'off'], 'beating'));
   // How many periods of the fundamental fit in the static waveform's
   // display window. Applies to both 'beating' and 'wave' styles —
   // more periods → denser display, better for seeing beat envelopes;
   // fewer → easier to read individual wave shapes.
-  const [staticPeriods, setStaticPeriods] = useState(20);
+  const [staticPeriods, setStaticPeriods] = useState(() => lsNum('staticPeriods', 20));
   // Line thickness multiplier (both per-osc colored lines and the
   // aggregate composite) and colored-outline thickness for the
   // aggregate (XY-scope-style neon halo; 0 = no outline, just the
   // white core).
-  const [staticLineWidth, setStaticLineWidth] = useState(2.0);
-  const [staticOutlineThickness, setStaticOutlineThickness] = useState(2.5);
+  const [staticLineWidth, setStaticLineWidth] = useState(() => lsNum('staticLineWidth', 2.0));
+  const [staticOutlineThickness, setStaticOutlineThickness] = useState(() => lsNum('staticOutlineThickness', 2.5));
   // Lissajous-only multipliers (vizMode 0). Surfaced via the Hydra
   // panel's Visualizer section. Defaults of 1 keep the look identical
   // to pre-slider rendering — drag up/down to taste.
-  const [vizScale, setVizScale] = useState(1.0);
-  const [vizLineWidth, setVizLineWidth] = useState(1.0);
-  const [vizOutline, setVizOutline] = useState(1.0);
+  const [vizScale, setVizScale] = useState(() => lsNum('vizScale', 1.0));
+  const [vizLineWidth, setVizLineWidth] = useState(() => lsNum('vizLineWidth', 1.0));
+  const [vizOutline, setVizOutline] = useState(() => lsNum('vizOutline', 1.0));
   // Lissajous rotation: 0 = square (default), +1 = diamond (+45°),
   // −1 = mirror diamond (−45°). Opt-in via the Hydra panel.
-  const [vizRotation, setVizRotation] = useState(0);
+  const [vizRotation, setVizRotation] = useState(() => lsNum('vizRotation', 0));
   // Visualizer mode: 0 circle (XY), 1 line (standing wave), 2 face, 3 hilbert.
-  const [vizMode, setVizMode] = useState(0);
+  const [vizMode, setVizMode] = useState(() => lsNum('vizMode', 0));
+  // Visualizer quality / performance tier:
+  //   'pretty'      — full quality, every per-frame feature runs (default).
+  //   'performance' — skips per-frame work the active mode doesn't consume
+  //                   (phase calibration on the audio-only Lissajous, audio-
+  //                   feature FFT when nothing's reading it) and halves the
+  //                   feature update rate. Visually ~identical, much cheaper.
+  //   'off'         — blanks the scope and skips the render loop entirely.
+  const [vizQuality, setVizQuality] = useState(() => {
+    try {
+      const v = localStorage.getItem('vizQuality');
+      if (v === 'pretty' || v === 'performance' || v === 'off') return v;
+    } catch { /* ignore */ }
+    return 'pretty';
+  });
+  useEffect(() => {
+    try { localStorage.setItem('vizQuality', vizQuality); } catch { /* ignore */ }
+  }, [vizQuality]);
   // Visualizer-mode dropdown: the trigger button (active mode's symbol)
   // toggles a vertical fan of the remaining modes below it. Closes on
   // outside click and after picking an option.
@@ -334,15 +381,36 @@ function App() {
   // highest-active-freq, clamped to [128, 2048]. Higher = more cycles
   // / richer drift; lower = crisper figures (especially at high freqs).
   // Default 6 reads as "a few clean cycles" across the audible range.
-  const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? 13);
+  const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? lsNum('vizCycles', 13));
   // Visual-effect feedback sliders. Drive the shader's u_extraScale /
   // u_extraBlend uniforms and Hydra's `window.vfx.scale` / `.blend`
   // globals. Defaults match the Feedback-chromatic preset constants so
   // the panel boots with a visible effect. The oscilloscope drag also
   // writes through these setters — the slider knobs visibly scrub.
-  const [vfxScale, setVfxScale] = useState(INITIAL_URL_STATE.vfxScale ?? 1.05);
-  const [vfxBlend, setVfxBlend] = useState(INITIAL_URL_STATE.vfxBlend ?? 0.23);
+  const [vfxScale, setVfxScale] = useState(INITIAL_URL_STATE.vfxScale ?? lsNum('vfxScale', 1.05));
+  const [vfxBlend, setVfxBlend] = useState(INITIAL_URL_STATE.vfxBlend ?? lsNum('vfxBlend', 0.23));
   useEffect(() => { setVfxParams(vfxScale, vfxBlend); }, [vfxScale, vfxBlend]);
+  // Persist every Visualizer / Feedback panel setting so the panel comes
+  // back exactly as left after a reload. One effect covers them all; each
+  // write is cheap and guarded. (vizQuality has its own effect above.)
+  useEffect(() => {
+    lsSet('staticMode', staticMode);
+    lsSet('staticPeriods', staticPeriods);
+    lsSet('staticLineWidth', staticLineWidth);
+    lsSet('staticOutlineThickness', staticOutlineThickness);
+    lsSet('vizScale', vizScale);
+    lsSet('vizLineWidth', vizLineWidth);
+    lsSet('vizOutline', vizOutline);
+    lsSet('vizRotation', vizRotation);
+    lsSet('vizMode', vizMode);
+    lsSet('vizCycles', vizCycles);
+    lsSet('vfxScale', vfxScale);
+    lsSet('vfxBlend', vfxBlend);
+  }, [
+    staticMode, staticPeriods, staticLineWidth, staticOutlineThickness,
+    vizScale, vizLineWidth, vizOutline, vizRotation, vizMode, vizCycles,
+    vfxScale, vfxBlend,
+  ]);
   const handleVfxDrag = useCallback((scale, blend) => {
     setVfxScale(scale);
     setVfxBlend(blend);
@@ -1055,6 +1123,12 @@ function App() {
         vizLineWidth={vizLineWidth}
         vizOutline={vizOutline}
         vizRotation={vizRotation}
+        vizQuality={vizQuality}
+        // Audio features (window.audio) are only consumed when Hydra is
+        // running (sketch uniforms) or the settings panel is open (its
+        // DissonanceMeter). In performance mode the scope skips the
+        // per-frame FFT entirely when neither is true.
+        featuresActive={isHydraEnabled || isSettingsOpen}
         onVfxDrag={handleVfxDrag}
       />
       <HydraOverlay ref={hydraCanvasRef} visible={isHydraEnabled} />
@@ -1176,6 +1250,8 @@ function App() {
             onVizCyclesChange={setVizCycles}
             vizRotation={vizRotation}
             onVizRotationChange={setVizRotation}
+            vizQuality={vizQuality}
+            onVizQualityChange={setVizQuality}
             vfxScale={vfxScale}
             onVfxScaleChange={setVfxScale}
             vfxBlend={vfxBlend}

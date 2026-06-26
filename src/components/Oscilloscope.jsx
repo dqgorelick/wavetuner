@@ -57,6 +57,73 @@ function highestActiveFreq() {
   return highest;
 }
 
+// Lowest-frequency component currently sounding — defines the longest
+// period in the signal, so the scope trigger searches at least one full
+// period of it to guarantee a zero-crossing is in range. Same active-set
+// rules as highestActiveFreq (muted drones excluded, kbd release tails in).
+// Returns 0 when nothing is sounding.
+function lowestActiveFreq() {
+  let lowest = Infinity;
+  const freqs = audioEngine.getAllFrequencies();
+  for (let i = 0; i < freqs.length; i++) {
+    if (audioEngine.isMuted(i)) continue;
+    const f = freqs[i];
+    if (f > 0 && f < lowest) lowest = f;
+  }
+  const voices = keyboardVoiceManager.getVoicesForSynth();
+  for (const v of voices) {
+    if (v.freq > 0 && v.freq < lowest) lowest = v.freq;
+  }
+  return lowest === Infinity ? 0 : lowest;
+}
+
+// Oscilloscope "trigger" — phase-lock the audio-source XY scope by starting
+// the render window at a rising zero-crossing on L instead of at the raw
+// buffer tail. Without it, each frame captures an arbitrary phase of the
+// waveform, so the Lissajous figure's endpoints and self-overlap jitter
+// frame-to-frame (the flicker). Locking every frame to the same kind of
+// crossing makes successive frames retrace the same curve from the same
+// point, so the persisted trace overlaps and the figure holds still.
+//
+// Returns a start index ≤ the most-recent-window start (so the figure stays
+// current), chosen as the LATEST rising crossing within ~1.5 fundamental
+// periods. Hysteresis (the signal must dip below −thresh before a crossing
+// counts) rejects the extra mid-period zero-crossings that wavefolded /
+// multi-osc signals produce — without it the trigger would latch onto a
+// different crossing each frame and trade one flicker for another. Falls
+// back to the plain tail start when the signal is too quiet to trigger
+// cleanly, so silence / DC degrade gracefully instead of locking to noise.
+function triggeredStart(L, synthN, lowestHz, sampleRate) {
+  const desiredStart = Math.max(0, L.length - synthN);
+  if (desiredStart <= 0 || !(lowestHz > 0)) return desiredStart;
+
+  const period = sampleRate / lowestHz;
+  const span = Math.min(desiredStart, Math.ceil(period * 1.5));
+  const lo = desiredStart - span;
+
+  // Amplitude-relative hysteresis threshold from the search window's peak,
+  // so the trigger is robust across volume levels and bails on silence.
+  let peak = 0;
+  for (let i = lo; i <= desiredStart; i++) {
+    const a = L[i] < 0 ? -L[i] : L[i];
+    if (a > peak) peak = a;
+  }
+  if (peak < 1e-4) return desiredStart;
+  const thresh = peak * 0.1;
+
+  let armed = false;
+  let trigger = -1;
+  for (let i = lo + 1; i <= desiredStart; i++) {
+    if (L[i] < -thresh) {
+      armed = true;
+    } else if (armed && L[i - 1] < 0 && L[i] >= 0) {
+      trigger = i;
+      armed = false;
+    }
+  }
+  return trigger >= 0 ? trigger : desiredStart;
+}
+
 // ── Hilbert FIR (windowed-sinc, 33 taps centered) ─────────────────────
 // Used by the "Audio" source path of the Hilbert visualizer to compute
 // the 90°-phase-shifted partner of the analyzer's mono signal. The
@@ -1049,8 +1116,11 @@ export default function Oscilloscope({
           const L = audioEngine.getTimeDataLeft();
           const R = audioEngine.getTimeDataRight();
           if (!L || !R) return { L: new Float32Array(0), R: new Float32Array(0) };
-          const start = Math.max(0, L.length - synthN);
-          return { L: L.subarray(start), R: R.subarray(start) };
+          // Phase-lock the window to a rising zero-crossing on L so the
+          // figure holds still instead of flickering. Same start index for
+          // both channels so the X/Y correspondence is preserved.
+          const start = triggeredStart(L, synthN, lowestActiveFreq(), sampleRate);
+          return { L: L.subarray(start, start + synthN), R: R.subarray(start, start + synthN) };
         }
         return synthStereoData(synthN, sampleRate);
       };

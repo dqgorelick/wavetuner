@@ -3470,27 +3470,9 @@ kbd {
   letter-spacing: 0;
 }
 
-.fsb-freq-marker {
-  position: absolute;
-  top: 0;
-  width: 2px;
-  height: 100%;
-  margin-left: -1px;
-  opacity: 0.8;
-  pointer-events: none;
-  transition: opacity 0.15s, width 0.15s;
-}
-
-/* Spectrum-bar markers stay bright regardless of mute — they're
-   purely a position indicator on the log-scale bar, not a playing-or-
-   not signifier. (The orb itself still dims when muted.) */
-
-.fsb-freq-marker.active {
-  width: 3px;
-  margin-left: -1.5px;
-  opacity: 1;
-  box-shadow: 0 0 6px var(--marker-color, currentColor);
-}
+/* Per-voice position lines are unified SVG polylines in .fsb-lines (orb →
+   curve surface → bar bottom) with a per-osc drop-shadow glow — they replace
+   the old DOM .fsb-freq-marker so the curve and bar segments read as one line. */
 
 .fsb-lines {
   position: absolute;

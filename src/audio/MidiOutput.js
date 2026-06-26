@@ -46,10 +46,18 @@
 
 import audioEngine from './AudioEngine';
 import keyboardVoiceManager from './KeyboardVoiceManager';
+import MpeVoiceAllocator from './MpeVoiceAllocator';
 
 // ─── MPE / math constants ──────────────────────────────────────────────
 const MASTER_CH = 0;            // MIDI channel 1 — global/master
 const MEMBER_COUNT = 15;        // full lower zone: channels 2–16
+// Member channel indices (1..15 = MIDI channels 2..16) the allocator pools.
+const MEMBER_CHANNELS = Array.from({ length: MEMBER_COUNT }, (_, i) => i + 1);
+// Voice priority tiers. Played notes outrank drones, so a key press can
+// borrow a drone's channel when all 15 are busy; drones never evict each
+// other (see MpeVoiceAllocator._findVictim).
+const PRIO_DRONE = 1;
+const PRIO_KBD = 2;
 // Default bend range in semitones (±). Matches Vital's fixed MPE range.
 // Configurable at runtime via setBendRange() so the app can match a
 // synth whose per-note bend range differs (e.g. ±2 in non-MPE mode).
@@ -59,7 +67,6 @@ const MEMBER_COUNT = 15;        // full lower zone: channels 2–16
 const DEFAULT_BEND_RANGE = 48;
 const BEND_CENTER = 8192;       // 14-bit center
 const NOTE_VELOCITY = 100;      // constant; drones have no velocity source
-const A4 = 440;
 
 // Status-byte high nibbles.
 const NOTE_OFF = 0x80;
@@ -78,26 +85,6 @@ const STORAGE_KEY_PORT = 'midiOutPort';
 const STORAGE_KEY_ENABLED = 'midiOutEnabled';
 const STORAGE_KEY_BEND_RANGE = 'midiOutBendRange';
 const STORAGE_KEY_ZONE_CONFIG = 'midiOutZoneConfig';
-
-function freqToMidi(f) {
-  return 69 + 12 * Math.log2(Math.max(1e-6, f) / A4);
-}
-
-function clampNote(n) {
-  return Math.max(0, Math.min(127, Math.round(n)));
-}
-
-// 14-bit bend value placing `freq` at `anchorNote` semitones offset,
-// over a ±bendRange window. Clamped to the legal 0..16383 range.
-function bendValue(freq, anchorNote, bendRange) {
-  const semis = freqToMidi(freq) - anchorNote;
-  const v = BEND_CENTER + Math.round((semis / bendRange) * BEND_CENTER);
-  return Math.max(0, Math.min(16383, v));
-}
-
-function volToPressure(vol) {
-  return Math.max(0, Math.min(127, Math.round((vol || 0) * 127)));
-}
 
 class MidiOutput {
   constructor() {
@@ -124,15 +111,22 @@ class MidiOutput {
     this._sendZoneConfig = MidiOutput._loadZoneConfig();
     this._listeners = new Set();
 
-    // Per-slot voice state. Index = drone slot. Each entry:
-    //   { active, note, lastBend, lastPressure }
-    // `note` is the anchor MIDI note while the voice is held.
-    this._voices = [];
-    // Played-voice channel allocator (computer keyboard + MIDI in). Maps
-    // a KeyboardVoiceManager voice id → { ch, note, lastBend, lastPressure }.
-    // Drones hold member channels 1..count; played voices take the rest
-    // (count+1..15) and steal the oldest played voice when exhausted.
-    this._kbdChan = new Map();
+    // Single source of truth for every outgoing MPE voice — drones,
+    // computer keyboard, and incoming MIDI all funnel through here. It pools
+    // all 15 member channels and guarantees each active output voice a
+    // unique channel AND a unique note number (so same-frequency requests
+    // never collapse to one note on the synth). See MpeVoiceAllocator.
+    this._allocator = new MpeVoiceAllocator({
+      memberChannels: MEMBER_CHANNELS,
+      bendRange: this._bendRange,
+      send: {
+        noteOn: (ch, note, vel) => this._noteOn(ch, note, vel),
+        noteOff: (ch, note) => this._noteOff(ch, note),
+        pitchBend: (ch, v14) => this._pitchBend(ch, v14),
+        pressure: (ch, val) => this._pressure(ch, val),
+      },
+      log: (msg) => this._dbg(msg),
+    });
     // Independent transport mutes. The drone's own play/pause sets
     // _droneMuted; the master pause (spacebar) sets both. Each silences
     // its half of the output on the synth without disturbing the other;
@@ -229,13 +223,8 @@ class MidiOutput {
     const next = !!on;
     if (next === this._droneMuted) return;
     this._droneMuted = next;
-    if (next && this._enabled && this._port) {
-      for (let slot = 0; slot < this._voices.length; slot++) {
-        const v = this._voices[slot];
-        if (v && v.active) this._noteOff(this._channelFor(slot), v.note);
-      }
-      this._voices = [];
-    }
+    // No explicit note-offs: muted drones simply stop appearing in the
+    // request list, so the next reconcile (≤1 frame) releases their voices.
     this._fire();
   }
 
@@ -248,10 +237,8 @@ class MidiOutput {
     const next = !!on;
     if (next === this._kbdMuted) return;
     this._kbdMuted = next;
-    if (next && this._enabled && this._port) {
-      for (const st of this._kbdChan.values()) this._noteOff(st.ch, st.note);
-      this._kbdChan.clear();
-    }
+    // Same as drones: dropping them from the request list releases their
+    // voices on the next reconcile; the drones are left untouched.
     this._fire();
   }
 
@@ -267,14 +254,12 @@ class MidiOutput {
    */
   panic() {
     if (!this._port) return;
-    this._allNotesOff();
+    this._allocator.releaseAll();       // explicit note-offs for tracked voices
     for (let ch = 0; ch <= MEMBER_COUNT; ch++) {
       this._cc(ch, 120, 0);            // All Sound Off
       this._cc(ch, 123, 0);            // All Notes Off
       this._pitchBend(ch, BEND_CENTER); // recenter bend
     }
-    this._voices = [];
-    this._kbdChan.clear();
   }
 
   /**
@@ -305,6 +290,7 @@ class MidiOutput {
     const n = Math.max(1, Math.min(96, Math.round(semitones)));
     if (n === this._bendRange) return;
     this._bendRange = n;
+    this._allocator.setBendRange(n);
     this._persistBendRange();
     if (this._enabled && this._port) {
       // Restart so the synth gets the new RPN and voices re-anchor under
@@ -539,17 +525,14 @@ class MidiOutput {
     // setSendZoneConfig(true) only for synths that need it.
     if (this._sendZoneConfig) this._configureZone();
     // Reset voice bookkeeping so the loop re-triggers everything fresh.
-    this._voices = [];
-    this._kbdChan.clear();
+    this._allocator.releaseAll();
     this._startLoop();
   }
 
   /** Release every held voice and stop the poll loop. */
   _stopOutput() {
     this._stopLoop();
-    this._allNotesOff();
-    this._voices = [];
-    this._kbdChan.clear();
+    this._allocator.releaseAll();
   }
 
   /**
@@ -593,20 +576,6 @@ class MidiOutput {
   _pressure(ch, val) { this._send([CHANNEL_PRESSURE | ch, val & 0x7f]); }
   _pitchBend(ch, v14) { this._send([PITCH_BEND | ch, v14 & 0x7f, (v14 >> 7) & 0x7f]); }
 
-  /** Member channel index for drone slot `i`. */
-  _channelFor(slot) { return slot + 1; }
-
-  _allNotesOff() {
-    if (!this._port) return;
-    for (let slot = 0; slot < this._voices.length; slot++) {
-      const v = this._voices[slot];
-      if (v && v.active) this._noteOff(this._channelFor(slot), v.note);
-    }
-    for (const st of this._kbdChan.values()) {
-      this._noteOff(st.ch, st.note);
-    }
-  }
-
   // ─── poll loop ────────────────────────────────────────────────────
   _startLoop() {
     if (this._rafId != null) return;
@@ -624,195 +593,64 @@ class MidiOutput {
   }
 
   /**
-   * One reconciliation pass: compare each drone slot's current
-   * frequency / volume / mute against the held voice and emit only the
-   * messages needed to bring the synth in line.
+   * One reconciliation pass: gather every voice that should be sounding —
+   * drones plus played notes (computer keyboard + incoming MIDI) — and hand
+   * the flat list to the allocator, which diffs it against the wire and
+   * emits the minimal set of messages. All channel/note assignment, bend,
+   * pressure, re-anchoring, and voice stealing live in MpeVoiceAllocator.
    */
   _sync() {
     if (!this._enabled || !this._port || !audioEngine.initialized) return;
-
-    const count = audioEngine.getOscillatorCount();
-
-    // Drone reconcile — skipped entirely while the drones are paused on
-    // the synth (setDroneMuted already sent their note-offs).
-    if (!this._droneMuted) {
-    // Release voices for slots that no longer exist (count shrank).
-    for (let slot = count; slot < this._voices.length; slot++) {
-      const v = this._voices[slot];
-      if (v && v.active) {
-        this._noteOff(this._channelFor(slot), v.note);
-        v.active = false;
-      }
-    }
-
-    for (let slot = 0; slot < count; slot++) {
-      const ch = this._channelFor(slot);
-      const muted = audioEngine.isMuted(slot);
-      let v = this._voices[slot];
-      if (!v) { v = this._voices[slot] = { active: false, note: 60, lastBend: -1, lastPressure: -1 }; }
-
-      if (muted) {
-        if (v.active) { this._noteOff(ch, v.note); v.active = false; }
-        continue;
-      }
-
-      const freq = audioEngine.getFrequency(slot);
-      const vol = audioEngine.getVolume(slot);
-
-      if (!v.active) {
-        // New voice: anchor at the nearest note, bend first, then Note On
-        // (so the synth never glides from the nominal note), then set the
-        // expression level.
-        v.note = clampNote(freqToMidi(freq));
-        const bend = bendValue(freq, v.note, this._bendRange);
-        const pressure = volToPressure(vol);
-        this._pitchBend(ch, bend);
-        this._noteOn(ch, v.note, NOTE_VELOCITY);
-        // Re-send the bend AFTER Note On. Some synths (Vital) ignore pitch
-        // bend that arrives before the note exists, so a static voice would
-        // stay glued to the bare anchor note. This pins the true pitch.
-        this._pitchBend(ch, bend);
-        this._pressure(ch, pressure);
-        v.active = true;
-        v.lastBend = bend;
-        v.lastPressure = pressure;
-        this._dbg(`noteOn  ch${ch + 1} note${v.note} bend${bend} (slot${slot} ${freq.toFixed(2)}Hz)`);
-        continue;
-      }
-
-      // Held voice — update bend + pressure as needed.
-      const semis = freqToMidi(freq) - v.note;
-      if (Math.abs(semis) > this._bendRange) {
-        // Sweep ran past the ±bendRange window — re-anchor (this retriggers).
-        this._noteOff(ch, v.note);
-        v.note = clampNote(freqToMidi(freq));
-        const bend = bendValue(freq, v.note, this._bendRange);
-        const pressure = volToPressure(vol);
-        this._pitchBend(ch, bend);
-        this._noteOn(ch, v.note, NOTE_VELOCITY);
-        // Re-send after Note On — see the note in the fresh-voice branch.
-        this._pitchBend(ch, bend);
-        this._pressure(ch, pressure);
-        v.lastBend = bend;
-        v.lastPressure = pressure;
-        this._dbg(`re-anchor ch${ch + 1} note${v.note} bend${bend} (slot${slot} ${freq.toFixed(2)}Hz)`);
-        continue;
-      }
-
-      const bend = bendValue(freq, v.note, this._bendRange);
-      if (bend !== v.lastBend) {
-        this._pitchBend(ch, bend);
-        v.lastBend = bend;
-        this._dbg(`bend    ch${ch + 1} → ${bend} (slot${slot} ${freq.toFixed(2)}Hz, anchor ${v.note}, ±${this._bendRange}st)`);
-      }
-      const pressure = volToPressure(vol);
-      if (pressure !== v.lastPressure) {
-        this._pressure(ch, pressure);
-        v.lastPressure = pressure;
-        this._dbg(`press   ch${ch + 1} → ${pressure} (slot${slot})`);
-      }
-    }
-    } // end drone reconcile (this._droneMuted)
-
-    // Played voices (computer keyboard + incoming MIDI) ride the member
-    // channels the drones don't occupy.
-    this._syncKbdVoices(count);
+    this._allocator.reconcile(this._buildRequests());
   }
 
   /**
-   * Mirror the live KeyboardVoiceManager voices out as MPE. Each voice
-   * anchors at the MIDI note that was actually played and bends by the
-   * microtonal offset of its retuned frequency — so the synth plays the
-   * JI / meantone pitch, not equal temperament. Both `kbd` and `midi`
-   * source voices flow through here, which is what makes the computer
-   * keyboard AND an incoming controller drive the external synth.
-   *
-   * Channel sharing: drones hold member channels 1..droneCount; played
-   * voices allocate from droneCount+1..MEMBER_COUNT and steal the oldest
-   * played voice when the pool is exhausted.
+   * Build the flat list of desired output voices from all three sources.
+   * Each request is { id, freq, level (0..1), velocity (1..127), priority }.
+   * The `id` is a stable per-source key so the allocator can track a voice
+   * across frames. Input collisions (two sources at the same Hz) are fine —
+   * they're distinct ids and the allocator gives each a unique (channel,
+   * note). Muted halves simply contribute nothing, so their voices get
+   * released on this pass.
    */
-  _syncKbdVoices(droneCount) {
-    if (this._kbdMuted) return; // played notes paused; drones unaffected
-    const voices = keyboardVoiceManager.getActiveVoices();
+  _buildRequests() {
+    const reqs = [];
 
-    // Live = sounding and not yet in its release tail. A voice that has
-    // released (or vanished) gets a Note Off and frees its channel.
-    const liveIds = new Set();
-    for (const v of voices) {
-      if (!v.released) liveIds.add(v.id);
-    }
-
-    const minCh = droneCount + 1;
-    const maxCh = MEMBER_COUNT;
-    for (const [id, st] of this._kbdChan) {
-      // Released / gone, or the channel fell into the drone range because
-      // the drone count grew — release it either way.
-      if (!liveIds.has(id) || st.ch < minCh || st.ch > maxCh) {
-        this._noteOff(st.ch, st.note);
-        this._kbdChan.delete(id);
+    // Drones — sustained oscillators read straight from AudioEngine.
+    if (!this._droneMuted) {
+      const count = audioEngine.getOscillatorCount();
+      for (let slot = 0; slot < count; slot++) {
+        if (audioEngine.isMuted(slot)) continue;
+        const freq = audioEngine.getFrequency(slot);
+        if (!(freq > 0)) continue;
+        reqs.push({
+          id: `drone:${slot}`,
+          freq,
+          level: audioEngine.getVolume(slot),
+          velocity: NOTE_VELOCITY,
+          priority: PRIO_DRONE,
+        });
       }
     }
 
-    if (minCh > maxCh) return; // drones fill every member channel
-
-    const occupied = new Set();
-    for (const st of this._kbdChan.values()) occupied.add(st.ch);
-
-    for (const v of voices) {
-      if (v.released) continue;
-      let st = this._kbdChan.get(v.id);
-
-      if (!st) {
-        let ch = -1;
-        for (let c = minCh; c <= maxCh; c++) {
-          if (!occupied.has(c)) { ch = c; break; }
-        }
-        if (ch < 0) {
-          // Pool full — steal the oldest held played voice.
-          const steal = this._oldestKbdVoice(voices);
-          if (!steal) continue;
-          const stolen = this._kbdChan.get(steal.id);
-          this._noteOff(stolen.ch, stolen.note);
-          ch = stolen.ch;
-          this._kbdChan.delete(steal.id);
-        }
-        occupied.add(ch);
-        const note = clampNote(v.midiNote);
-        const bend = bendValue(v.freq, note, this._bendRange);
-        const vel = Math.max(1, Math.min(127, Math.round((v.peak || 1) * 127)));
-        const pressure = volToPressure(v.amp);
-        this._pitchBend(ch, bend);
-        this._noteOn(ch, note, vel);
-        // Re-send bend after Note On — same synth workaround as the drone path.
-        this._pitchBend(ch, bend);
-        this._pressure(ch, pressure);
-        this._kbdChan.set(v.id, { ch, note, lastBend: bend, lastPressure: pressure });
-        this._dbg(`kbd noteOn ch${ch + 1} note${note} bend${bend} (voice${v.id} ${v.freq.toFixed(2)}Hz ${v.source})`);
-        continue;
-      }
-
-      // Held — update bend + pressure as the voice retunes / swells.
-      const bend = bendValue(v.freq, st.note, this._bendRange);
-      if (bend !== st.lastBend) {
-        this._pitchBend(st.ch, bend);
-        st.lastBend = bend;
-      }
-      const pressure = volToPressure(v.amp);
-      if (pressure !== st.lastPressure) {
-        this._pressure(st.ch, pressure);
-        st.lastPressure = pressure;
+    // Played notes — computer keyboard + incoming MIDI, via the shared
+    // KeyboardVoiceManager. A voice in its release tail (v.released) drops
+    // out of the list so the allocator frees its channel.
+    if (!this._kbdMuted) {
+      for (const v of keyboardVoiceManager.getActiveVoices()) {
+        if (v.released) continue;
+        if (!(v.freq > 0)) continue;
+        reqs.push({
+          id: `kbd:${v.id}`,
+          freq: v.freq,
+          level: v.amp,
+          velocity: Math.max(1, Math.min(127, Math.round((v.peak || 1) * 127))),
+          priority: PRIO_KBD,
+        });
       }
     }
-  }
 
-  /** Oldest currently-channelled played voice (lowest startTime), or null. */
-  _oldestKbdVoice(voices) {
-    let oldest = null;
-    for (const v of voices) {
-      if (!this._kbdChan.has(v.id)) continue;
-      if (oldest === null || v.startTime < oldest.startTime) oldest = v;
-    }
-    return oldest;
+    return reqs;
   }
 }
 

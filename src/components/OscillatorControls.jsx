@@ -12,16 +12,9 @@ function getOscillatorLabel(index) {
 
 function OscillatorControls({
   oscillatorCount = 2,
-  isKbdTrayOpen = false,
-  onKbdTrayToggle,
   isPaused = false,
   onPausedChange,
   droneEnabled = true,
-  onDroneEnabledChange,
-  isMixerOpen = true,
-  onMixerToggle,
-  isTuningOpen = false,
-  onTuningToggle,
   routingMap = {},
   onSetVoiceRouting,
   onResetVoiceRouting,
@@ -99,13 +92,6 @@ function OscillatorControls({
     sync();
     return () => cancelAnimationFrame(animationId);
   }, [oscillatorCount]);
-
-  const handleDroneToggle = () => {
-    if (!audioEngine.initialized) return;
-    const next = !droneEnabled;
-    audioEngine.setDroneEnabled(next);
-    onDroneEnabledChange?.(next);
-  };
 
   // Master play/pause — the leftmost bottom-row button and the spacebar
   // both fire this. It silences EVERYTHING (drones + computer/MIDI
@@ -354,54 +340,6 @@ function OscillatorControls({
                   <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
                 </svg>
               )}
-            </button>
-          </div>
-          <div className="grid-cell bottom-cell-wrap osc-kbd-col">
-            <button
-              type="button"
-              className={`bottom-cell bottom-toggle ${isKbdTrayOpen ? 'on' : 'off'}`}
-              onClick={onKbdTrayToggle}
-              aria-pressed={isKbdTrayOpen}
-              title={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
-              aria-label={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
-            >
-              <span className="bottom-toggle-label">KBD</span>
-            </button>
-          </div>
-          <div className="grid-cell bottom-cell-wrap osc-all-col">
-            <button
-              type="button"
-              className={`bottom-cell bottom-toggle ${droneEnabled ? 'on' : 'off'}`}
-              onClick={handleDroneToggle}
-              aria-pressed={droneEnabled}
-              title={droneEnabled ? 'Turn drones off' : 'Turn drones on'}
-              aria-label={droneEnabled ? 'Drones on — click to turn off' : 'Drones off — click to turn on'}
-            >
-              <span className="bottom-toggle-label">drone</span>
-            </button>
-          </div>
-          <div className="grid-cell bottom-cell-wrap osc-mixer-col">
-            <button
-              type="button"
-              className={`bottom-cell bottom-toggle ${isMixerOpen ? 'on' : 'off'}`}
-              onClick={onMixerToggle}
-              aria-pressed={isMixerOpen}
-              title={isMixerOpen ? 'Hide mixer' : 'Show mixer'}
-              aria-label={isMixerOpen ? 'Hide mixer' : 'Show mixer'}
-            >
-              <span className="bottom-toggle-label">MIXER</span>
-            </button>
-          </div>
-          <div className="grid-cell bottom-cell-wrap osc-tuning-col">
-            <button
-              type="button"
-              className={`bottom-cell bottom-toggle ${isTuningOpen ? 'on' : 'off'}`}
-              onClick={onTuningToggle}
-              aria-pressed={isTuningOpen}
-              title={isTuningOpen ? 'Hide tuning' : 'Show tuning'}
-              aria-label={isTuningOpen ? 'Hide tuning' : 'Show tuning'}
-            >
-              <span className="bottom-toggle-label">TUNING</span>
             </button>
           </div>
         </div>

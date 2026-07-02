@@ -17,6 +17,14 @@ import { getCandidates, getSystem, DEFAULT_SYSTEM, canonicalRatioForVoice } from
 // needle for both.
 const FIXED_SLOT_FADE = 0.3;
 
+// Play-on volume ceiling for a drone turned on via its button (unmute).
+// Turning a drone on never brings it up louder than this, leaving headroom
+// on the summing bus when several drones sound at once. Matches the
+// PATCH_LOAD_VOL_CAP used when loading a saved patch (see patches/apply.js).
+// Manual volume-slider drags (setVolume) are NOT capped — this only bounds
+// the level a drone resumes at when its button is pressed.
+const DRONE_PLAY_VOL_CAP = 0.65;
+
 // Master-bus soft limiter / saturator curves. Integers match the values
 // the worklet expects via port.postMessage({ curve }).
 export const SATURATION_CURVES = {
@@ -2696,6 +2704,13 @@ class AudioEngine {
     if (!this.gainNodes[index]) return;
 
     this.mutedStates[index] = false;
+    // Cap the resume level so pressing a drone's button never plays it above
+    // DRONE_PLAY_VOL_CAP. Clamp the stored value (not just the envelope peak)
+    // so every downstream read — _droneTargetGain, sustain retargets, the
+    // volume slider — stays in sync with what's sounding.
+    if (this.volumeValues[index] > DRONE_PLAY_VOL_CAP) {
+      this.volumeValues[index] = DRONE_PLAY_VOL_CAP;
+    }
     const peak = this.volumeValues[index];
     droneEnvelope.applyNoteOn(this.gainNodes[index].gain, this.audioContext, peak);
     // Partner mirrors the unmute when stereo mode has it audible.

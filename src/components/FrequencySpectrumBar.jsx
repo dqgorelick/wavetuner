@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import frequencyManager from '../audio/FrequencyManager';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
 import { activeProfile } from '../audio/timbreProfiles';
@@ -17,7 +18,11 @@ const DOT_GAP = 14;
 
 const PADDING_RATIO = 0.15;
 const MIN_LOG_SPAN = 0.5;
-const ZOOM_EASE = 0.25;
+// Time constant (ms) for the frame-rate-INDEPENDENT zoom ease. A fixed
+// per-frame lerp fraction converges twice as fast on 120Hz displays (the zoom
+// felt instant on ProMotion Macs); easing by 1 - exp(-dt / ZOOM_TAU_MS) instead
+// makes the zoom settle in ~300ms on any refresh rate.
+const ZOOM_TAU_MS = 108;
 
 const SENSITIVITY_NORMAL = 0.5;
 const SENSITIVITY_FINE = 0.1;
@@ -182,6 +187,29 @@ const DISS_BASELINE_Y = BAR_TOP_Y - DISS_LINE_LIFT;
 const DISS_CURVE_MAX_Y = DISS_BASELINE_Y - DISS_CURVE_HEIGHT;
 const ORB_FLOAT_GAP = 8;
 const DOT_CENTER_Y = DISS_CURVE_MAX_Y - ORB_FLOAT_GAP - DOT_SIZE / 2;
+
+// ── Staged-patch target markers ──────────────────────────────────────────
+// A staged slot previews each voice's target two ways: a floating dot
+// STAGED_DOT_LIFT px above the orbs (tethered to its orb by a dotted line, and
+// sliding down to meet the orb as the voice glides), plus an upward triangle
+// just above the frequency ticks marking that target on the spectrum. Both
+// fade with how close the orb is to the target, so they dissolve when the orb
+// is there and fade back in as it drifts away — a "return here" marker that
+// persists after a launch until released.
+const STAGED_DOT_LIFT = 65;
+const STAGED_DOT_R = 7;              // smaller than the orbs (r = DOT_SIZE/2)
+const STAGED_DOT_Y = DOT_CENTER_Y - STAGED_DOT_LIFT;
+const TRIANGLE_W = 11;
+const TRIANGLE_H = 8;
+const TRIANGLE_BASE_Y = BAR_TOP_Y - 3;          // base just above the tick tops
+const TRIANGLE_APEX_Y = TRIANGLE_BASE_Y - TRIANGLE_H;
+const TRIANGLE_HIT_PAD = 8;                      // invisible click/swipe padding
+const SAME_SPOT_PX = 4;     // voice within this many px of target ⇒ on-spot (no markers)
+const TRIANGLE_FADE_RANGE_PX = 4;  // triangle ramps in fast once the voice leaves its spot
+const DOT_LINE_FADE_RANGE_PX = 12; // dot+line ramp in as the dot clears the orb's top edge
+const STAGED_DESCENT_RANGE_PX = 120; // orb-to-target px over which the dot lowers/lifts
+const STAGED_DESCENT_EASE = 5;       // >1 makes the dot rush to full lift (less mid-travel)
+const STAGE_FADE_MS = 300;  // markers ease in over this long when a slot is staged
 // Reused per-column level buffer (avoids per-frame allocation now that the
 // curve draws continuously). _dissLevels holds the freshly computed target;
 // _dissDisplay is the on-screen value that eases toward it each frame so
@@ -860,6 +888,47 @@ function FrequencySpectrumBar({
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
   const [range, setRange] = useState({ logMin: ABSOLUTE_LOG_MIN, logMax: ABSOLUTE_LOG_MAX });
   const [shiftHeld, setShiftHeld] = useState(false);
+  // Launch state for a *staged* save slot (targets + which voices are
+  // mid-glide + which have fired), or null when nothing is staged. Driven by
+  // the frequencyManager singleton but re-read only when its stageVersion
+  // changes — NOT on every frequency event — so drags don't churn it. The
+  // per-frame descent animation instead rides the component's normal
+  // re-renders (the `frequencies` state updates each glide frame).
+  const [stageState, setStageState] = useState(() => frequencyManager.getLaunchState());
+  // Time-based fade-in (0→1 over STAGE_FADE_MS) applied on top of the per-voice
+  // distance fade, so the dots/lines ease in when a slot is staged instead of
+  // popping to full opacity.
+  const [stageFade, setStageFade] = useState(1);
+  const stageFadeRef = useRef({ raf: 0, start: 0, slotId: frequencyManager.stagedSlotId });
+  useEffect(() => {
+    let lastVersion = frequencyManager.stageVersion;
+    const sync = () => {
+      const v = frequencyManager.stageVersion;
+      if (v === lastVersion) return;
+      lastVersion = v;
+      setStageState(frequencyManager.getLaunchState());
+      // When the staged slot changes, restart the ease-in.
+      const slotId = frequencyManager.stagedSlotId;
+      const sf = stageFadeRef.current;
+      if (slotId !== sf.slotId) {
+        sf.slotId = slotId;
+        if (sf.raf) { cancelAnimationFrame(sf.raf); sf.raf = 0; }
+        if (slotId == null) { setStageFade(1); return; }  // released — markers unmount
+        sf.start = 0;
+        setStageFade(0);
+        const tick = (t) => {
+          if (!sf.start) sf.start = t;
+          const p = Math.min(1, (t - sf.start) / STAGE_FADE_MS);
+          setStageFade(p);
+          sf.raf = p < 1 ? requestAnimationFrame(tick) : 0;
+        };
+        sf.raf = requestAnimationFrame(tick);
+      }
+    };
+    sync();
+    const off = frequencyManager.onChange(sync);
+    return () => { off(); if (stageFadeRef.current.raf) cancelAnimationFrame(stageFadeRef.current.raf); };
+  }, []);
   const [activeOrder, setActiveOrder] = useState([]); // indices sorted by first-activation
 
   const containerRef = useRef(null);
@@ -1061,6 +1130,7 @@ function FrequencySpectrumBar({
   useEffect(() => {
     let rafId = 0;
     let dirty = true;             // initial sync on mount
+    let lastZoomMs = 0;           // timestamp of the previous zoom-ease step
     const arraysEqual = (a, b) => {
       if (a.length !== b.length) return false;
       for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -1139,10 +1209,25 @@ function FrequencySpectrumBar({
             setFrequencies((prev) => (arraysEqual(prev, newFreqs) ? prev : newFreqs));
             setMuted((prev) => (arraysEqual(prev, newMuted) ? prev : newMuted));
 
-            const target = computeTargetRange(newFreqs);
+            // Frame the current voices AND any staged targets, so a staged
+            // save state's destination dots can't sit off-screen — the view
+            // zooms out to include where the notes are heading. Only ACTIVE
+            // voices count: targets for inactive voices beyond the current
+            // count are hidden (Heuristic 1), so they mustn't pull the zoom.
+            const staged = frequencyManager.getStagedFrequencies();
+            const stagedActive = staged ? staged.slice(0, newFreqs.length) : null;
+            const target = computeTargetRange(
+              stagedActive && stagedActive.length ? newFreqs.concat(stagedActive) : newFreqs
+            );
             const cur = rangeRef.current;
-            const nextMin = cur.logMin + (target.logMin - cur.logMin) * ZOOM_EASE;
-            const nextMax = cur.logMax + (target.logMax - cur.logMax) * ZOOM_EASE;
+            // Frame-rate-independent ease: dt clamped so an idle gap (or the
+            // first step of a fresh zoom) can't produce a big jump.
+            const nowMs = performance.now();
+            const dt = lastZoomMs === 0 ? 16 : Math.min(33, nowMs - lastZoomMs);
+            lastZoomMs = nowMs;
+            const k = 1 - Math.exp(-dt / ZOOM_TAU_MS);
+            const nextMin = cur.logMin + (target.logMin - cur.logMin) * k;
+            const nextMax = cur.logMax + (target.logMax - cur.logMax) * k;
             if (
               Math.abs(nextMin - cur.logMin) > 0.0001 ||
               Math.abs(nextMax - cur.logMax) > 0.0001
@@ -1163,12 +1248,16 @@ function FrequencySpectrumBar({
     };
 
     const unsub = audioEngine.addFrequencyListener(wake);
+    // Staging/launch changes should re-evaluate the zoom too (so newly staged
+    // targets pull the frame open, and it eases back in once staging clears).
+    const unsubStage = frequencyManager.onChange(wake);
     wakeRef.current = wake;
     schedule();
 
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
       unsub();
+      unsubStage();
       wakeRef.current = null;
     };
   }, [oscillatorCount]);
@@ -1331,7 +1420,10 @@ function FrequencySpectrumBar({
       // reads as a UI freeze.
       try {
         const f = audioEngine.getAllFrequencies();
-        const target = computeTargetRange(f.slice(0, oscillatorCount));
+        const base = f.slice(0, oscillatorCount);
+        const staged = frequencyManager.getStagedFrequencies();
+        const stagedActive = staged ? staged.slice(0, base.length) : null;
+        const target = computeTargetRange(stagedActive && stagedActive.length ? base.concat(stagedActive) : base);
         rangeRef.current = target;
         setRange(target);
       } catch { /* no-op */ }
@@ -1682,6 +1774,19 @@ function FrequencySpectrumBar({
         const ghostR = DOT_SIZE / 2;
         return (
           <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
+            {/* Occlusion mask: white shows, black hides. Black discs at every
+                orb punch holes so the staged tether lines/dots read as passing
+                BEHIND the orbs — which are translucent hollow rings that would
+                otherwise let the lines bleed through them. */}
+            <defs>
+              <mask id="fsb-staged-occlude" maskUnits="userSpaceOnUse"
+                    x={-200} y={homeY - 100} width={8000} height={340}>
+                <rect x={-200} y={homeY - 100} width={8000} height={340} fill="white" />
+                {dotXs.map((ox, oi) => (
+                  <circle key={`occ-${oi}`} cx={ox} cy={homeY} r={DOT_SIZE / 2 + 2} fill="black" />
+                ))}
+              </mask>
+            </defs>
             {frequencies.map((_, i) => {
               // Full per-voice position line: orb edge → live curve surface →
               // bar bottom, as ONE polyline. Geometry is set every frame by
@@ -1706,6 +1811,159 @@ function FrequencySpectrumBar({
                 />
               );
             })}
+            {/* Staged-slot targets: a floating dot STAGED_DOT_LIFT above each
+                orb (tethered by a dotted line) marks where that voice will glide
+                to; on launch the dot slides down to meet the orb as it lands. An
+                upward triangle just above the tick tops marks the same target
+                frequency down on the spectrum. The whole group fades
+                with the orb's horizontal proximity (also Heuristic 2 — hidden
+                when the orb is already on target, fading back in as it drifts, so
+                it persists as a "return here" marker). Click/swipe the line or
+                dot to launch (or to return once landed). */}
+            {stageState && (
+              <g mask="url(#fsb-staged-occlude)">
+              {stageState.targets.map((tf, i) => {
+              if (!Number.isFinite(tf)) return null;
+              // Heuristic 1: the saved state has more voices than are currently
+              // loaded — don't show markers for those inactive voices.
+              if (i >= frequencies.length) return null;
+              const isLaunching = !!stageState.launching[i];
+              const tx = BAR_H_PADDING + freqToFraction(tf, range.logMin, range.logMax) * barWidth;
+              // Gap between the voice's TRUE frequency position and its target —
+              // freqXs, not the collision-pushed dotXs. A voice that's only being
+              // shoved aside visually (its frequency unchanged) stays on target,
+              // so its marker doesn't appear; only a real frequency change does.
+              const gap = Math.abs(freqXs[i] - tx);
+              // The triangle appears as soon as the voice leaves its saved spot.
+              const triOpacity = Math.min(1, Math.max(0,
+                (gap - SAME_SPOT_PX) / TRIANGLE_FADE_RANGE_PX));
+              if (triOpacity <= 0.02) return null;   // voice on-spot — nothing to show
+              const color = palette.oscColor(i, oscillatorCount);
+              // Descent is driven by that gap, not launch progress: the dot HOLDS
+              // its target x and lowers toward the orb as the orb nears the target,
+              // and rises back to full lift as the orb moves away. So it animates
+              // both ways — a launch lowers it, an undo/return raises it — with no
+              // snap when a launch is aborted mid-flight. Cubing the linear falloff
+              // makes the dot rise FAST as the orb first moves off target (so it
+              // clears the orb top and fades in sooner), then eases toward full lift.
+              const descent = Math.pow(
+                Math.max(0, Math.min(1, 1 - gap / STAGED_DESCENT_RANGE_PX)),
+                STAGED_DESCENT_EASE
+              );
+              const dotY = STAGED_DOT_Y + (homeY - STAGED_DOT_Y) * descent;
+              // The dot + tether only appear once the dot has risen clear of the
+              // orb's top edge — i.e. the voice has moved far enough that the dot
+              // pokes above the orb. Below that they're hidden (no invisible hits).
+              const orbTop = homeY - DOT_SIZE / 2;
+              const dotLineOpacity = Math.min(1, Math.max(0,
+                (orbTop - dotY) / DOT_LINE_FADE_RANGE_PX));
+              const showDot = !isLaunching && dotLineOpacity > 0.1;
+              // Dotted tether: dot → orb edge (trimmed both ends, like the ghosts).
+              const seg = offsetLine(tx, dotY, dotXs[i], homeY, STAGED_DOT_R, DOT_SIZE / 2);
+              const launch = (e) => {
+                e.stopPropagation();
+                // Touch implicitly captures the pointer to this element on down;
+                // release it so pointerenter still fires on sibling lines as the
+                // finger swipes across them.
+                try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* none held */ }
+                frequencyManager.launchVoice(i);
+              };
+              // Swipe: crossing a pending line/dot with the button/finger held
+              // launches that voice — drag across several for a cascade.
+              const swipeOver = (e) => { if (e.buttons & 1) frequencyManager.launchVoice(i); };
+              const pts = `${tx},${TRIANGLE_APEX_Y} `
+                + `${tx - TRIANGLE_W / 2},${TRIANGLE_BASE_Y} `
+                + `${tx + TRIANGLE_W / 2},${TRIANGLE_BASE_Y}`;
+              return (
+                <g key={`staged-${i}`} opacity={stageFade}>
+                  {seg && (
+                    <line
+                      x1={seg.x1}
+                      y1={seg.y1}
+                      x2={seg.x2}
+                      y2={seg.y2}
+                      stroke={color}
+                      strokeWidth={isLaunching ? 2.5 : 1}
+                      strokeOpacity={isLaunching ? 0.95 : 0.4}
+                      strokeDasharray={isLaunching ? undefined : '0.5 4'}
+                      strokeLinecap="round"
+                      opacity={dotLineOpacity}
+                      style={isLaunching ? { filter: `drop-shadow(0 0 5px ${color})` } : undefined}
+                    />
+                  )}
+                  {/* Fat invisible hit line along the tether for click/swipe (only
+                      once the dot has cleared the orb — otherwise it'd swallow
+                      clicks near the orb while invisible). */}
+                  {showDot && seg && (
+                    <line
+                      x1={seg.x1}
+                      y1={seg.y1}
+                      x2={seg.x2}
+                      y2={seg.y2}
+                      stroke="transparent"
+                      strokeWidth={16}
+                      strokeLinecap="round"
+                      style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+                      onPointerDown={launch}
+                      onPointerEnter={swipeOver}
+                    />
+                  )}
+                  {/* Invisible hit box over the triangle — click/swipe it to send
+                      this voice back to its saved position (it's the reliable
+                      target since it shows even for small drifts). */}
+                  {!isLaunching && triOpacity > 0.1 && (
+                    <rect
+                      x={tx - TRIANGLE_W / 2 - TRIANGLE_HIT_PAD}
+                      y={TRIANGLE_APEX_Y - TRIANGLE_HIT_PAD}
+                      width={TRIANGLE_W + 2 * TRIANGLE_HIT_PAD}
+                      height={TRIANGLE_H + 2 * TRIANGLE_HIT_PAD}
+                      fill="transparent"
+                      style={{ pointerEvents: 'all', cursor: 'pointer' }}
+                      onPointerDown={launch}
+                      onPointerEnter={swipeOver}
+                    />
+                  )}
+                  {/* Upward triangle marking the target frequency on the spectrum —
+                      appears as soon as the voice leaves its saved spot. */}
+                  <polygon
+                    points={pts}
+                    fill={color}
+                    fillOpacity={0.95}
+                    stroke={color}
+                    strokeWidth={0.75}
+                    opacity={triOpacity}
+                    style={{ filter: `drop-shadow(0 0 3px ${color})`, pointerEvents: 'none' }}
+                  />
+                  {/* Invisible hit target over the floating dot (only once shown). */}
+                  {showDot && (
+                    <circle
+                      cx={tx}
+                      cy={dotY}
+                      r={STAGED_DOT_R + 7}
+                      fill="transparent"
+                      style={{ pointerEvents: 'auto', cursor: 'pointer' }}
+                      onPointerDown={launch}
+                      onPointerEnter={swipeOver}
+                    />
+                  )}
+                  {/* Floating target dot above the orb. */}
+                  <circle
+                    cx={tx}
+                    cy={dotY}
+                    r={STAGED_DOT_R}
+                    fill={color}
+                    fillOpacity={isLaunching ? 1 : 0.9}
+                    opacity={dotLineOpacity}
+                    style={{
+                      filter: `drop-shadow(0 0 ${isLaunching ? 7 : 4}px ${color})`,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                </g>
+              );
+              })}
+              </g>
+            )}
             {Object.entries(ghosts).map(([pid, g]) => {
               const color = palette.oscColor(g.index, oscillatorCount);
               const seg = offsetLine(

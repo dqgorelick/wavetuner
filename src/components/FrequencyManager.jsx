@@ -489,9 +489,20 @@ function SaveSlotChip({ slot }) {
     setEditing(false);
   }, [draft, slot.id, slot.name]);
 
+  const isStaged = frequencyManager.stagedSlotId === slot.id;
+
+  // Two-click launch: the first click STAGES this slot (previewing where each
+  // voice will glide to, as target dots on the spectrum bar); a second click
+  // LAUNCHES all its voices at once (glide). Individual voices can also be
+  // launched by clicking their dots on the bar. Clicking a different slot
+  // re-stages that one instead.
   const handleRecall = useCallback(() => {
     if (editing) return;
-    frequencyManager.recallSlot(slot.id);
+    if (frequencyManager.stagedSlotId === slot.id) {
+      frequencyManager.launchAll();
+    } else {
+      frequencyManager.stageSlot(slot.id);
+    }
   }, [editing, slot.id]);
 
   const handleDelete = useCallback((e) => {
@@ -500,7 +511,12 @@ function SaveSlotChip({ slot }) {
   }, [slot.id]);
 
   return (
-    <div className="freq-rail-slot" title="Click to recall (glide). Double-click to rename.">
+    <div
+      className={`freq-rail-slot${isStaged ? ' staged' : ''}`}
+      title={isStaged
+        ? 'Staged — click again to launch (glide). Double-click to rename.'
+        : 'Click to stage, again to recall (glide). Double-click to rename.'}
+    >
       {editing ? (
         <input
           ref={inputRef}
@@ -649,7 +665,13 @@ export function TuningPanel({
   const anchorColor = palette.oscColor(anchorSlot, oscillatorCount);
   const handleUndo = useCallback(() => { frequencyManager.undo(); }, []);
   const handleRedo = useCallback(() => { frequencyManager.redo(); }, []);
-  const handleSave = useCallback(() => { frequencyManager.saveCurrent(); }, []);
+  // Saving auto-stages the new slot: the orbs are at the saved spot, so its
+  // markers stay hidden until you move a voice — then they fade in showing the
+  // way back to what you just saved.
+  const handleSave = useCallback(() => {
+    const id = frequencyManager.saveCurrent();
+    if (id) frequencyManager.stageSlot(id);
+  }, []);
   // Slot cap mirrors the CSS grid (4 columns × 2 rows). Once full, the
   // oldest save is dropped server-side; the Save button stays enabled
   // so users can keep iterating.
@@ -664,9 +686,11 @@ export function TuningPanel({
   // just orb-drag / Align (the `frozen` prop). Save-state recall glides
   // through FrequencyManager and never set `isAligning`, so without this
   // every row re-renders its 5 controlled inputs each frame — the recall
-  // lag. The panel re-renders every glide frame (bump listener), so this
-  // read stays current and flips back the frame after the glide ends.
-  const effFrozen = frozen || audioEngine.isGliding;
+  // lag. `isLaunching` covers the staged per-voice launch tween (which
+  // doesn't set audioEngine.isGliding). The panel re-renders every glide
+  // frame (bump listener), so this read stays current and flips back the
+  // frame after the glide ends.
+  const effFrozen = frozen || audioEngine.isGliding || frequencyManager.isLaunching;
 
   return (
     <>
@@ -842,10 +866,25 @@ export function TuningPanel({
         </button>
       </div>
       {slots.length > 0 && (
-        <div className="freq-rail-slots" role="list" aria-label="Saved states">
-          {slots.map((s) => (
-            <SaveSlotChip key={s.id} slot={s} />
-          ))}
+        <div className="freq-rail-saves">
+          <div className="freq-rail-slots" role="list" aria-label="Saved states">
+            {slots.map((s) => (
+              <SaveSlotChip key={s.id} slot={s} />
+            ))}
+          </div>
+          {frequencyManager.stagedSlotId != null && (
+            <button
+              type="button"
+              className="freq-rail-release"
+              onClick={() => frequencyManager.clearStaged()}
+              title="Release the launched state — clear all target markers"
+              aria-label="Release launched state"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </div>
       )}
       <div

@@ -109,6 +109,18 @@ class FrequencyManager {
     // stored as an entries array and rehydrated on load.
     this._saveSlots = FrequencyManager._loadSaveSlots();
     this._saveSeq = FrequencyManager._loadSaveSeq(); // monotonic counter for auto-names
+    // Staging + launch state. A staged slot is "armed": the spectrum bar shows
+    // each voice's target as a marker. Launching a voice (one, or all at once)
+    // glides its frequency; `_launching` holds the in-flight voices (index →
+    // {startHz, targetHz}). Targets PERSIST after landing as "return here"
+    // markers until the user releases them (clearStaged). `_stageVersion` bumps
+    // on any staging change so subscribers re-read without churning on every
+    // frequency event. None of this is persisted across reloads.
+    this._stagedSlotId = null;
+    this._stagedTargets = null;
+    this._launching = new Map();
+    this._stageVersion = 0;
+    this._launchRaf = null;      // rAF handle for the in-flight launch tween
     this._recallGlideMs = FrequencyManager._loadRecallGlideMs();
     this._recallCurve = FrequencyManager._loadRecallCurve();
 
@@ -408,9 +420,10 @@ class FrequencyManager {
     if (this._undoStack.length === 0) return false;
     if (this._lastStable) this._redoStack.push(this._lastStable);
     const target = this._undoStack.pop();
-    this._applySnapshot(target);
     this._lastStable = target;
-    this._fire();
+    this._abortLaunchForRestore();
+    // Lerp the oscillators back to the undo target rather than snapping there.
+    this._applySnapshotSmooth(target, this._recallGlideMs);
     return true;
   }
 
@@ -425,10 +438,22 @@ class FrequencyManager {
       if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
     }
     const target = this._redoStack.pop();
-    this._applySnapshot(target);
     this._lastStable = target;
-    this._fire();
+    this._abortLaunchForRestore();
+    // Lerp forward to the redo target rather than snapping there.
+    this._applySnapshotSmooth(target, this._recallGlideMs);
     return true;
+  }
+
+  // Stop an in-flight launch tween before an undo/redo glide takes over, so the
+  // two don't write frequencies against each other. Staged targets are left
+  // armed (their dots just drop back to pending) — only the motion is aborted.
+  _abortLaunchForRestore() {
+    this._cancelLaunchGlide();
+    if (this._launching.size) {
+      this._launching.clear();
+      this._stageVersion += 1;   // markers re-read as pending
+    }
   }
 
   // ─── Save slots ────────────────────────────────────────────────────
@@ -530,9 +555,202 @@ class FrequencyManager {
   deleteSlot(id) {
     const before = this._saveSlots.length;
     this._saveSlots = this._saveSlots.filter((s) => s.id !== id);
+    if (this._stagedSlotId === id) this.clearStaged();
     if (this._saveSlots.length !== before) {
       this._persistSaveSlots();
       this._fire();
+    }
+  }
+
+  // ─── Staging + launch (preview, then glide) ──────────────────────────
+  // A staged slot is "armed": the UI previews where each voice will glide to
+  // (target dots on the spectrum bar) without touching audio. Launching then
+  // glides frequencies — one voice (a clicked dot) or all at once (the chip).
+  get stagedSlotId() { return this._stagedSlotId; }
+  get stageVersion() { return this._stageVersion; }
+  // True while a launch tween is moving one or more voices. Mirrors
+  // audioEngine.isGliding so UI that drops into a cheap render mode during a
+  // recall glide (e.g. the tuning panel freezing its per-row inputs) also does
+  // so during a staged launch — otherwise every row re-renders its controlled
+  // inputs on every tween frame (the recall lag).
+  get isLaunching() { return this._launching.size > 0; }
+
+  stageSlot(id) {
+    const slot = this._saveSlots.find((s) => s.id === id);
+    if (!slot?.snapshot || !Array.isArray(slot.snapshot.frequencies)) return false;
+    if (this._stagedSlotId === id) return true;
+    // Don't freeze voices that are mid-glide from a previous launch — let them
+    // finish their current lerp (the loop keeps running). But their DOTS snap
+    // back to the pending/initial position for the new slot rather than carrying
+    // the old descent: flag those tweens as "finishing" so the loop still
+    // advances them while getLaunchState() hides them (rendered as pending).
+    for (const e of this._launching.values()) e.finishing = true;
+    this._stagedSlotId = id;
+    this._stagedTargets = slot.snapshot.frequencies.slice();
+    this._stageVersion += 1;
+    this._fire();
+    return true;
+  }
+
+  clearStaged() {
+    if (this._stagedSlotId == null) return;
+    this._cancelLaunchGlide();
+    this._stagedSlotId = null;
+    this._stagedTargets = null;
+    this._launching.clear();
+    this._stageVersion += 1;
+    this._fire();
+  }
+
+  // Per-oscillator target Hz for the staged slot, or null if none staged.
+  getStagedFrequencies() {
+    return this._stagedTargets ? this._stagedTargets.slice() : null;
+  }
+
+  // Snapshot of the launch state for the spectrum bar: the per-voice targets
+  // and which voices are mid-glide (with start/target so the bar can fade the
+  // marker as its orb closes in). Targets persist after landing so they act as
+  // "return here" markers until the user releases them (clearStaged).
+  getLaunchState() {
+    if (!this._stagedTargets) return null;
+    const launching = {};
+    for (const [i, v] of this._launching) {
+      if (v.finishing) continue;   // finishing an old glide — its dot renders as pending
+      launching[i] = { startHz: v.startHz, targetHz: v.targetHz };
+    }
+    return {
+      targets: this._stagedTargets.slice(),
+      launching,
+    };
+  }
+
+  // Capture a single undo point when a launch batch starts (nothing in flight)
+  // so a whole recall/return can be backed out as one edit.
+  _beginLaunch() {
+    if (this._launching.size === 0) {
+      if (this._lastStable) {
+        this._undoStack.push(this._lastStable);
+        if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
+        this._redoStack = [];
+      }
+    }
+  }
+
+  // Glide one staged voice to its target (frequency only — the tuning context
+  // is left as-is). Other in-flight voices keep gliding: a single unified
+  // glide always covers every currently-launching voice.
+  launchVoice(index) {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    const target = this._stagedTargets[index];
+    if (!Number.isFinite(target)) return false;
+    const existing = this._launching.get(index);
+    if (existing && !existing.finishing) return true;   // already gliding to this target
+    this._beginLaunch();
+    this._addLaunch(index, target);
+    this._stageVersion += 1;
+    this._ensureLaunchLoop();
+    this._fire();
+    return true;
+  }
+
+  // Launch/return every not-in-flight staged voice at once (the chip's second
+  // click). Restores the slot's tuning context (anchor / ratios / system)
+  // immediately, like a full recall, then glides all those frequencies. Works
+  // as a "return all" once voices have landed and drifted.
+  launchAll() {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    let added = false;
+    this._beginLaunch();
+    for (let i = 0; i < this._stagedTargets.length; i++) {
+      const t = this._stagedTargets[i];
+      const existing = this._launching.get(i);
+      if (!Number.isFinite(t) || (existing && !existing.finishing)) continue;
+      this._addLaunch(i, t);
+      added = true;
+    }
+    if (!added) return false;   // nothing new to launch
+    const slot = this._saveSlots.find((s) => s.id === this._stagedSlotId);
+    if (slot?.snapshot) this._restoreManagerFields(slot.snapshot);
+    this._stageVersion += 1;
+    this._ensureLaunchLoop();
+    this._fire();
+    return true;
+  }
+
+  // Restore manager-only fields (anchor / locked ratios / tuning system) from
+  // a snapshot without touching frequencies — the immediate half of a recall.
+  _restoreManagerFields(snap) {
+    this._anchorSlot = snap.anchorSlot;
+    this._persistRootSlot();
+    this._slotRatios = new Map(snap.slotRatios);
+    this._tuningSystem = snap.tuningSystem
+      || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])
+      || DEFAULT_SYSTEM;
+  }
+
+  // Register one voice as launching, stamped with its own start time so it
+  // glides on an INDEPENDENT clock — clicking a second dot never resets the
+  // first (this is what makes a staggered cascade look right). Eased from the
+  // voice's current frequency to its target, in log2 space.
+  _addLaunch(index, target) {
+    const startHz = audioEngine.getFrequency(index);
+    this._launching.set(index, {
+      startHz,
+      targetHz: target,
+      startMs: performance.now(),
+      logStart: Math.log2(Math.max(0.001, startHz)),
+      logTarget: Math.log2(Math.max(0.001, target)),
+    });
+  }
+
+  // One rAF loop advances ALL in-flight voices, each on its own clock. It
+  // writes ONLY the launching voices (not a full batch), so every other
+  // oscillator stays free for the user to drag mid-launch. Voices are removed
+  // as they land; the loop stops when none remain.
+  _ensureLaunchLoop() {
+    if (this._launchRaf != null) return;                 // already running
+    if (audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
+    const step = () => {
+      this._launchRaf = null;
+      if (this._launching.size === 0) return;
+      const now = performance.now();
+      const dur = this._recallGlideMs;
+      const ease = this._recallCurveFn();
+      const arrived = [];
+      // All engine writes for the frame are wrapped in the propagation guard
+      // so they don't trigger follow-root transpose / lock reconciliation.
+      this._inPropagation = true;
+      try {
+        for (const [index, e] of this._launching) {
+          const t = dur > 0 ? Math.min(1, (now - e.startMs) / dur) : 1;
+          audioEngine.setFrequency(index, Math.pow(2, e.logStart + (e.logTarget - e.logStart) * ease(t)));
+          if (t >= 1) arrived.push(index);
+        }
+      } finally {
+        this._inPropagation = false;
+      }
+      // Keep the transpose reference current if the anchor is among the movers.
+      const hz = audioEngine.getFrequency(this._anchorSlot);
+      if (Number.isFinite(hz) && hz > 0) this._lastAnchorHz = hz;
+
+      if (arrived.length) {
+        for (const index of arrived) this._launching.delete(index);
+        this._lastStable = this._takeSnapshot();
+        this._stageVersion += 1;
+        // Staging PERSISTS after landing: the targets stay as "return here"
+        // markers (they fade back in as the user drifts the orbs away). The
+        // user releases them explicitly via clearStaged (the X button).
+        this._fire();
+      }
+      if (this._launching.size > 0) this._launchRaf = requestAnimationFrame(step);
+    };
+    this._launchRaf = requestAnimationFrame(step);
+  }
+
+  _cancelLaunchGlide() {
+    if (this._launchRaf != null) {
+      cancelAnimationFrame(this._launchRaf);
+      this._launchRaf = null;
     }
   }
 
@@ -553,28 +771,6 @@ class FrequencyManager {
       anchorSlot: this._anchorSlot,
       tuningSystem: this._tuningSystem,
     };
-  }
-
-  _applySnapshot(snap) {
-    this._inUndoRestore = true;
-    this._inPropagation = true;
-    try {
-      this._anchorSlot = snap.anchorSlot;
-      this._persistRootSlot();
-      this._slotRatios = new Map(snap.slotRatios);
-      // Tolerate legacy snapshots stored as numeric `limit`.
-      this._tuningSystem = snap.tuningSystem
-        || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])
-        || DEFAULT_SYSTEM;
-      const count = audioEngine.getOscillatorCount();
-      for (let i = 0; i < Math.min(count, snap.frequencies.length); i++) {
-        audioEngine.setFrequency(i, snap.frequencies[i]);
-      }
-      this._lastAnchorHz = audioEngine.getFrequency(this._anchorSlot);
-    } finally {
-      this._inPropagation = false;
-      this._inUndoRestore = false;
-    }
   }
 
   /**

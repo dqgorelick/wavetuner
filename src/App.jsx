@@ -646,6 +646,9 @@ function App() {
   // The radio is a pending-intent — no effects until Load fires.
   const handleLoad = useCallback(() => {
     if (!audioEngine.initialized) return;
+    // Loading a scale is a broad change — deselect any staged/launched save
+    // slot so the spectrum isn't cluttered with now-irrelevant return markers.
+    frequencyManager.clearStaged();
     const targetCount = scaleSize === 12 ? 12 : 7;
     // Resize FIRST so computeLoadTargets reads the new count when
     // walking the slot list. Growing adds default-pitched voices that
@@ -1096,6 +1099,16 @@ function App() {
     setFineTuneEnabled((v) => !v);
   }, []);
 
+  // Drone on/off — moved out of OscillatorControls' bottom row into the
+  // always-visible right-side toggle group. Mirrors the old handler: flips the
+  // engine's drone bus and the React state together.
+  const handleDroneToggle = useCallback(() => {
+    if (!audioEngine.initialized) return;
+    const next = !droneEnabled;
+    audioEngine.setDroneEnabled(next);
+    setDroneEnabled(next);
+  }, [droneEnabled]);
+
   const handleShowHelp = useCallback(() => {
     setIsHelpOpen(true);
   }, []);
@@ -1162,35 +1175,69 @@ function App() {
               />
             </div>
           )}
-          {(isMixerOpen || isMidiPanelOpen) && (
-            <div className="right-stack">
-              {isMidiPanelOpen && (
-                <MidiPanel oscillatorCount={oscillatorCount} />
-              )}
-              {isMixerOpen && (
-                <Mixer
-                  oscillatorCount={oscillatorCount}
-                  minOscillators={2}
-                  maxOscillators={maxOscillators}
-                  onSlotsChange={syncStateFromEngine}
-                  midiLearnOn={isMidiPanelOpen}
-                />
-              )}
+          <div className="right-stack">
+            {isMidiPanelOpen && (
+              <MidiPanel oscillatorCount={oscillatorCount} />
+            )}
+            {isMixerOpen && (
+              <Mixer
+                oscillatorCount={oscillatorCount}
+                minOscillators={2}
+                maxOscillators={maxOscillators}
+                onSlotsChange={syncStateFromEngine}
+                midiLearnOn={isMidiPanelOpen}
+              />
+            )}
+            {/* Panel toggles — always visible, beneath the mixer on the right. */}
+            <div className="right-toggles">
+              <button
+                type="button"
+                className={`bottom-cell bottom-toggle ${isKbdTrayOpen ? 'on' : 'off'}`}
+                onClick={() => setIsKbdTrayOpen((v) => !v)}
+                aria-pressed={isKbdTrayOpen}
+                title={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
+                aria-label={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
+              >
+                <span className="bottom-toggle-label">KBD</span>
+              </button>
+              <button
+                type="button"
+                className={`bottom-cell bottom-toggle ${droneEnabled ? 'on' : 'off'}`}
+                onClick={handleDroneToggle}
+                aria-pressed={droneEnabled}
+                title={droneEnabled ? 'Turn drones off' : 'Turn drones on'}
+                aria-label={droneEnabled ? 'Drones on — click to turn off' : 'Drones off — click to turn on'}
+              >
+                <span className="bottom-toggle-label">drone</span>
+              </button>
+              <button
+                type="button"
+                className={`bottom-cell bottom-toggle ${isMixerOpen ? 'on' : 'off'}`}
+                onClick={() => setIsMixerOpen((v) => !v)}
+                aria-pressed={isMixerOpen}
+                title={isMixerOpen ? 'Hide mixer' : 'Show mixer'}
+                aria-label={isMixerOpen ? 'Hide mixer' : 'Show mixer'}
+              >
+                <span className="bottom-toggle-label">MIXER</span>
+              </button>
+              <button
+                type="button"
+                className={`bottom-cell bottom-toggle ${isTuningOpen ? 'on' : 'off'}`}
+                onClick={() => setIsTuningOpen((v) => !v)}
+                aria-pressed={isTuningOpen}
+                title={isTuningOpen ? 'Hide tuning' : 'Show tuning'}
+                aria-label={isTuningOpen ? 'Hide tuning' : 'Show tuning'}
+              >
+                <span className="bottom-toggle-label">TUNING</span>
+              </button>
             </div>
-          )}
+          </div>
 
           <OscillatorControls
             oscillatorCount={oscillatorCount}
-            isKbdTrayOpen={isKbdTrayOpen}
-            onKbdTrayToggle={() => setIsKbdTrayOpen((v) => !v)}
             isPaused={isPaused}
             onPausedChange={setIsPaused}
             droneEnabled={droneEnabled}
-            onDroneEnabledChange={setDroneEnabled}
-            isMixerOpen={isMixerOpen}
-            onMixerToggle={() => setIsMixerOpen((v) => !v)}
-            isTuningOpen={isTuningOpen}
-            onTuningToggle={() => setIsTuningOpen((v) => !v)}
             routingMap={routingMap}
             onSetVoiceRouting={handleSetVoiceRouting}
             onResetVoiceRouting={handleResetVoiceRouting}

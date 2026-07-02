@@ -107,6 +107,14 @@ p {
 .left-stack > *,
 .right-stack > * { pointer-events: auto; }
 
+/* Always-visible panel toggles (KBD / drone / MIXER / TUNING) sitting beneath
+   the mixer at the bottom of the right stack. */
+.right-toggles {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
 #wrapper.kbd-tray-open .left-stack,
 #wrapper.kbd-tray-open .right-stack {
   bottom: calc(max(16px, env(safe-area-inset-bottom)) + 20px + var(--kbd-tray-h));
@@ -5265,6 +5273,36 @@ kbd {
   gap: 4px;
   margin-top: 4px;
 }
+/* Save-states row: the slot grid plus a "release launched state" X button. */
+.freq-rail-saves {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin-top: 4px;
+}
+.freq-rail-saves .freq-rail-slots {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+.freq-rail-release {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.freq-rail-release:hover {
+  color: #fff;
+  background: rgba(255, 120, 120, 0.16);
+  border-color: rgba(255, 140, 140, 0.6);
+}
 .freq-rail-slot {
   display: flex;
   align-items: stretch;
@@ -5278,6 +5316,16 @@ kbd {
 .freq-rail-slot:hover {
   background: rgba(255, 255, 255, 0.09);
   border-color: rgba(255, 255, 255, 0.22);
+}
+/* Staged: first click armed this slot — target dots preview on the spectrum
+   bar and a second click launches (recalls) it. */
+.freq-rail-slot.staged {
+  background: rgba(120, 200, 255, 0.14);
+  border-color: rgba(140, 210, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(140, 210, 255, 0.5), 0 0 8px rgba(120, 200, 255, 0.35);
+}
+.freq-rail-slot.staged .freq-rail-slot-name {
+  color: #eaf6ff;
 }
 .freq-rail-slot-name {
   flex: 1 1 auto;

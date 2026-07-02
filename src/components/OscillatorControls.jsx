@@ -5,6 +5,7 @@ import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import midiOutput from '../audio/MidiOutput';
 import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
+import CaptureBar from './CaptureBar';
 
 function getOscillatorLabel(index) {
   return `${index + 1}`;
@@ -342,6 +343,7 @@ function OscillatorControls({
               )}
             </button>
           </div>
+          <CaptureBar />
         </div>
       </div>
     </div>

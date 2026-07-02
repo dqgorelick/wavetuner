@@ -47,6 +47,11 @@ class Tuning {
 
     this._recompute();
     audioEngine.addFrequencyListener(() => this._recompute());
+    // Global transpose is a playback-only pitch multiplier applied in the
+    // pitchFor* getters below. A change doesn't reorder the scale (uniform
+    // shift), so we skip _recompute and just notify — KeyboardVoiceManager's
+    // onChange retune re-reads the getters and glides held voices to pitch.
+    audioEngine.addTransposeListener(() => this._fireChange());
 
     Tuning.instance = this;
   }
@@ -186,7 +191,7 @@ class Tuning {
   pitchForDegreeAndOctave(degree, octave) {
     const N = this._sorted.length;
     if (N === 0 || degree < 0 || degree >= N) return null;
-    return this._sorted[degree] * Math.pow(2, octave);
+    return this._sorted[degree] * Math.pow(2, octave) * audioEngine.getTransposeRatio();
   }
 
   pitchForMidiNote(midi) {
@@ -209,7 +214,7 @@ class Tuning {
     if (slot >= count) return null;
     const baseFreq = audioEngine.getFrequency(slot);
     if (!baseFreq) return null;
-    return baseFreq * Math.pow(2, octave);
+    return baseFreq * Math.pow(2, octave) * audioEngine.getTransposeRatio();
   }
 
   /**

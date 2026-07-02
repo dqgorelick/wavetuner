@@ -25,6 +25,15 @@ const FIXED_SLOT_FADE = 0.3;
 // the level a drone resumes at when its button is pressed.
 const DRONE_PLAY_VOL_CAP = 0.65;
 
+// Global transpose — a DAW-BPM-style master pitch offset. It's a
+// playback-only multiplier applied when drones / keyboard voices are tuned;
+// it is NEVER folded into the stored nominal Hz (frequencyValues /
+// getFrequency), so it lives outside save-states + undo and a saved patch
+// round-trips at its written pitch. Canonical value is a semitone float
+// (± = up/down), clamped to ±2 octaves; persisted to its own localStorage key.
+const TRANSPOSE_MAX_SEMITONES = 24;
+const TRANSPOSE_STORAGE_KEY = 'wavetuner.transposeSemitones';
+
 // Master-bus soft limiter / saturator curves. Integers match the values
 // the worklet expects via port.postMessage({ curve }).
 export const SATURATION_CURVES = {
@@ -211,6 +220,18 @@ class AudioEngine {
     // scale and propagate retunes to held voices.
     this.frequencyListeners = new Set();
 
+    // Global transpose (playback-only master pitch offset — see the
+    // TRANSPOSE_* consts). Canonical value is the semitone offset; the ratio
+    // is the derived multiplier the audio math reads. Loaded from localStorage
+    // at construction so a persisted transpose applies from the first Start
+    // (the create path already tunes through the ratio). Its own listener set
+    // fires on change so Tuning re-tunes held voices and the spectrum bar
+    // slides its frequency labels — deliberately separate from the frequency
+    // listeners so a transpose never wakes FrequencyManager's undo machinery.
+    this._transposeSemitones = AudioEngine._loadTranspose();
+    this._transposeRatio = Math.pow(2, this._transposeSemitones / 12);
+    this._transposeListeners = new Set();
+
     AudioEngine.instance = this;
   }
 
@@ -222,6 +243,80 @@ class AudioEngine {
   _notifyFrequencyChange() {
     for (const fn of this.frequencyListeners) {
       try { fn(); } catch (e) { console.error('frequency listener error', e); }
+    }
+  }
+
+  // ─── Global transpose (playback-only master pitch offset) ─────────────
+  static _loadTranspose() {
+    try {
+      const raw = localStorage.getItem(TRANSPOSE_STORAGE_KEY);
+      const v = raw == null ? 0 : parseFloat(raw);
+      if (!Number.isFinite(v)) return 0;
+      return Math.max(-TRANSPOSE_MAX_SEMITONES, Math.min(TRANSPOSE_MAX_SEMITONES, v));
+    } catch { return 0; }
+  }
+  _persistTranspose() {
+    try { localStorage.setItem(TRANSPOSE_STORAGE_KEY, String(this._transposeSemitones)); } catch { /* ignore */ }
+  }
+
+  addTransposeListener(fn) {
+    this._transposeListeners.add(fn);
+    return () => this._transposeListeners.delete(fn);
+  }
+  _notifyTranspose() {
+    for (const fn of this._transposeListeners) {
+      try { fn(); } catch (e) { console.error('transpose listener error', e); }
+    }
+  }
+
+  getTransposeRatio() { return this._transposeRatio; }
+  getTransposeSemitones() { return this._transposeSemitones; }
+
+  /**
+   * Set the global transpose in semitones (float; ± = up/down). Playback-only:
+   * it re-ramps live drone oscillators and (via the transpose listener →
+   * Tuning) retunes held keyboard voices, but NEVER writes frequencyValues,
+   * so save-states / undo are untouched and a saved patch round-trips at its
+   * written pitch. `persist` defaults to true; pass false during a live drag
+   * and persist once on release to avoid localStorage thrash.
+   */
+  setTransposeSemitones(semitones, { persist = true } = {}) {
+    const clamped = Math.max(-TRANSPOSE_MAX_SEMITONES,
+      Math.min(TRANSPOSE_MAX_SEMITONES, Number(semitones) || 0));
+    if (Math.abs(clamped - this._transposeSemitones) < 1e-6) {
+      if (persist) this._persistTranspose();
+      return;
+    }
+    this._transposeSemitones = clamped;
+    this._transposeRatio = Math.pow(2, clamped / 12);
+    this._applyTransposeToDrones();
+    this._notifyTranspose();
+    if (persist) this._persistTranspose();
+  }
+
+  /**
+   * Re-ramp every live drone oscillator (primary / partner / partials) to its
+   * transposed played frequency. Mirrors _applyDroneDetuneCurve's ramp loop
+   * but leaves the detune offsets alone — only the transpose multiplier moved.
+   * Keyboard voices retune separately via the transpose listener → Tuning.
+   */
+  _applyTransposeToDrones() {
+    if (!this.audioContext) return;
+    const t = this.audioContext.currentTime;
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      if (this.oscillators[i]) {
+        this.oscillators[i].frequency.setTargetAtTime(this._dronePrimaryFreq(i), t, 0.016);
+      }
+      if (this.oscillatorsR[i]) {
+        this.oscillatorsR[i].frequency.setTargetAtTime(this._dronePartnerFreq(i), t, 0.016);
+      }
+      const partials = this.extraPartials[i];
+      if (partials) {
+        for (const p of partials) {
+          if (p._osc) p._osc.frequency.setTargetAtTime(this._partialPrimaryFreq(i, p), t, 0.016);
+          if (p._oscR) p._oscR.frequency.setTargetAtTime(this._partialPartnerFreq(i, p), t, 0.016);
+        }
+      }
     }
   }
 
@@ -1042,7 +1137,9 @@ class AudioEngine {
    * - 'stereo' mode: base + offset[i]/2 (half-spread; partner takes -half)
    */
   _dronePrimaryFreq(i) {
-    const nominal = this.frequencyValues[i] || 0;
+    // Global transpose scales the nominal pitch; the stereo detune `offset`
+    // stays additive in Hz (beat rate is a fixed slot property, per below).
+    const nominal = (this.frequencyValues[i] || 0) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[i] || 0;
     const shift = droneStereo.mode === 'stereo' ? offset / 2 : offset;
     return Math.max(0.001, Math.min(20000, nominal + shift));
@@ -1054,7 +1151,7 @@ class AudioEngine {
    * have to retune the partner before fading it in.
    */
   _dronePartnerFreq(i) {
-    const nominal = this.frequencyValues[i] || 0;
+    const nominal = (this.frequencyValues[i] || 0) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[i] || 0;
     return Math.max(0.001, Math.min(20000, nominal - offset / 2));
   }
@@ -1110,14 +1207,14 @@ class AudioEngine {
    * property, not a per-pitch property.
    */
   _partialPrimaryFreq(slotIndex, partial) {
-    const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1);
+    const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[slotIndex] || 0;
     const shift = droneStereo.mode === 'stereo' ? offset / 2 : offset;
     return Math.max(0.001, Math.min(20000, nominal + shift));
   }
 
   _partialPartnerFreq(slotIndex, partial) {
-    const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1);
+    const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[slotIndex] || 0;
     return Math.max(0.001, Math.min(20000, nominal - offset / 2));
   }

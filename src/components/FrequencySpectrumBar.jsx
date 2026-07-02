@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
+import CaptureButton from './CaptureButton';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
 import { activeProfile } from '../audio/timbreProfiles';
@@ -26,6 +27,15 @@ const ZOOM_TAU_MS = 108;
 
 const SENSITIVITY_NORMAL = 0.5;
 const SENSITIVITY_FINE = 0.1;
+
+// Global-transpose drag: dragging the empty bar background left/right shifts
+// the whole tuning's playback pitch (a DAW-BPM-style master offset that lives
+// outside save-states). Semitones per pixel at normal sensitivity; Shift or
+// the fine-tune toggle scales it down. Drag right = transpose UP, and the
+// frequency tick labels scroll to show it. Flip TRANSPOSE_DRAG_SIGN to reverse.
+const TRANSPOSE_SEMI_PER_PX = 0.03;
+const TRANSPOSE_FINE_SCALE = 0.25;
+const TRANSPOSE_DRAG_SIGN = 1;
 
 // Grab mode: vertical cursor motion adjusts volume. Scalar is in range-units / screen-height.
 // Times getSensitivity() → normal ≈ 1 range/screen, fine ≈ 0.2 range/screen.
@@ -888,6 +898,13 @@ function FrequencySpectrumBar({
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
   const [range, setRange] = useState({ logMin: ABSOLUTE_LOG_MIN, logMax: ABSOLUTE_LOG_MAX });
   const [shiftHeld, setShiftHeld] = useState(false);
+  // Global transpose (semitones) — mirrored from the engine so the moving
+  // frequency labels + readout re-render. The engine owns the value (it
+  // persists to localStorage and applies the playback multiplier); this is a
+  // read-only reflection. Subscribed below.
+  const [transpose, setTranspose] = useState(() => audioEngine.getTransposeSemitones());
+  const [transposeDragging, setTransposeDragging] = useState(false);
+  const transposeDragRef = useRef(null);
   // Launch state for a *staged* save slot (targets + which voices are
   // mid-glide + which have fired), or null when nothing is staged. Driven by
   // the frequencyManager singleton but re-read only when its stageVersion
@@ -943,6 +960,52 @@ function FrequencySpectrumBar({
   const grabbedRef = useRef(grabbedOscs);
   const fineTuneRef = useRef(fineTuneEnabled);
   const shiftRef = useRef(shiftHeld);
+
+  // Keep the local transpose readout in sync with the engine (covers the
+  // persisted value applied at boot and any programmatic change).
+  useEffect(() => audioEngine.addTransposeListener(
+    () => setTranspose(audioEngine.getTransposeSemitones())
+  ), []);
+
+  // Empty-bar background drag → global transpose. Orbs stopPropagation on
+  // pointerdown, so any press that reaches the container is background; the
+  // .fsb-dot guard is just belt-and-suspenders. We drive it off window
+  // listeners (not pointer capture) so it never fights the orb/grab gestures,
+  // and persist once on release to avoid localStorage thrash mid-drag.
+  const beginTransposeDrag = (e) => {
+    if (e.button !== 0) return;
+    if (e.target?.closest?.('.fsb-dot')) return;
+    e.preventDefault();
+    const start = { x: e.clientX, semi: audioEngine.getTransposeSemitones() };
+    transposeDragRef.current = start;
+    setTransposeDragging(true);
+    const move = (ev) => {
+      const s = transposeDragRef.current;
+      if (!s) return;
+      const dx = ev.clientX - s.x;
+      const fine = (shiftRef.current || fineTuneRef.current) ? TRANSPOSE_FINE_SCALE : 1;
+      const next = s.semi + dx * TRANSPOSE_SEMI_PER_PX * fine * TRANSPOSE_DRAG_SIGN;
+      audioEngine.setTransposeSemitones(next, { persist: false });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      transposeDragRef.current = null;
+      setTransposeDragging(false);
+      audioEngine.setTransposeSemitones(audioEngine.getTransposeSemitones()); // persist final
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  // Double-click empty bar → reset transpose to 0.
+  const resetTranspose = (e) => {
+    if (e.target?.closest?.('.fsb-dot')) return;
+    audioEngine.setTransposeSemitones(0);
+  };
+  // Readout label (the moving ticks are handled in PLAYED space below).
+  const transposeLabel = transpose === 0
+    ? '0 st'
+    : `${transpose > 0 ? '+' : ''}${transpose.toFixed(2)} st`;
   const lastGrabXRef = useRef(null); // tracks cursor X between grab-driven frames
   const lastGrabYRef = useRef(null); // tracks cursor Y between grab-driven frames (volume)
   const mousePosRef = useRef({ x: 0, y: 0 }); // latest client-space cursor, always tracked
@@ -1706,9 +1769,16 @@ function FrequencySpectrumBar({
     };
   }, [oscillatorCount]);
 
+  // Ticks are generated in PLAYED space — the visible range shifted up by the
+  // transpose (log2 of the ratio = semitones/12). This makes the axis label
+  // the frequency each position actually SOUNDS, so as the bar is dragged the
+  // round-number labels update: new ones scroll in and each sits at the orb
+  // that plays it. (Positioning below uses the same shifted range, which maps
+  // a played freq back to its nominal on-screen position — the orbs don't move.)
+  const tickLogShift = transpose / 12;
   const visibleTicks = useMemo(
-    () => computeTicks(range.logMin, range.logMax),
-    [range.logMin, range.logMax]
+    () => computeTicks(range.logMin + tickLogShift, range.logMax + tickLogShift),
+    [range.logMin, range.logMax, tickLogShift]
   );
 
   return (
@@ -1731,8 +1801,38 @@ function FrequencySpectrumBar({
       <div
         className="freq-spectrum-bar"
         ref={containerRef}
-        style={{ height: TOTAL_HEIGHT }}
+        onPointerDown={beginTransposeDrag}
+        onDoubleClick={resetTranspose}
+        style={{ height: TOTAL_HEIGHT, cursor: transposeDragging ? 'grabbing' : 'ew-resize' }}
       >
+        {/* Global-transpose readout (a DAW-BPM-style master pitch offset).
+            Shown while dragging or whenever a non-zero offset is active. */}
+        {(transposeDragging || transpose !== 0) && (
+          <div
+            className="fsb-transpose-readout"
+            style={{
+              position: 'absolute',
+              top: 2,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              padding: '1px 7px',
+              borderRadius: 6,
+              fontSize: 11,
+              fontVariantNumeric: 'tabular-nums',
+              lineHeight: 1.5,
+              letterSpacing: '0.02em',
+              color: 'rgba(255,255,255,0.92)',
+              background: 'rgba(0,0,0,0.55)',
+              border: '1px solid rgba(255,255,255,0.14)',
+              pointerEvents: 'none',
+              zIndex: 6,
+              whiteSpace: 'nowrap',
+            }}
+            aria-hidden="true"
+          >
+            transpose {transposeLabel}
+          </div>
+        )}
         {/* Dissonance HUD — sits behind the orbs, rising up from the spectrum
             line and bleeding DISS_CURVE_DOWN px down into the spectrogram.
             Always shown; maps the current chord's consonance hot spots. */}
@@ -1756,8 +1856,11 @@ function FrequencySpectrumBar({
           height: BAR_LINE_HEIGHT,
         }}
       >
+        {/* Ticks are generated + positioned in PLAYED space (range shifted by
+            the transpose), so the round-number labels update live as the bar is
+            dragged and each sits at the orb that actually plays it. */}
         {visibleTicks.map(({ freq, opacity }) => {
-          const x = freqToFraction(freq, range.logMin, range.logMax) * barWidth;
+          const x = freqToFraction(freq, range.logMin + tickLogShift, range.logMax + tickLogShift) * barWidth;
           return (
             <div key={freq} className="fsb-tick" style={{ left: x, opacity }}>
               <span className="fsb-tick-label">{formatTick(freq)}</span>
@@ -2142,22 +2245,25 @@ function FrequencySpectrumBar({
 
       </div>
       <div className="fsb-side fsb-side-right">
-        <button
-          type="button"
-          className="fsb-count-btn"
-          onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
-          disabled={oscillatorCount <= 2}
-          title="Remove oscillator"
-          aria-label="Remove oscillator"
-        >−</button>
-        <button
-          type="button"
-          className="fsb-count-btn"
-          onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
-          disabled={oscillatorCount >= maxOscillators}
-          title="Add oscillator"
-          aria-label="Add oscillator"
-        >+</button>
+        <CaptureButton />
+        <div className="fsb-count-row">
+          <button
+            type="button"
+            className="fsb-count-btn"
+            onClick={() => onOscillatorCountChange?.(oscillatorCount - 1)}
+            disabled={oscillatorCount <= 2}
+            title="Remove oscillator"
+            aria-label="Remove oscillator"
+          >−</button>
+          <button
+            type="button"
+            className="fsb-count-btn"
+            onClick={() => onOscillatorCountChange?.(oscillatorCount + 1)}
+            disabled={oscillatorCount >= maxOscillators}
+            title="Add oscillator"
+            aria-label="Add oscillator"
+          >+</button>
+        </div>
       </div>
       </div>
     </>

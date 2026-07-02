@@ -621,7 +621,10 @@ class MidiOutput {
       const count = audioEngine.getOscillatorCount();
       for (let slot = 0; slot < count; slot++) {
         if (audioEngine.isMuted(slot)) continue;
-        const freq = audioEngine.getFrequency(slot);
+        // Apply the global transpose so external synths track the local drones
+        // (keyboard requests below already carry it via v.freq, which comes
+        // from Tuning.pitchForSlotAndOctave). Nominal Hz stays untransposed.
+        const freq = audioEngine.getFrequency(slot) * audioEngine.getTransposeRatio();
         if (!(freq > 0)) continue;
         reqs.push({
           id: `drone:${slot}`,

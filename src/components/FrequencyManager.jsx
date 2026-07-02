@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import {
@@ -470,88 +470,6 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
   );
 }
 
-function SaveSlotChip({ slot }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(slot.name);
-  const inputRef = useRef(null);
-
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editing]);
-
-  const commitRename = useCallback(() => {
-    const next = draft.trim();
-    if (next && next !== slot.name) frequencyManager.renameSlot(slot.id, next);
-    else setDraft(slot.name);
-    setEditing(false);
-  }, [draft, slot.id, slot.name]);
-
-  const isStaged = frequencyManager.stagedSlotId === slot.id;
-
-  // Two-click launch: the first click STAGES this slot (previewing where each
-  // voice will glide to, as target dots on the spectrum bar); a second click
-  // LAUNCHES all its voices at once (glide). Individual voices can also be
-  // launched by clicking their dots on the bar. Clicking a different slot
-  // re-stages that one instead.
-  const handleRecall = useCallback(() => {
-    if (editing) return;
-    if (frequencyManager.stagedSlotId === slot.id) {
-      frequencyManager.launchAll();
-    } else {
-      frequencyManager.stageSlot(slot.id);
-    }
-  }, [editing, slot.id]);
-
-  const handleDelete = useCallback((e) => {
-    e.stopPropagation();
-    frequencyManager.deleteSlot(slot.id);
-  }, [slot.id]);
-
-  return (
-    <div
-      className={`freq-rail-slot${isStaged ? ' staged' : ''}`}
-      title={isStaged
-        ? 'Staged — click again to launch (glide). Double-click to rename.'
-        : 'Click to stage, again to recall (glide). Double-click to rename.'}
-    >
-      {editing ? (
-        <input
-          ref={inputRef}
-          className="freq-rail-slot-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commitRename();
-            else if (e.key === 'Escape') { setDraft(slot.name); setEditing(false); }
-          }}
-        />
-      ) : (
-        <button
-          type="button"
-          className="freq-rail-slot-name"
-          onClick={handleRecall}
-          onDoubleClick={() => { setDraft(slot.name); setEditing(true); }}
-        >
-          {slot.name}
-        </button>
-      )}
-      <button
-        type="button"
-        className="freq-rail-slot-delete"
-        onClick={handleDelete}
-        title="Delete this save"
-        aria-label={`Delete ${slot.name}`}
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
 // Shared subscription hook — bumps a counter on every engine /
 // manager event so child rows re-read engine state. Both the
 // developer freq-rail and the tuning panel use this so they stay in
@@ -657,25 +575,9 @@ export function TuningPanel({
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  const canUndo = frequencyManager.canUndo();
-  const canRedo = frequencyManager.canRedo();
-  const slots = frequencyManager.getSlots();
   const followRoot = frequencyManager.followRoot;
   const anchorSlot = frequencyManager.anchorSlot;
   const anchorColor = palette.oscColor(anchorSlot, oscillatorCount);
-  const handleUndo = useCallback(() => { frequencyManager.undo(); }, []);
-  const handleRedo = useCallback(() => { frequencyManager.redo(); }, []);
-  // Saving auto-stages the new slot: the orbs are at the saved spot, so its
-  // markers stay hidden until you move a voice — then they fade in showing the
-  // way back to what you just saved.
-  const handleSave = useCallback(() => {
-    const id = frequencyManager.saveCurrent();
-    if (id) frequencyManager.stageSlot(id);
-  }, []);
-  // Slot cap mirrors the CSS grid (4 columns × 2 rows). Once full, the
-  // oldest save is dropped server-side; the Save button stays enabled
-  // so users can keep iterating.
-  const SAVE_LIMIT = 8;
 
   const activeSystem = tuningSystem || frequencyManager.tuningSystem;
   const activeSystemDef = getSystem(activeSystem);
@@ -823,70 +725,7 @@ export function TuningPanel({
           </svg>
           <span>Align</span>
         </button>
-        <button
-          type="button"
-          className="freq-rail-action"
-          onClick={handleUndo}
-          disabled={!canUndo}
-          title={canUndo ? 'Undo last change' : 'Nothing to undo'}
-        >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M9 14L4 9l5-5" />
-            <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
-          </svg>
-          <span>Undo</span>
-        </button>
-        <button
-          type="button"
-          className="freq-rail-action"
-          onClick={handleRedo}
-          disabled={!canRedo}
-          title={canRedo ? 'Redo' : 'Nothing to redo'}
-        >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M15 14l5-5-5-5" />
-            <path d="M20 9H10a6 6 0 0 0 0 12h3" />
-          </svg>
-          <span>Redo</span>
-        </button>
-        <button
-          type="button"
-          className="freq-rail-action"
-          onClick={handleSave}
-          title={slots.length >= SAVE_LIMIT
-            ? `Save current state — oldest of the ${SAVE_LIMIT} slots will be dropped`
-            : 'Save current state'}
-        >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-            <polyline points="17 21 17 13 7 13 7 21" />
-            <polyline points="7 3 7 8 15 8" />
-          </svg>
-          <span>Save</span>
-        </button>
       </div>
-      {slots.length > 0 && (
-        <div className="freq-rail-saves">
-          <div className="freq-rail-slots" role="list" aria-label="Saved states">
-            {slots.map((s) => (
-              <SaveSlotChip key={s.id} slot={s} />
-            ))}
-          </div>
-          {frequencyManager.stagedSlotId != null && (
-            <button
-              type="button"
-              className="freq-rail-release"
-              onClick={() => frequencyManager.clearStaged()}
-              title="Release the launched state — clear all target markers"
-              aria-label="Release launched state"
-            >
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
-            </button>
-          )}
-        </div>
-      )}
       <div
         className="freq-rail-glide"
         title="Glide duration applied when a saved state is recalled. 0 = instant snap."

@@ -379,6 +379,10 @@ function App() {
   // outside click and after picking an option.
   const [isVizDropdownOpen, setIsVizDropdownOpen] = useState(false);
   const vizDropdownRef = useRef(null);
+  // Remembers the last audio-visualizer mode (0–3) so the audio radio button
+  // restores it when re-selected from the pianoroll (mode 4). Seeded from the
+  // persisted vizMode; updated in the selection handlers below.
+  const [lastAudioMode, setLastAudioMode] = useState(vizMode === 4 ? 0 : vizMode);
   useEffect(() => {
     if (!isVizDropdownOpen) return;
     const onDocPointerDown = (e) => {
@@ -1355,47 +1359,88 @@ function App() {
             onVfxBlendChange={setVfxBlend}
           />
           {(() => {
-            const activeViz = VIZ_MODES.find((m) => m.id === vizMode) || VIZ_MODES[0];
-            const otherViz = VIZ_MODES.filter((m) => m.id !== vizMode);
+            // Two radio buttons: an "audio" group (modes 0–3, with an expand
+            // fan) and the pianoroll (mode 4). Exactly one is active.
+            const audioSelected = vizMode !== 4;
+            const activeAudioId = audioSelected ? vizMode : lastAudioMode;
+            const activeAudioViz =
+              VIZ_MODES.find((m) => m.id === activeAudioId) || VIZ_MODES[0];
+            // The fan offers the other audio modes (exclude the active one + the
+            // pianoroll, which has its own button).
+            const audioFan = VIZ_MODES.filter(
+              (m) => m.id !== 4 && m.id !== activeAudioId
+            );
+            const timelineViz = VIZ_MODES.find((m) => m.id === 4);
+
+            // Audio button: if the pianoroll is currently selected, first click
+            // just selects the audio group (no expand). If audio is already
+            // selected, clicking toggles the fan open/closed.
+            const onAudioClick = () => {
+              if (!audioSelected) {
+                setVizMode(lastAudioMode);
+                setIsVizDropdownOpen(false);
+              } else {
+                setIsVizDropdownOpen((v) => !v);
+              }
+            };
+
             return (
               <div
                 className="scope-mode-buttons"
-                ref={vizDropdownRef}
                 role="radiogroup"
                 aria-label="Visualizer mode"
               >
+                <div className="scope-mode-slot" ref={vizDropdownRef}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={audioSelected}
+                    className={`scope-mode-btn ${audioSelected ? 'active' : ''} ${
+                      audioSelected && isVizDropdownOpen ? 'open' : ''
+                    }`}
+                    onClick={onAudioClick}
+                    title={`Audio visualizer: ${activeAudioViz.label}`}
+                    aria-label={`Audio visualizer: ${activeAudioViz.label}`}
+                    aria-haspopup="true"
+                    aria-expanded={audioSelected && isVizDropdownOpen}
+                  >
+                    <svg viewBox="0 0 24 24" className="button-icon">{activeAudioViz.icon}</svg>
+                  </button>
+                  {audioSelected && isVizDropdownOpen && (
+                    <div className="scope-mode-dropdown">
+                      {audioFan.map(({ id, label, icon }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className="scope-mode-btn"
+                          onClick={() => {
+                            setVizMode(id);
+                            setLastAudioMode(id);
+                            setIsVizDropdownOpen(false);
+                          }}
+                          title={label}
+                          aria-label={label}
+                        >
+                          <svg viewBox="0 0 24 24" className="button-icon">{icon}</svg>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
-                  className={`scope-mode-btn active ${isVizDropdownOpen ? 'open' : ''}`}
-                  onClick={() => setIsVizDropdownOpen((v) => !v)}
-                  title={`Visualizer: ${activeViz.label}`}
-                  aria-label={`Visualizer: ${activeViz.label}`}
-                  aria-haspopup="true"
-                  aria-expanded={isVizDropdownOpen}
+                  role="radio"
+                  aria-checked={!audioSelected}
+                  className={`scope-mode-btn ${!audioSelected ? 'active' : ''}`}
+                  onClick={() => {
+                    setVizMode(4);
+                    setIsVizDropdownOpen(false);
+                  }}
+                  title={`Visualizer: ${timelineViz.label}`}
+                  aria-label={`Visualizer: ${timelineViz.label}`}
                 >
-                  <svg viewBox="0 0 24 24" className="button-icon">{activeViz.icon}</svg>
+                  <svg viewBox="0 0 24 24" className="button-icon">{timelineViz.icon}</svg>
                 </button>
-                {isVizDropdownOpen && (
-                  <div className="scope-mode-dropdown">
-                    {otherViz.map(({ id, label, icon }) => (
-                      <button
-                        key={id}
-                        type="button"
-                        role="radio"
-                        aria-checked={false}
-                        className="scope-mode-btn"
-                        onClick={() => {
-                          setVizMode(id);
-                          setIsVizDropdownOpen(false);
-                        }}
-                        title={label}
-                        aria-label={label}
-                      >
-                        <svg viewBox="0 0 24 24" className="button-icon">{icon}</svg>
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             );
           })()}

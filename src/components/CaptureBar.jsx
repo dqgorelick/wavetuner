@@ -2,8 +2,8 @@ import { memo, useEffect, useState } from 'react';
 import frequencyManager from '../audio/FrequencyManager';
 import audioEngine from '../audio/AudioEngine';
 
-// The six fixed save slots, keyed by their Roman-numeral name.
-const NUMERALS = ['I', 'II', 'III', 'IV', 'V', 'VI'];
+// The five fixed save slots, keyed by their Roman-numeral name.
+const NUMERALS = ['I', 'II', 'III', 'IV', 'V'];
 
 // True when any voice has drifted from the staged slot's saved frequencies —
 // i.e. an orb has been moved, so launching would actually go somewhere. Right

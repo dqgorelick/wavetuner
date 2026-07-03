@@ -218,7 +218,9 @@ the XY scopes):
    (the same `r,g,b` the XY scope uses), not per-orb slot colors. Widths honor the
    **same Visualizer-panel sliders** as the scope: **Outline** (`vizOutline`) scales the
    colored halo — 0% collapses it to just the white core — and **White line**
-   (`vizLineWidth`) scales the white core.
+   (`vizLineWidth`) scales the white core. Drawn in **two global passes** — all colored
+   outlines first, then all white cores on top — so intersecting notes show clean white
+   crossings instead of one note's halo covering another's core.
    - **Amplitude → line weight + alpha** (`amp`), so quiet/releasing notes thin out and
      fade; released voices taper to nothing as `amp → 0`.
    - **Gap-breaking:** the path breaks (moveTo, not lineTo) whenever consecutive

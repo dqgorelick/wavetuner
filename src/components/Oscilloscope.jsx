@@ -1063,58 +1063,63 @@ function drawTimeline(
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
+  // Precompute per-lane render params once. Widths scale by amplitude then by
+  // the same Visualizer-panel sliders the scope uses: `outlineScale` (Outline)
+  // for the colored halo, `lineWidthScale` (White line) for the white core.
+  const draws = [];
   for (const lane of _timelineLanes.values()) {
     const pts = lane.points;
     if (lane.head >= pts.length) continue;
-    // Current amplitude drives width + alpha so quiet / releasing notes
-    // thin out and fade. Use the latest sample's amp.
-    const a = pts[pts.length - 1].amp;
-    const color = cycColor;
-    // Base widths scaled by amplitude, then by the same Visualizer-panel
-    // sliders the oscilloscope uses: `outlineScale` (Outline) widens the
-    // colored halo, `lineWidthScale` (White line) the white core. 0% Outline
-    // collapses the halo to nothing → just the white core, matching drawXY.
+    const a = pts[pts.length - 1].amp; // latest amp → width + alpha
     const baseW = 3.6 * lineScale * (0.5 + a * 0.8);
-    const colorW = baseW * outlineScale * TL_STROKE_GAIN;
-    const whiteW = Math.max(0.5, baseW * 0.3 * lineWidthScale * TL_STROKE_GAIN);
-    const alpha = Math.min(1, 0.45 + a * 0.55);
+    draws.push({
+      lane,
+      colorW: baseW * outlineScale * TL_STROKE_GAIN,
+      whiteW: Math.max(0.5, baseW * 0.3 * lineWidthScale * TL_STROKE_GAIN),
+      alpha: Math.min(1, 0.45 + a * 0.55),
+    });
+  }
 
-    // Build the visible polyline once, reuse for outline + core passes.
-    // Break the path across time gaps (> TL_GAP_SEC) so a drone toggled
-    // off/on draws as separate dashes instead of a straight bridge across
-    // the silent stretch.
-    const trace = () => {
-      ctx.beginPath();
-      let penDown = false;
-      let prevT = 0;
-      for (let i = lane.head; i < pts.length; i++) {
-        const p = pts[i];
-        const x = xOf(p.t);
-        if (x < -4) { prevT = p.t; continue; } // older than the visible window
-        const y = yOf(p.f);
-        if (!penDown || p.t - prevT > TL_GAP_SEC) {
-          ctx.moveTo(x, y);
-          penDown = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
-        prevT = p.t;
+  // Trace one lane's visible polyline. Break the path across time gaps
+  // (> TL_GAP_SEC) so a drone toggled off/on draws as separate dashes instead
+  // of a straight bridge across the silent stretch.
+  const traceLane = (lane) => {
+    const pts = lane.points;
+    ctx.beginPath();
+    let penDown = false;
+    let prevT = 0;
+    for (let i = lane.head; i < pts.length; i++) {
+      const p = pts[i];
+      const x = xOf(p.t);
+      if (x < -4) { prevT = p.t; continue; } // older than the visible window
+      const y = yOf(p.f);
+      if (!penDown || p.t - prevT > TL_GAP_SEC) {
+        ctx.moveTo(x, y);
+        penDown = true;
+      } else {
+        ctx.lineTo(x, y);
       }
-      ctx.stroke();
-    };
-
-    // Colored outline under a white core — the same neon look as the
-    // oscilloscope's XY / standing-wave traces (drawXY). Skip the halo pass
-    // entirely when Outline is dialed to 0.
-    ctx.globalAlpha = alpha;
-    if (colorW > 0.1) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = colorW;
-      trace();
+      prevT = p.t;
     }
-    ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
-    ctx.lineWidth = whiteW;
-    trace();
+    ctx.stroke();
+  };
+
+  // Two global passes so the white cores land on top of EVERY colored halo —
+  // intersecting notes then show clean white crossings instead of one note's
+  // halo covering another's core. Pass 1: all colored outlines (skipped when
+  // Outline is 0). Pass 2: all white cores.
+  ctx.strokeStyle = cycColor;
+  for (const d of draws) {
+    if (d.colorW <= 0.1) continue;
+    ctx.globalAlpha = d.alpha;
+    ctx.lineWidth = d.colorW;
+    traceLane(d.lane);
+  }
+  ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
+  for (const d of draws) {
+    ctx.globalAlpha = d.alpha;
+    ctx.lineWidth = d.whiteW;
+    traceLane(d.lane);
   }
 
   ctx.globalAlpha = 1;

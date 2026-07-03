@@ -2340,11 +2340,37 @@ kbd {
   backdrop-filter: blur(8px);
 }
 
-/* Capture bar: undo / redo · I II III IV · ✕ — a transparent group in the pill. */
+/* Capture bar: [undo redo · I II III IV] then a fixed-width actions column that
+   always reserves its space on the right (so selecting a slot never shifts the
+   transport) and holds [Launch 🗑] only while a slot is selected. */
 .capture-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.cap-center {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Actions float just past the pill's right edge (absolute), so mounting them
+   when a slot is selected never reflows the centered transport. They sit on
+   their own tray matching the main transport pill. */
+.cap-actions {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 13px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
 }
 .cap-bar-sep {
   width: 1px;
@@ -2367,34 +2393,39 @@ kbd {
 .cap-bar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); color: #fff; }
 .cap-bar-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 /* Each slot is a fixed-width RECTANGLE carrying the state chrome (border/bg).
-   Filled slots show the numeral + an always-visible delete ✕ on the right;
-   empty slots are the same width so the row stays uniform. */
+   Empty slots show a + (click to save here); filled slots show the numeral
+   (click to select/preview). All the same width so the row stays uniform. */
 .cap-slot-wrap {
   display: inline-flex;
   align-items: center;
-  width: 52px;
+  width: 40px;
   height: 36px;
   border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: none;
   background: transparent;
   color: rgba(255, 255, 255, 0.4);
   overflow: hidden;
-  transition: color 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
 }
-.cap-slot-wrap.empty { color: rgba(255, 255, 255, 0.28); }
-.cap-slot-wrap.filled { color: #eef0f3; background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.26); }
-.cap-slot-wrap.filled:hover { border-color: rgba(255, 255, 255, 0.5); }
-.cap-slot-wrap.staged {
-  color: #eaf3ff;
-  border-color: #4a9eff;
-  background: rgba(74, 158, 255, 0.16);
-  box-shadow: 0 0 0 1px #4a9eff, 0 3px 14px -5px rgba(74, 158, 255, 0.65);
+/* Empty slot: a ghost + (no bg until hover) — reads as "add here". */
+.cap-slot-wrap.empty {
+  color: rgba(255, 255, 255, 0.7);
+  background: transparent;
 }
-/* Empty recall scope: numerals are non-performing (dashed, dim). */
+.cap-slot-wrap.empty:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+/* Saved (not selected) slot: brighter filled chip matching the play button. */
+.cap-slot-wrap.filled { color: rgba(255, 255, 255, 0.95); background: rgba(255, 255, 255, 0.12); }
+.cap-slot-wrap.filled:hover { color: #fff; background: rgba(255, 255, 255, 0.2); }
+/* Selected slot: solid fill = "active" (matches the drone tray's on-state),
+   no outline. */
+.cap-slot-wrap.staged { color: #14161a; background: rgba(255, 255, 255, 0.92); }
+.cap-slot-wrap.staged:hover { background: #fff; }
+/* Empty recall scope: numerals are non-performing (dim, flat). */
 .cap-slot-wrap.inert {
   color: rgba(255, 255, 255, 0.28);
-  border-style: dashed;
-  border-color: rgba(255, 255, 255, 0.16);
   background: transparent;
   box-shadow: none;
 }
@@ -2414,47 +2445,42 @@ kbd {
   place-items: center;
 }
 .cap-slot-main:disabled { cursor: default; }
-.cap-slot-del {
-  flex: none;
-  width: 20px;
-  height: 100%;
-  border: 0;
+/* Launch — the commit. A clean white outline; it glows white once a slot is
+   selected AND an orb has moved off the save (enabled). Dim outline otherwise. */
+.cap-launch {
+  width: 40px;
+  height: 36px;
   padding: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  opacity: 0.5;
   display: grid;
   place-items: center;
-  transition: opacity 0.14s, color 0.14s;
-}
-.cap-slot-del:hover { color: #ff6b6b; opacity: 1; }
-/* Transparent stand-in that holds the delete column's width when a slot has
-   no ✕. It's a button so clicking this reserved area still loads the slot
-   (rather than a dead zone), and it keeps the numeral from recentering. */
-.cap-slot-spacer {
-  flex: none;
-  width: 20px;
-  height: 100%;
-  border: 0;
-  padding: 0;
-  background: transparent;
+  border-radius: 7px;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.95);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background 0.14s, color 0.14s, opacity 0.14s;
 }
-.cap-slot-spacer:disabled { cursor: default; }
+.cap-launch:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); color: #fff; }
+.cap-launch:disabled { opacity: 0.3; cursor: default; }
+/* Trailing DELETE button — removes the selected save (red on hover). */
 .cap-x {
-  width: 34px;
+  width: 40px;
   height: 36px;
   border-radius: 7px;
   cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: transparent;
-  color: rgba(255, 255, 255, 0.55);
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.3);
   display: grid;
   place-items: center;
-  transition: color 0.14s, border-color 0.14s;
+  transition: color 0.14s, background 0.14s;
 }
-.cap-x:hover:not(:disabled) { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
+.cap-x:hover:not(:disabled) { color: #c96f6f; background: rgba(201, 111, 111, 0.16); }
 .cap-x:disabled { opacity: 0.3; cursor: not-allowed; }
 
 .bottom-cell {
@@ -3698,32 +3724,6 @@ kbd {
   display: flex;
   gap: 6px;
 }
-/* Capture button — the single save gesture, above the voice steppers. */
-.capture-btn {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.85);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s;
-}
-.capture-btn:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.92);
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: 0 0 14px -4px rgba(255, 255, 255, 0.6);
-}
-.capture-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-.capture-btn svg { width: 24px; height: 24px; }
-
 /* +/- count buttons — text only, glow on hover. */
 .fsb-count-btn {
   background: none;

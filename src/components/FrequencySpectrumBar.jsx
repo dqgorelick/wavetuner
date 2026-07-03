@@ -1,7 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
-import CaptureButton from './CaptureButton';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
 import { activeProfile } from '../audio/timbreProfiles';
@@ -227,7 +226,8 @@ const KBD_DOT_CENTER_Y = DOT_CENTER_Y - DOT_SIZE / 2 - KBD_DOT_GAP - KBD_DOT_SIZ
 const STAGED_DOT_LIFT = 65;
 const STAGED_DOT_R = 7;              // smaller than the orbs (r = DOT_SIZE/2)
 const STAGED_DOT_Y = DOT_CENTER_Y - STAGED_DOT_LIFT;
-const TRIANGLE_W = 8;
+const TRIANGLE_W = 5;         // base (bottom) width
+const TRIANGLE_TOP_W = 1;     // apex (top) width — a near-point so it reads as a thin needle
 const TRIANGLE_H = 8;
 const TRIANGLE_BASE_Y = BAR_TOP_Y - 3;          // base just above the tick tops
 const TRIANGLE_APEX_Y = TRIANGLE_BASE_Y - TRIANGLE_H;
@@ -350,6 +350,16 @@ function _hotSpotFill(c) {
 let DISS_SHOW_HOTSPOTS = true;
 if (typeof window !== 'undefined') {
   window.__dissHotSpots = (on) => { DISS_SHOW_HOTSPOTS = !!on; return DISS_SHOW_HOTSPOTS; };
+}
+
+// TEMP simplification: hide the filled hot-spot bloom (the white peaks) so only
+// the curve outline shows, but keep the per-voice position lines (orb → curve →
+// base). Flip via window.__dissFill(true) / window.__dissPosLines(false).
+let DISS_SHOW_FILL = false;
+let DISS_SHOW_POSITION_LINES = true;
+if (typeof window !== 'undefined') {
+  window.__dissFill = (on) => { DISS_SHOW_FILL = !!on; return DISS_SHOW_FILL; };
+  window.__dissPosLines = (on) => { DISS_SHOW_POSITION_LINES = !!on; return DISS_SHOW_POSITION_LINES; };
 }
 // How much the voice(s) being moved contribute to the displayed field is the
 // user-facing "Moving voice impact" setting (dissonanceSettings.getMovingImpact)
@@ -662,8 +672,10 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
     const px = i * DISS_CURVE_STEP;
     const level = disp[i];
     const top = cssUp * (1 - level);
-    ctx.fillStyle = DISS_SHOW_HOTSPOTS ? _hotSpotFill(level) : _dissFillStyle(level);
-    ctx.fillRect(px, top, DISS_CURVE_STEP, cssH - top);
+    if (DISS_SHOW_FILL) {
+      ctx.fillStyle = DISS_SHOW_HOTSPOTS ? _hotSpotFill(level) : _dissFillStyle(level);
+      ctx.fillRect(px, top, DISS_CURVE_STEP, cssH - top);
+    }
     if (i === 0) ctx.moveTo(px, top);
     else ctx.lineTo(px, top);
   }
@@ -673,14 +685,17 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
 
   // Fade the bleed-down region out as it descends into the spectrogram, so it
   // dissolves rather than ending in a hard band. destination-out erases by the
-  // gradient's alpha (nothing at the line → most at the bottom).
-  const grad = ctx.createLinearGradient(0, cssUp, 0, cssH);
-  grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
-  grad.addColorStop(1, 'rgba(0, 0, 0, 0.92)');
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, cssUp, cssW, cssDown);
-  ctx.globalCompositeOperation = 'source-over';
+  // gradient's alpha (nothing at the line → most at the bottom). Only needed
+  // when the fill is drawn — with the curve-only view there's nothing to fade.
+  if (DISS_SHOW_FILL) {
+    const grad = ctx.createLinearGradient(0, cssUp, 0, cssH);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0.92)');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, cssUp, cssW, cssDown);
+    ctx.globalCompositeOperation = 'source-over';
+  }
   // Per-voice position lines (and frequency-ruler ticks) are NOT drawn on the
   // canvas. The position lines are unified SVG polylines (see
   // _updatePositionLines) so the curve-region and bar segments share one stroke
@@ -1907,7 +1922,7 @@ function FrequencySpectrumBar({
                 ))}
               </mask>
             </defs>
-            {frequencies.map((_, i) => {
+            {DISS_SHOW_POSITION_LINES && frequencies.map((_, i) => {
               // Full per-voice position line: orb edge → live curve surface →
               // bar bottom, as ONE polyline. Geometry is set every frame by
               // _updatePositionLines (the top endpoint rides the eased curve);
@@ -1992,9 +2007,10 @@ function FrequencySpectrumBar({
               // Swipe: crossing a pending line/dot with the button/finger held
               // launches that voice — drag across several for a cascade.
               const swipeOver = (e) => { if (e.buttons & 1) frequencyManager.launchVoice(i); };
-              const pts = `${tx},${TRIANGLE_APEX_Y} `
-                + `${tx - TRIANGLE_W / 2},${TRIANGLE_BASE_Y} `
-                + `${tx + TRIANGLE_W / 2},${TRIANGLE_BASE_Y}`;
+              const pts = `${tx - TRIANGLE_TOP_W / 2},${TRIANGLE_APEX_Y} `
+                + `${tx + TRIANGLE_TOP_W / 2},${TRIANGLE_APEX_Y} `
+                + `${tx + TRIANGLE_W / 2},${TRIANGLE_BASE_Y} `
+                + `${tx - TRIANGLE_W / 2},${TRIANGLE_BASE_Y}`;
               return (
                 <g key={`staged-${i}`} opacity={stageFade}>
                   {seg && (
@@ -2279,7 +2295,6 @@ function FrequencySpectrumBar({
 
       </div>
       <div className="fsb-side fsb-side-right">
-        <CaptureButton />
         <div className="fsb-count-row">
           <button
             type="button"

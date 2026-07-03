@@ -579,7 +579,7 @@ function ScopePanel() {
       </div>
       <div className="scope-sec">
         <span className="scope-title">Parameter timing</span>
-        {timingRow('captures', recallGlideMs, (ms) => frequencyManager.setRecallGlideMs(ms))}
+        {timingRow('snapshot', recallGlideMs, (ms) => frequencyManager.setRecallGlideMs(ms))}
         {timingRow('undo/redo', undoGlideMs, (ms) => frequencyManager.setUndoGlideMs(ms))}
       </div>
     </div>
@@ -811,19 +811,7 @@ export function TuningPanel({
         <TransposeControl />
       </div>
       <ScopePanel />
-      <div
-        className="freq-rail-glide freq-rail-curve-row"
-        title="Easing curve applied when a saved state is recalled. Click to cycle: linear, ease in, ease out, ease in-out."
-      >
-        <span className="freq-rail-glide-label">curve</span>
-        <button
-          type="button"
-          className="freq-rail-glide-curve"
-          onClick={() => frequencyManager.cycleRecallCurve()}
-        >
-          {frequencyManager.recallCurveLabel}
-        </button>
-      </div>
+      {/* Recall easing curve moved to Settings → "Recall curve". */}
       </div>
     </>
   );

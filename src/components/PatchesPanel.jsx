@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePatches } from '../hooks/usePatches';
+import frequencyManager from '../audio/FrequencyManager';
 import { applyPatch } from '../patches/apply';
 import { patchFrequencies } from '../patches/schema';
 import palette, { useTheme } from '../theme/palette';
@@ -224,6 +225,9 @@ function PatchesPanel({ isOpen, onClose, onAfterLoad }) {
   }, [isOpen, onClose]);
 
   const handleLoad = useCallback(async (patch) => {
+    // Loading a patch replaces the live state the capture slots reference,
+    // so any staged slot's "return here" markers are now stale — deselect it.
+    frequencyManager.clearStaged();
     await applyPatch(patch);
     onAfterLoad?.(patch);
     onClose();
@@ -253,13 +257,6 @@ function PatchesPanel({ isOpen, onClose, onAfterLoad }) {
         <SaveCurrentForm onSave={saveCurrent} />
 
         <section className="patches-section">
-          <h5 className="patches-section-title">Built-in</h5>
-          {builtins.map((p) => (
-            <PatchCard key={p.id} patch={p} onLoad={handleLoad} />
-          ))}
-        </section>
-
-        <section className="patches-section">
           <h5 className="patches-section-title">Yours</h5>
           {userPatches.length === 0 ? (
             <p className="patches-empty">
@@ -278,6 +275,13 @@ function PatchesPanel({ isOpen, onClose, onAfterLoad }) {
               />
             ))
           )}
+        </section>
+
+        <section className="patches-section">
+          <h5 className="patches-section-title">Built-in</h5>
+          {builtins.map((p) => (
+            <PatchCard key={p.id} patch={p} onLoad={handleLoad} />
+          ))}
         </section>
       </div>
     </aside>

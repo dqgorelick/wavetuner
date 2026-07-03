@@ -5,6 +5,7 @@
 // inverse — snapshot the current engine state into a save-ready Patch.
 
 import audioEngine from '../audio/AudioEngine';
+import frequencyManager from '../audio/FrequencyManager';
 import { PATCH_SCHEMA, genId, nowIso, patchFrequencies } from './schema.js';
 import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
 import { droneStereo, keyboardStereo } from '../audio/StereoMode';
@@ -148,6 +149,10 @@ export async function applyPatch(patch) {
     }
   }
 
+  // Restore the patch's capture (snapshot) slots. Absent field (old patches)
+  // leaves the user's current slots alone; a present array replaces them.
+  frequencyManager.importSaveSlots(patch.saveSlots);
+
   if (!wasPaused && audioEngine.isInitialized) {
     try { await audioEngine.fadeIn?.(); } catch { /* no-op */ }
   }
@@ -268,6 +273,9 @@ export function capturePatch({ id, name, source = 'user', description } = {}) {
     updatedAt: ts,
     description,
     frequencies,
+    // The I/II/III/IV capture (snapshot) slots ride along with the patch so a
+    // reload restores them too. Plain JSON-safe array; [] when none are set.
+    saveSlots: frequencyManager.exportSaveSlots(),
     snapshot: {
       volumes,
       muted,
@@ -318,6 +326,8 @@ export function preInitApplyPatch(patch) {
       applyStereo(keyboardStereo, snap.stereo.keyboard, freqs.length);
     }
   }
+  // Restore the patch's capture (snapshot) slots at boot too.
+  frequencyManager.importSaveSlots(patch.saveSlots);
   // Routing applied post-initialize (needs the audio graph to exist).
   return true;
 }

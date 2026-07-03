@@ -53,13 +53,16 @@ const UNDO_LIMIT = 30;
 // from overflowing while still allowing rapid iterative saves.
 const SAVE_LIMIT = 8;
 
-// Default glide duration (ms) when recalling a saved state. Matches
-// applyPatchSmooth's SMOOTH_GLIDE_MS so save-recalls feel like the
-// "return to patch" gesture out of the box. User-tunable via
+// Default glide duration (ms) when recalling a saved capture slot — a
+// long, musical transition out of the box. User-tunable via
 // setRecallGlideMs() (the slider beneath the save chips in the
 // tuning panel; 0 ms = instant snap).
-const DEFAULT_RECALL_GLIDE_MS = 800;
+const DEFAULT_RECALL_GLIDE_MS = 2750;
 const MAX_RECALL_GLIDE_MS = 10000;
+
+// Default glide duration (ms) for undo/redo. Snappier than a capture
+// recall — undo is a "take that back" gesture, not a musical transition.
+const DEFAULT_UNDO_GLIDE_MS = 750;
 
 // Easing curves for the recall glide, cycled via the "curve:" button
 // beside the glide slider. `id` is persisted; `fn` maps normalized time
@@ -142,7 +145,7 @@ class FrequencyManager {
     this._recallScope = FrequencyManager._loadScope('tuningRecallScope');
     this._undoScope = new Set(this._recallScope);
     this._scopeLinked = true; // vestigial (params unified); kept for compatibility
-    this._undoGlideMs = FrequencyManager._loadUndoGlideMs(this._recallGlideMs);
+    this._undoGlideMs = FrequencyManager._loadUndoGlideMs(DEFAULT_UNDO_GLIDE_MS);
 
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
 
@@ -179,31 +182,55 @@ class FrequencyManager {
   // can't represent directly — store it as an entries array and rebuild
   // the Map on load. All reads tolerate missing/corrupt data and fall
   // back to an empty slot list.
+  // Normalize a plain (JSON-shaped) slot array into internal slot objects,
+  // tolerating missing/corrupt entries. Shared by localStorage load and by
+  // patch restore (importSaveSlots) so both paths validate identically.
+  static _normalizeSlots(arr) {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const s of arr) {
+      if (!s || typeof s.id !== 'string' || !s.snapshot) continue;
+      const snap = s.snapshot;
+      if (!Array.isArray(snap.frequencies)) continue;
+      out.push({
+        id: s.id,
+        name: typeof s.name === 'string' ? s.name : 'Save',
+        createdAt: Number(s.createdAt) || Date.now(),
+        snapshot: {
+          frequencies: snap.frequencies.slice(),
+          // volumes/mutes are newer fields — tolerate older saves without them.
+          volumes: Array.isArray(snap.volumes) ? snap.volumes.slice() : null,
+          mutes: Array.isArray(snap.mutes) ? snap.mutes.slice() : null,
+          slotRatios: new Map(Array.isArray(snap.slotRatios) ? snap.slotRatios : []),
+          anchorSlot: Number.isInteger(snap.anchorSlot) ? snap.anchorSlot : 0,
+          tuningSystem: snap.tuningSystem || DEFAULT_SYSTEM,
+        },
+      });
+    }
+    return out.slice(-SAVE_LIMIT);
+  }
+
+  // Serialize internal slot objects into a plain JSON-safe array (Maps → entry
+  // arrays). Shared by localStorage persist and patch capture (exportSaveSlots).
+  static _serializeSlots(slots) {
+    return slots.map((s) => ({
+      id: s.id,
+      name: s.name,
+      createdAt: s.createdAt,
+      snapshot: {
+        frequencies: Array.from(s.snapshot.frequencies),
+        volumes: s.snapshot.volumes ? Array.from(s.snapshot.volumes) : null,
+        mutes: s.snapshot.mutes ? Array.from(s.snapshot.mutes) : null,
+        slotRatios: Array.from(s.snapshot.slotRatios.entries()),
+        anchorSlot: s.snapshot.anchorSlot,
+        tuningSystem: s.snapshot.tuningSystem,
+      },
+    }));
+  }
+
   static _loadSaveSlots() {
     try {
-      const arr = JSON.parse(localStorage.getItem('tuningSaveSlots'));
-      if (!Array.isArray(arr)) return [];
-      const out = [];
-      for (const s of arr) {
-        if (!s || typeof s.id !== 'string' || !s.snapshot) continue;
-        const snap = s.snapshot;
-        if (!Array.isArray(snap.frequencies)) continue;
-        out.push({
-          id: s.id,
-          name: typeof s.name === 'string' ? s.name : 'Save',
-          createdAt: Number(s.createdAt) || Date.now(),
-          snapshot: {
-            frequencies: snap.frequencies.slice(),
-            // volumes/mutes are newer fields — tolerate older saves without them.
-            volumes: Array.isArray(snap.volumes) ? snap.volumes.slice() : null,
-            mutes: Array.isArray(snap.mutes) ? snap.mutes.slice() : null,
-            slotRatios: new Map(Array.isArray(snap.slotRatios) ? snap.slotRatios : []),
-            anchorSlot: Number.isInteger(snap.anchorSlot) ? snap.anchorSlot : 0,
-            tuningSystem: snap.tuningSystem || DEFAULT_SYSTEM,
-          },
-        });
-      }
-      return out.slice(-SAVE_LIMIT);
+      return FrequencyManager._normalizeSlots(JSON.parse(localStorage.getItem('tuningSaveSlots')));
     } catch { return []; }
   }
   static _loadSaveSeq() {
@@ -215,22 +242,29 @@ class FrequencyManager {
   }
   _persistSaveSlots() {
     try {
-      const serial = this._saveSlots.map((s) => ({
-        id: s.id,
-        name: s.name,
-        createdAt: s.createdAt,
-        snapshot: {
-          frequencies: Array.from(s.snapshot.frequencies),
-          volumes: s.snapshot.volumes ? Array.from(s.snapshot.volumes) : null,
-          mutes: s.snapshot.mutes ? Array.from(s.snapshot.mutes) : null,
-          slotRatios: Array.from(s.snapshot.slotRatios.entries()),
-          anchorSlot: s.snapshot.anchorSlot,
-          tuningSystem: s.snapshot.tuningSystem,
-        },
-      }));
+      const serial = FrequencyManager._serializeSlots(this._saveSlots);
       localStorage.setItem('tuningSaveSlots', JSON.stringify(serial));
       localStorage.setItem('tuningSaveSeq', String(this._saveSeq));
     } catch { /* ignore */ }
+  }
+
+  // ─── Patch integration (export/restore the snapshot slots) ───────────
+  // A saved preset carries its snapshot slots so loading it restores the
+  // I/II/III/IV capture states alongside the live tuning. Export returns a
+  // plain JSON-safe array; import replaces the current slots wholesale.
+
+  exportSaveSlots() {
+    return FrequencyManager._serializeSlots(this._saveSlots);
+  }
+
+  importSaveSlots(arr) {
+    // A preset saved before this field existed passes undefined — leave the
+    // user's current slots untouched rather than wiping them.
+    if (arr == null) return;
+    this.clearStaged();
+    this._saveSlots = FrequencyManager._normalizeSlots(arr);
+    this._persistSaveSlots();
+    this._fire();
   }
 
   // Recall-glide persistence. Falls back to the default when unset.
@@ -638,9 +672,23 @@ class FrequencyManager {
   // ─── Recall easing curve ─────────────────────────────────────────────
   get recallCurve() { return this._recallCurve; }
 
+  // { id, label } list for building a curve picker (e.g. the Settings menu).
+  get recallCurveOptions() {
+    return RECALL_CURVES.map((c) => ({ id: c.id, label: c.label }));
+  }
+
   get recallCurveLabel() {
     const c = RECALL_CURVES.find((x) => x.id === this._recallCurve);
     return c ? c.label : this._recallCurve;
+  }
+
+  // Select a recall curve directly by id (no-op for unknown ids).
+  setRecallCurve(id) {
+    if (id === this._recallCurve) return;
+    if (!RECALL_CURVES.some((c) => c.id === id)) return;
+    this._recallCurve = id;
+    this._persistRecallCurve();
+    this._fire();
   }
 
   // The easing function for the current curve, passed to the engine glide.

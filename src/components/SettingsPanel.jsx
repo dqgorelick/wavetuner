@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import frequencyManager from '../audio/FrequencyManager';
 import { droneEnvelope, keyboardEnvelope, computerKbdEnvelope } from '../audio/Envelope';
 import { droneWave, keyboardWave } from '../audio/Wave';
 import { droneFold, keyboardFold } from '../audio/Fold';
@@ -60,6 +61,8 @@ export default function SettingsPanel({
   const [needsPermission, setNeedsPermission] = useState(false);
   // Dissonance HUD — moving-voice impact (0..1), persisted in dissonanceSettings.
   const [movingImpact, setMovingImpactState] = useState(() => getMovingImpact());
+  // Recall easing curve — mirrors frequencyManager (which owns/persists it).
+  const [recallCurve, setRecallCurve] = useState(() => frequencyManager.recallCurve);
 
   // Enumerate audio output devices
   const enumerateDevices = useCallback(async (requestPermission = false) => {
@@ -358,6 +361,24 @@ export default function SettingsPanel({
           />
           <span className="tune-slider-value">{tuneGlideSec.toFixed(2)} s</span>
         </div>
+      </div>
+
+      <div className="settings-section">
+        <label className="settings-label">Recall curve</label>
+        <select
+          className="settings-select"
+          value={recallCurve}
+          onChange={(e) => {
+            const id = e.target.value;
+            frequencyManager.setRecallCurve(id);
+            setRecallCurve(id);
+          }}
+          title="Easing curve applied when a saved snapshot is recalled."
+        >
+          {frequencyManager.recallCurveOptions.map((c) => (
+            <option key={c.id} value={c.id}>{c.label}</option>
+          ))}
+        </select>
       </div>
 
       <div className="settings-section routing-section">

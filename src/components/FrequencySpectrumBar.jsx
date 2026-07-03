@@ -225,7 +225,7 @@ const KBD_DOT_CENTER_Y = DOT_CENTER_Y - DOT_SIZE / 2 - KBD_DOT_GAP - KBD_DOT_SIZ
 // is there and fade back in as it drifts away — a "return here" marker that
 // persists after a launch until released.
 const STAGED_DOT_LIFT = 65;
-const STAGED_DOT_R = 4;              // 8px dot — small, so it sits well off the orbs
+const STAGED_DOT_R = 7;              // smaller than the orbs (r = DOT_SIZE/2)
 const STAGED_DOT_Y = DOT_CENTER_Y - STAGED_DOT_LIFT;
 const TRIANGLE_W = 8;
 const TRIANGLE_H = 8;
@@ -2005,8 +2005,8 @@ function FrequencySpectrumBar({
                       y2={seg.y2}
                       stroke={color}
                       strokeWidth={isLaunching ? 2.5 : 1}
-                      strokeOpacity={isLaunching ? 0.95 : 0.4}
-                      strokeDasharray={isLaunching ? undefined : '0.5 4'}
+                      strokeOpacity={isLaunching ? 0.95 : 0.58}
+                      strokeDasharray={isLaunching ? undefined : '0.75 3.5'}
                       strokeLinecap="round"
                       opacity={dotLineOpacity}
                       style={isLaunching ? { filter: `drop-shadow(0 0 5px ${color})` } : undefined}

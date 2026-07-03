@@ -5882,23 +5882,27 @@ kbd {
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.42);
 }
-/* Segmented group — same chassis as the tuning menu's .tuning-chip-group. */
+/* Separated toggle pills, left-aligned in a narrow column (~20% of the
+   panel width). Each pill is its own control rather than a joined
+   segmented group. */
 .scope-chips {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: nowrap;
   align-items: stretch;
-  width: 100%;
-  height: 22px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  overflow: hidden;
+  justify-content: flex-start;
+  width: auto;
+  gap: 5px;
 }
 .scope-chip {
-  flex: 1;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  border: none;
+  height: 22px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
   color: rgba(255, 255, 255, 0.65);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -5908,7 +5912,6 @@ kbd {
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
-.scope-chip + .scope-chip { border-left: 1px solid rgba(255, 255, 255, 0.06); }
 .scope-chip.on { color: #fff; background: rgba(255, 255, 255, 0.22); }
 .scope-chip:hover:not(.on) { color: rgba(255, 255, 255, 0.92); }
 .scope-timing { display: flex; align-items: center; gap: 8px; }
@@ -5920,9 +5923,17 @@ kbd {
   color: rgba(255, 255, 255, 0.6);
   min-width: 62px;
 }
-.scope-timing .freq-rail-glide-value { min-width: 54px; }
-/* Slider sits on the right side of the row, vertically centered. */
-.scope-timing .freq-rail-glide-slider { flex: 1; min-width: 0; }
+/* Match the seconds readout to the row label ("snapshot"/"undo/redo"). */
+.scope-timing .freq-rail-glide-value {
+  min-width: 54px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: rgba(255, 255, 255, 0.6);
+}
+/* Slider sits on the left side of the row, vertically centered — 40% of
+   the row width (60% narrower than the old full-width fill). */
+.scope-timing .freq-rail-glide-slider { flex: 0 0 40%; min-width: 0; }
 
 .dissonance-meter {
   width: calc(100% + 32px);

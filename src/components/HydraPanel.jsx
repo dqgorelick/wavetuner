@@ -11,9 +11,9 @@ import {
 } from '../visuals/backend';
 import { listUserSketches, saveSketch, deleteSketch } from '../visuals/hydraStorage';
 
-function VizSlider({ label, value, min, max, step, format, onChange, title }) {
+function VizSlider({ label, value, min, max, step, format, onChange, title, disabled = false }) {
   return (
-    <div className="tune-slider-row" title={title}>
+    <div className={`tune-slider-row${disabled ? ' disabled' : ''}`} title={title}>
       <span className="tune-slider-label">{label}</span>
       <input
         type="range"
@@ -21,6 +21,7 @@ function VizSlider({ label, value, min, max, step, format, onChange, title }) {
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         className="tune-slider"
       />
@@ -58,6 +59,15 @@ export default function HydraPanel({
   onVizCyclesChange,
   vizRotation,
   onVizRotationChange,
+  vizMode,
+  timelineWindowSec,
+  onTimelineWindowChange,
+  timelineFreqMin,
+  onTimelineFreqMinChange,
+  timelineFreqMax,
+  onTimelineFreqMaxChange,
+  timelineAutoRange,
+  onTimelineAutoRangeChange,
   vizQuality,
   onVizQualityChange,
   vfxScale,
@@ -188,7 +198,7 @@ export default function HydraPanel({
 
       <div
         className="hydra-quality-row hydra-quality-top"
-        title="Render quality. Pretty: full per-frame detail. Performance: skips work the active mode doesn't need (phase calibration on the plain Lissajous, audio-feature analysis when nothing reads it) and halves the feature rate — looks ~the same, costs much less. Off: blanks the scope and stops the render loop."
+        title="Render quality. Pretty: full per-frame detail. Performance: skips work the active mode doesn't need (phase calibration on the plain Lissajous, audio-feature analysis when nothing reads it) and halves the feature rate — looks ~the same, costs much less. Off: falls back to the lightweight Timeline visualizer instead of the scope."
       >
         <span className="tune-slider-label">Quality</span>
         <div className="settings-toggle-row hydra-quality-toggle">
@@ -238,7 +248,7 @@ export default function HydraPanel({
           step={0.05}
           format={(v) => `${Math.round(v * 100)}%`}
           onChange={onVizOutlineChange}
-          title="Colored neon halo behind the white core. 0% = no halo; 100% = original; up to 300% for thick glow."
+          title="Colored neon halo behind the white core (applies to the scope and the timeline). 0% = no halo, just the white core; 100% = original; up to 300% for thick glow."
         />
         <VizSlider
           label="White line"
@@ -248,7 +258,7 @@ export default function HydraPanel({
           step={0.05}
           format={(v) => `${Math.round(v * 100)}%`}
           onChange={onVizLineWidthChange}
-          title="Thickness of the white core stroke. 100% = original."
+          title="Thickness of the white core stroke (applies to the scope and the timeline). 100% = original."
         />
         <VizSlider
           label="Trails"
@@ -293,6 +303,67 @@ export default function HydraPanel({
           </div>
         </div>
       </section>
+
+      {(vizMode === 4 || vizQuality === 'off') && (
+        <section className="hydra-section">
+          <VizSlider
+            label="Time"
+            value={timelineWindowSec}
+            min={2}
+            max={120}
+            step={1}
+            format={(v) => `${v}s`}
+            onChange={onTimelineWindowChange}
+            title="Timeline X-range: how many seconds of history are visible. 'Now' is the right edge; higher = a longer window scrolling more slowly."
+          />
+          <div
+            className="tune-slider-row hydra-shape-row"
+            title="Auto: the Low/High range continuously eases to frame whatever's sounding. Manual: set Low/High by hand with the sliders below."
+          >
+            <span className="tune-slider-label">Range</span>
+            <div className="settings-toggle-row hydra-shape-toggle">
+              <button
+                type="button"
+                className={`settings-toggle-btn ${timelineAutoRange ? 'on' : 'off'}`}
+                onClick={() => onTimelineAutoRangeChange(true)}
+                aria-pressed={timelineAutoRange}
+              >
+                auto
+              </button>
+              <button
+                type="button"
+                className={`settings-toggle-btn ${!timelineAutoRange ? 'on' : 'off'}`}
+                onClick={() => onTimelineAutoRangeChange(false)}
+                aria-pressed={!timelineAutoRange}
+              >
+                manual
+              </button>
+            </div>
+          </div>
+          <VizSlider
+            label="Low"
+            value={timelineFreqMin}
+            min={20}
+            max={1000}
+            step={5}
+            format={(v) => `${Math.round(v)}Hz`}
+            onChange={onTimelineFreqMinChange}
+            disabled={timelineAutoRange}
+            title="Timeline Y-range floor: the lowest frequency shown (bottom of the view). Disabled while Range is set to auto."
+          />
+          <VizSlider
+            label="High"
+            value={timelineFreqMax}
+            min={1000}
+            max={16000}
+            step={100}
+            format={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}Hz`)}
+            onChange={onTimelineFreqMaxChange}
+            disabled={timelineAutoRange}
+            title="Timeline Y-range ceiling: the highest frequency shown (top of the view). Disabled while Range is set to auto."
+          />
+        </section>
+      )}
 
       <header className="hydra-header">
         <h3>Hydra</h3>

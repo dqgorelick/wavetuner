@@ -31,11 +31,12 @@ const SENSITIVITY_FINE = 0.1;
 // Global-transpose drag: dragging the empty bar background left/right shifts
 // the whole tuning's playback pitch (a DAW-BPM-style master offset that lives
 // outside save-states). Semitones per pixel at normal sensitivity; Shift or
-// the fine-tune toggle scales it down. Drag right = transpose UP, and the
-// frequency tick labels scroll to show it. Flip TRANSPOSE_DRAG_SIGN to reverse.
+// the fine-tune toggle scales it down. Natural ("content follows finger")
+// direction: dragging right slides the frequency labels right (pitch down).
+// Flip TRANSPOSE_DRAG_SIGN to reverse.
 const TRANSPOSE_SEMI_PER_PX = 0.03;
 const TRANSPOSE_FINE_SCALE = 0.25;
-const TRANSPOSE_DRAG_SIGN = 1;
+const TRANSPOSE_DRAG_SIGN = -1;
 
 // Grab mode: vertical cursor motion adjusts volume. Scalar is in range-units / screen-height.
 // Times getSensitivity() → normal ≈ 1 range/screen, fine ≈ 0.2 range/screen.
@@ -148,6 +149,12 @@ const DISS_CURVE_DOWN = BAR_LINE_HEIGHT;
 // spectrum bar — the colored region grows by the same amount and bleeds down
 // across the gap into the bar.
 const DISS_LINE_LIFT = 15;
+// Vertical band (container-local px) where a background drag transposes: just
+// the frequency-number strip (the spectrum bar line itself). The band ABOVE it
+// — the dissonance curve and the staged-launch triangles that sit just over
+// the tick tops — is intentionally left free so those markers stay clickable.
+const TRANSPOSE_ZONE_TOP = BAR_TOP_Y;
+const TRANSPOSE_ZONE_BOTTOM = BAR_TOP_Y + BAR_LINE_HEIGHT;
 // Horizontal sampling stride in CSS px. 1 = one column (and one field
 // evaluation) per pixel: the finest fill, so the column bars line up tightly
 // under the smooth curve stroke. 2 halves the per-frame cost at the expense of
@@ -198,6 +205,17 @@ const DISS_CURVE_MAX_Y = DISS_BASELINE_Y - DISS_CURVE_HEIGHT;
 const ORB_FLOAT_GAP = 8;
 const DOT_CENTER_Y = DISS_CURVE_MAX_Y - ORB_FLOAT_GAP - DOT_SIZE / 2;
 
+// Same-octave keyboard indicator: a small dot floating just above the orb,
+// shown when a keyboard/MIDI note at this slot's EXACT octave is sounding.
+// Replaces glowing the orb itself for that case (a played drone and a played
+// key were indistinguishable). Non-zero octaves still use the flanking bubbles.
+const KBD_DOT_SIZE = 5;
+// Gap from the orb's top edge up to the dot's center. Large enough to clear
+// the voice-number / freq label that sits above the orb (translate -100%), so
+// the dot floats above the text rather than overlapping it.
+const KBD_DOT_GAP = 22;
+const KBD_DOT_CENTER_Y = DOT_CENTER_Y - DOT_SIZE / 2 - KBD_DOT_GAP - KBD_DOT_SIZE / 2;
+
 // ── Staged-patch target markers ──────────────────────────────────────────
 // A staged slot previews each voice's target two ways: a floating dot
 // STAGED_DOT_LIFT px above the orbs (tethered to its orb by a dotted line, and
@@ -207,9 +225,9 @@ const DOT_CENTER_Y = DISS_CURVE_MAX_Y - ORB_FLOAT_GAP - DOT_SIZE / 2;
 // is there and fade back in as it drifts away — a "return here" marker that
 // persists after a launch until released.
 const STAGED_DOT_LIFT = 65;
-const STAGED_DOT_R = 7;              // smaller than the orbs (r = DOT_SIZE/2)
+const STAGED_DOT_R = 4;              // 8px dot — small, so it sits well off the orbs
 const STAGED_DOT_Y = DOT_CENTER_Y - STAGED_DOT_LIFT;
-const TRIANGLE_W = 11;
+const TRIANGLE_W = 8;
 const TRIANGLE_H = 8;
 const TRIANGLE_BASE_Y = BAR_TOP_Y - 3;          // base just above the tick tops
 const TRIANGLE_APEX_Y = TRIANGLE_BASE_Y - TRIANGLE_H;
@@ -217,8 +235,8 @@ const TRIANGLE_HIT_PAD = 8;                      // invisible click/swipe paddin
 const SAME_SPOT_PX = 4;     // voice within this many px of target ⇒ on-spot (no markers)
 const TRIANGLE_FADE_RANGE_PX = 4;  // triangle ramps in fast once the voice leaves its spot
 const DOT_LINE_FADE_RANGE_PX = 12; // dot+line ramp in as the dot clears the orb's top edge
-const STAGED_DESCENT_RANGE_PX = 120; // orb-to-target px over which the dot lowers/lifts
-const STAGED_DESCENT_EASE = 5;       // >1 makes the dot rush to full lift (less mid-travel)
+const STAGED_DESCENT_RANGE_PX = 55;  // orb-to-target px over which the dot lowers/lifts
+const STAGED_DESCENT_EASE = 11;      // >1 makes the dot rush to full lift (less mid-travel)
 const STAGE_FADE_MS = 300;  // markers ease in over this long when a slot is staged
 // Reused per-column level buffer (avoids per-frame allocation now that the
 // curve draws continuously). _dissLevels holds the freshly computed target;
@@ -339,10 +357,14 @@ if (typeof window !== 'undefined') {
 // the OTHER voices only (impact 0 in consonanceSlowdown) so the orb stays free.
 
 // Build the background as a flat partial list { f, a }: every unmuted, audible
-// drone voice plus all sounding keyboard/MIDI voices, each expanded into the
-// ASSUMED timbre's partials. `profile` is a list of { ratio, amp } (see
-// timbreProfiles.js) — decoupled from the actual synth so it works for MIDI-out
-// and inharmonic timbres alike.
+// drone voice, each expanded into the ASSUMED timbre's partials. `profile` is a
+// list of { ratio, amp } (see timbreProfiles.js) — decoupled from the actual
+// synth so it works for MIDI-out and inharmonic timbres alike.
+//
+// Keyboard/MIDI voices are intentionally EXCLUDED: the curve maps the drone
+// chord's consonance landscape so it stays a stable tuning reference while notes
+// are played over it. (Amplitude, saturation, etc. still reflect the keyboard
+// via the FFT-based DissonanceMeter — this field is drones-only by design.)
 //
 // Voices in `movingSet` (the grabbed/dragged orbs) have their amplitude AND
 // their voice-count weight scaled by `impact` ∈ [0,1]: 1 = full (counts like
@@ -365,12 +387,6 @@ function _buildBackground(count, movingSet, impact, profile) {
     } else {
       src.push({ f0, amp: vol, weight: 1 });
     }
-  }
-  const kv = keyboardVoiceManager.getVoicesForSynth
-    ? keyboardVoiceManager.getVoicesForSynth()
-    : [];
-  for (const v of kv) {
-    if (v.freq > 0 && v.amp > 0) src.push({ f0: v.freq, amp: v.amp, weight: 1 });
   }
 
   // Amplitude-normalize: scale every voice so the loudest is treated as
@@ -397,18 +413,15 @@ function _buildBackground(count, movingSet, impact, profile) {
   return { parts: bg, voices };
 }
 
-// Count currently-sounding voices (unmuted, audible drones + keyboard/MIDI),
-// regardless of the moving-impact weighting. Used to give a lone moving voice
-// full impact so the curve doesn't vanish with nothing else to show against.
+// Count currently-sounding drone voices (unmuted, audible), regardless of the
+// moving-impact weighting. Used to give a lone moving voice full impact so the
+// curve doesn't vanish with nothing else to show against. Keyboard/MIDI voices
+// are excluded to match _buildBackground — the curve is drones-only.
 function _activeVoiceCount(count) {
   let n = 0;
   for (let i = 0; i < count; i++) {
     if (!audioEngine.isMuted(i) && audioEngine.getFrequency(i) > 0 && audioEngine.getVolume(i) > 0) n++;
   }
-  const kv = keyboardVoiceManager.getVoicesForSynth
-    ? keyboardVoiceManager.getVoicesForSynth()
-    : [];
-  for (const v of kv) if (v.freq > 0 && v.amp > 0) n++;
   return n;
 }
 
@@ -899,11 +912,10 @@ function FrequencySpectrumBar({
   const [range, setRange] = useState({ logMin: ABSOLUTE_LOG_MIN, logMax: ABSOLUTE_LOG_MAX });
   const [shiftHeld, setShiftHeld] = useState(false);
   // Global transpose (semitones) — mirrored from the engine so the moving
-  // frequency labels + readout re-render. The engine owns the value (it
-  // persists to localStorage and applies the playback multiplier); this is a
-  // read-only reflection. Subscribed below.
+  // frequency labels re-render. The engine owns the value (it persists to
+  // localStorage and applies the playback multiplier); this is a read-only
+  // reflection driving the tick relabel. Subscribed below.
   const [transpose, setTranspose] = useState(() => audioEngine.getTransposeSemitones());
-  const [transposeDragging, setTransposeDragging] = useState(false);
   const transposeDragRef = useRef(null);
   // Launch state for a *staged* save slot (targets + which voices are
   // mid-glide + which have fired), or null when nothing is staged. Driven by
@@ -917,6 +929,9 @@ function FrequencySpectrumBar({
   // popping to full opacity.
   const [stageFade, setStageFade] = useState(1);
   const stageFadeRef = useRef({ raf: 0, start: 0, slotId: frequencyManager.stagedSlotId });
+  // The staged triangles/dots are a FREQUENCY affordance — hide them entirely
+  // when frequency isn't in the recall scope (volume/on-off recall silently).
+  const showFreqMarkers = frequencyManager.getRecallScope().includes('freq');
   useEffect(() => {
     let lastVersion = frequencyManager.stageVersion;
     const sync = () => {
@@ -955,6 +970,9 @@ function FrequencySpectrumBar({
   // round-tripping through React state.
   const dotElsRef = useRef([]);
   const labelElsRef = useRef([]);
+  // Per-slot "same-octave played" dots floating above each orb (see
+  // KBD_DOT_CENTER_Y). Toggled `.active` by the keyboard-glow rAF loop.
+  const kbdDotElsRef = useRef([]);
   const rangeRef = useRef(range);
   const barWidthRef = useRef(barWidth);
   const grabbedRef = useRef(grabbedOscs);
@@ -967,18 +985,28 @@ function FrequencySpectrumBar({
     () => setTranspose(audioEngine.getTransposeSemitones())
   ), []);
 
-  // Empty-bar background drag → global transpose. Orbs stopPropagation on
-  // pointerdown, so any press that reaches the container is background; the
-  // .fsb-dot guard is just belt-and-suspenders. We drive it off window
-  // listeners (not pointer capture) so it never fights the orb/grab gestures,
-  // and persist once on release to avoid localStorage thrash mid-drag.
+  // Is the pointer over the draggable number strip (the frequency-label band,
+  // up to the top of the dissonance curve)? Container-local Y test so orbs —
+  // which float ABOVE this band — and the spectrogram below are never grabbed.
+  const inTransposeZone = (clientY) => {
+    const el = containerRef.current;
+    if (!el) return false;
+    const y = clientY - el.getBoundingClientRect().top;
+    return y >= TRANSPOSE_ZONE_TOP && y <= TRANSPOSE_ZONE_BOTTOM;
+  };
+  // Number-strip drag → global transpose. Orbs stopPropagation on pointerdown,
+  // so any press reaching the container is background; we further gate on the
+  // strip band. Driven off window listeners (not pointer capture) so it never
+  // fights the orb/grab gestures; persists once on release to avoid thrash.
   const beginTransposeDrag = (e) => {
     if (e.button !== 0) return;
     if (e.target?.closest?.('.fsb-dot')) return;
+    if (!inTransposeZone(e.clientY)) return;
     e.preventDefault();
+    const el = containerRef.current;
+    if (el) el.style.cursor = 'grabbing';
     const start = { x: e.clientX, semi: audioEngine.getTransposeSemitones() };
     transposeDragRef.current = start;
-    setTransposeDragging(true);
     const move = (ev) => {
       const s = transposeDragRef.current;
       if (!s) return;
@@ -991,21 +1019,24 @@ function FrequencySpectrumBar({
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       transposeDragRef.current = null;
-      setTransposeDragging(false);
+      if (el) el.style.cursor = '';
       audioEngine.setTransposeSemitones(audioEngine.getTransposeSemitones()); // persist final
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
-  // Double-click empty bar → reset transpose to 0.
+  // Double-click the number strip → reset transpose to 0.
   const resetTranspose = (e) => {
     if (e.target?.closest?.('.fsb-dot')) return;
+    if (!inTransposeZone(e.clientY)) return;
     audioEngine.setTransposeSemitones(0);
   };
-  // Readout label (the moving ticks are handled in PLAYED space below).
-  const transposeLabel = transpose === 0
-    ? '0 st'
-    : `${transpose > 0 ? '+' : ''}${transpose.toFixed(2)} st`;
+  // Cursor hint: ew-resize only while hovering the draggable number strip.
+  const updateTransposeCursor = (e) => {
+    const el = containerRef.current;
+    if (!el || transposeDragRef.current) return; // an active drag keeps 'grabbing'
+    el.style.cursor = inTransposeZone(e.clientY) ? 'ew-resize' : '';
+  };
   const lastGrabXRef = useRef(null); // tracks cursor X between grab-driven frames
   const lastGrabYRef = useRef(null); // tracks cursor Y between grab-driven frames (volume)
   const mousePosRef = useRef({ x: 0, y: 0 }); // latest client-space cursor, always tracked
@@ -1071,10 +1102,13 @@ function FrequencySpectrumBar({
 
   // Keyboard-voice glow loop. Each frame: ask the voice manager which
   // voices are sounding, group them by drone slot (via tuning), and
-  // imperatively flip a `kbd-active` class on the matching orb + label
-  // for octave-0 voices. ±1 / ±2 voices light up small bubbles flanking
-  // the label (IG-photo style — far-octave lit while the in-between
-  // bubble stays dim if there's nothing playing closer in).
+  // imperatively update its indicators. A note at the slot's EXACT octave
+  // shows a dot floating above the orb (kbdDot `.active`) rather than
+  // glowing the orb — a played drone and a played key were otherwise
+  // indistinguishable. Notes an octave or more away glow the orb + label
+  // (`kbd-active`) and light small bubbles flanking the label (IG-photo
+  // style — far-octave lit while the in-between bubble stays dim if
+  // there's nothing playing closer in).
   //
   // Direct DOM mutation rather than React state because envelope amps
   // change every audio block and a setState rerender on each tick would
@@ -1096,36 +1130,46 @@ function FrequencySpectrumBar({
 
       const dots = dotElsRef.current;
       const labels = labelElsRef.current;
+      const kbdDots = kbdDotElsRef.current;
       const totalSlots = Math.max(dots.length, labels.length);
       const MAX_OCT = 5;
       for (let i = 0; i < totalSlots; i++) {
         const octs = slotOctAmps.get(i);
 
-        // Orb / label "kbd-active" fires when ANY octave of this slot's
-        // scale degree is sounding — exact pitch or octaves above /
-        // below. The bubble columns already show *which* specific
-        // octaves are active; the orb itself just signals "this slot
-        // is being played."
-        let maxAmp = 0;
+        // Split this slot's sounding octaves into the EXACT-pitch octave (0)
+        // and everything else. Octave 0 drives the dot-above-orb; non-zero
+        // octaves glow the orb + label and light the bubble columns. Keeping
+        // them separate means a keyboard note at the drone's own pitch shows
+        // the floating dot instead of lighting the orb (which reads the same
+        // as a normally-playing drone).
+        let zeroAmp = 0;
+        let nonZeroAmp = 0;
         if (octs) {
-          for (const a of octs.values()) {
-            if (a > maxAmp) maxAmp = a;
+          for (const [oct, a] of octs) {
+            if (oct === 0) { if (a > zeroAmp) zeroAmp = a; }
+            else if (a > nonZeroAmp) nonZeroAmp = a;
           }
         }
-        const slotActive = maxAmp > ACTIVE_THRESHOLD;
+        const zeroActive = zeroAmp > ACTIVE_THRESHOLD;
+        const nonZeroActive = nonZeroAmp > ACTIVE_THRESHOLD;
 
         // Skip while user is actively dragging/grabbing — those states
         // have their own dim styling and shouldn't flicker on retrigger.
         const dot = dots[i];
-        if (dot) {
-          const interacting = dot.classList.contains('dragging') ||
-                              dot.classList.contains('grabbed');
-          dot.classList.toggle('kbd-active', !interacting && slotActive);
-        }
+        const interacting = dot
+          ? dot.classList.contains('dragging') || dot.classList.contains('grabbed')
+          : false;
+        // Orb glow: OTHER-octave notes only now (the same-octave case is the
+        // dot-above below, so a played drone isn't confused with a played key).
+        if (dot) dot.classList.toggle('kbd-active', !interacting && nonZeroActive);
+
+        // Same-octave dot floating above the orb. Hidden during interaction.
+        const kbdDot = kbdDots[i];
+        if (kbdDot) kbdDot.classList.toggle('active', !interacting && zeroActive);
 
         const label = labels[i];
         if (!label) continue;
-        label.classList.toggle('kbd-active', slotActive);
+        label.classList.toggle('kbd-active', zeroActive || nonZeroActive);
 
         // For each side: a bubble at distance `n` is
         //   'on'  if octave (sign·n) is currently sounding
@@ -1802,37 +1846,10 @@ function FrequencySpectrumBar({
         className="freq-spectrum-bar"
         ref={containerRef}
         onPointerDown={beginTransposeDrag}
+        onPointerMove={updateTransposeCursor}
         onDoubleClick={resetTranspose}
-        style={{ height: TOTAL_HEIGHT, cursor: transposeDragging ? 'grabbing' : 'ew-resize' }}
+        style={{ height: TOTAL_HEIGHT }}
       >
-        {/* Global-transpose readout (a DAW-BPM-style master pitch offset).
-            Shown while dragging or whenever a non-zero offset is active. */}
-        {(transposeDragging || transpose !== 0) && (
-          <div
-            className="fsb-transpose-readout"
-            style={{
-              position: 'absolute',
-              top: 2,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              padding: '1px 7px',
-              borderRadius: 6,
-              fontSize: 11,
-              fontVariantNumeric: 'tabular-nums',
-              lineHeight: 1.5,
-              letterSpacing: '0.02em',
-              color: 'rgba(255,255,255,0.92)',
-              background: 'rgba(0,0,0,0.55)',
-              border: '1px solid rgba(255,255,255,0.14)',
-              pointerEvents: 'none',
-              zIndex: 6,
-              whiteSpace: 'nowrap',
-            }}
-            aria-hidden="true"
-          >
-            transpose {transposeLabel}
-          </div>
-        )}
         {/* Dissonance HUD — sits behind the orbs, rising up from the spectrum
             line and bleeding DISS_CURVE_DOWN px down into the spectrogram.
             Always shown; maps the current chord's consonance hot spots. */}
@@ -1923,7 +1940,7 @@ function FrequencySpectrumBar({
                 when the orb is already on target, fading back in as it drifts, so
                 it persists as a "return here" marker). Click/swipe the line or
                 dot to launch (or to return once landed). */}
-            {stageState && (
+            {stageState && showFreqMarkers && (
               <g mask="url(#fsb-staged-occlude)">
               {stageState.targets.map((tf, i) => {
               if (!Number.isFinite(tf)) return null;
@@ -1954,12 +1971,13 @@ function FrequencySpectrumBar({
                 STAGED_DESCENT_EASE
               );
               const dotY = STAGED_DOT_Y + (homeY - STAGED_DOT_Y) * descent;
-              // The dot + tether only appear once the dot has risen clear of the
-              // orb's top edge — i.e. the voice has moved far enough that the dot
-              // pokes above the orb. Below that they're hidden (no invisible hits).
+              // The dot + tether fade continuously with the dot's height: full
+              // opacity once it's a fade-range clear of the orb top, then tapering
+              // to 0 as it sinks all the way to the orb's center (homeY) — so it
+              // dissolves INTO the orb instead of blinking out at the top edge.
               const orbTop = homeY - DOT_SIZE / 2;
               const dotLineOpacity = Math.min(1, Math.max(0,
-                (orbTop - dotY) / DOT_LINE_FADE_RANGE_PX));
+                (homeY - dotY) / (DOT_LINE_FADE_RANGE_PX + (homeY - orbTop))));
               const showDot = !isLaunching && dotLineOpacity > 0.1;
               // Dotted tether: dot → orb edge (trimmed both ends, like the ghosts).
               const seg = offsetLine(tx, dotY, dotXs[i], homeY, STAGED_DOT_R, DOT_SIZE / 2);
@@ -2031,11 +2049,11 @@ function FrequencySpectrumBar({
                   <polygon
                     points={pts}
                     fill={color}
-                    fillOpacity={0.95}
+                    fillOpacity={0.72}
                     stroke={color}
                     strokeWidth={0.75}
                     opacity={triOpacity}
-                    style={{ filter: `drop-shadow(0 0 3px ${color})`, pointerEvents: 'none' }}
+                    style={{ filter: `drop-shadow(0 0 1.5px ${color})`, pointerEvents: 'none' }}
                   />
                   {/* Invisible hit target over the floating dot (only once shown). */}
                   {showDot && (
@@ -2169,6 +2187,22 @@ function FrequencySpectrumBar({
           />
         );
       })}
+
+      {/* Same-octave keyboard indicator: a dot floating above each orb,
+          shown (`.active`) by the glow rAF loop when a note at this slot's
+          exact octave is sounding — instead of lighting the orb itself. */}
+      {frequencies.map((_, i) => (
+        <div
+          key={`kbd-dot-${i}`}
+          ref={(el) => { kbdDotElsRef.current[i] = el; }}
+          className="fsb-kbd-dot"
+          style={{
+            left: dotXs[i],
+            top: KBD_DOT_CENTER_Y,
+            '--dot-color': palette.oscColor(i, oscillatorCount),
+          }}
+        />
+      ))}
 
       {frequencies.map((f, i) => {
         const color = palette.oscColor(i, oscillatorCount);

@@ -77,6 +77,18 @@ const RECALL_CURVES = [
 ];
 const DEFAULT_RECALL_CURVE = 'ease-in-out';
 
+// ─── Parameter lock (capture scope) ──────────────────────────────────
+// The lockable parameters. Capture always stores all of them; a scope is
+// a live mask deciding which get APPLIED on recall (recallScope) and which
+// are tracked/restored by undo/redo (undoScope). See PARAMETER_LOCK.md.
+//   freq  → frequencies + locked ratios + anchor + tuning system (pitch context)
+//   vol   → per-voice volume (0..1)
+//   onoff → per-voice mute state
+const PARAM_KEYS = ['freq', 'vol', 'onoff'];
+// Default scope = frequency only. Reproduces the pre-parameter-lock behavior
+// (recall/undo move pitch, nothing else) until the user opts into more.
+const DEFAULT_SCOPE = ['freq'];
+
 class FrequencyManager {
   constructor() {
     if (FrequencyManager.instance) return FrequencyManager.instance;
@@ -89,12 +101,11 @@ class FrequencyManager {
     this._tuningSystem = DEFAULT_SYSTEM;
     this._lastAnchorHz = 0;
     this._inPropagation = false;
-    // Follow-root: when ON, moving the root (drag, typed Hz, octave) scales
-    // EVERY voice by the same factor so the whole chord transposes and all
-    // relative ratios are preserved. When OFF, only voices with a locked
-    // ratio track the root; free voices stay put. Persisted as part of the
-    // instrument setup. Default ON so the root predictably carries the rest.
-    this._followRoot = FrequencyManager._loadFollowRoot();
+    // Follow-root is removed as a user feature: moving the root never drags
+    // the other voices along. Only voices with an explicitly locked ratio
+    // track the root; free voices stay put. Hardcoded off (the setter/getter
+    // remain for internal call sites but there is no UI to turn it on).
+    this._followRoot = false;
 
     // Undo / redo state
     this._undoStack = [];
@@ -123,6 +134,15 @@ class FrequencyManager {
     this._launchRaf = null;      // rAF handle for the in-flight launch tween
     this._recallGlideMs = FrequencyManager._loadRecallGlideMs();
     this._recallCurve = FrequencyManager._loadRecallCurve();
+
+    // Parameter lock. The UI presents ONE parameter set ("Parameters tracked")
+    // shared by capture-recall and undo/redo, so `_recallScope` and `_undoScope`
+    // stay in lockstep (see toggleParam). Timings are INDEPENDENT — a Capture
+    // recall timing and a separate Undo/Redo timing. Default: frequency-only.
+    this._recallScope = FrequencyManager._loadScope('tuningRecallScope');
+    this._undoScope = new Set(this._recallScope);
+    this._scopeLinked = true; // vestigial (params unified); kept for compatibility
+    this._undoGlideMs = FrequencyManager._loadUndoGlideMs(this._recallGlideMs);
 
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
 
@@ -174,6 +194,9 @@ class FrequencyManager {
           createdAt: Number(s.createdAt) || Date.now(),
           snapshot: {
             frequencies: snap.frequencies.slice(),
+            // volumes/mutes are newer fields — tolerate older saves without them.
+            volumes: Array.isArray(snap.volumes) ? snap.volumes.slice() : null,
+            mutes: Array.isArray(snap.mutes) ? snap.mutes.slice() : null,
             slotRatios: new Map(Array.isArray(snap.slotRatios) ? snap.slotRatios : []),
             anchorSlot: Number.isInteger(snap.anchorSlot) ? snap.anchorSlot : 0,
             tuningSystem: snap.tuningSystem || DEFAULT_SYSTEM,
@@ -198,6 +221,8 @@ class FrequencyManager {
         createdAt: s.createdAt,
         snapshot: {
           frequencies: Array.from(s.snapshot.frequencies),
+          volumes: s.snapshot.volumes ? Array.from(s.snapshot.volumes) : null,
+          mutes: s.snapshot.mutes ? Array.from(s.snapshot.mutes) : null,
           slotRatios: Array.from(s.snapshot.slotRatios.entries()),
           anchorSlot: s.snapshot.anchorSlot,
           tuningSystem: s.snapshot.tuningSystem,
@@ -230,6 +255,43 @@ class FrequencyManager {
   }
   _persistRecallCurve() {
     try { localStorage.setItem('tuningRecallCurve', this._recallCurve); } catch { /* ignore */ }
+  }
+
+  // Scope persistence — a scope is stored as a comma-joined key list. Unknown
+  // keys are dropped; a missing/corrupt value falls back to the default.
+  static _loadScope(storageKey) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw != null) {
+        const keys = raw.split(',').filter((k) => PARAM_KEYS.includes(k));
+        return new Set(keys);
+      }
+    } catch { /* ignore */ }
+    return new Set(DEFAULT_SCOPE);
+  }
+  _persistScope(storageKey, scope) {
+    try { localStorage.setItem(storageKey, [...scope].join(',')); } catch { /* ignore */ }
+  }
+  static _loadScopeLinked() {
+    try {
+      const v = localStorage.getItem('tuningScopeLinked');
+      if (v === '0') return false;
+      if (v === '1') return true;
+    } catch { /* ignore */ }
+    return true; // default: undo mirrors captures
+  }
+  _persistScopeLinked() {
+    try { localStorage.setItem('tuningScopeLinked', this._scopeLinked ? '1' : '0'); } catch { /* ignore */ }
+  }
+  static _loadUndoGlideMs(fallback) {
+    try {
+      const v = parseFloat(localStorage.getItem('tuningUndoGlideMs'));
+      if (Number.isFinite(v)) return Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, v));
+    } catch { /* ignore */ }
+    return fallback;
+  }
+  _persistUndoGlideMs() {
+    try { localStorage.setItem('tuningUndoGlideMs', String(this._undoGlideMs)); } catch { /* ignore */ }
   }
 
   get followRoot() { return this._followRoot; }
@@ -418,12 +480,20 @@ class FrequencyManager {
    */
   undo() {
     if (this._undoStack.length === 0) return false;
-    if (this._lastStable) this._redoStack.push(this._lastStable);
-    const target = this._undoStack.pop();
+    const before = this._lastStable;
+    if (before) this._redoStack.push(before);
+    let target = this._undoStack.pop();
+    // Skip no-op steps: entries that don't change anything in the undo scope
+    // (e.g. recorded while a different scope was active) would make undo look
+    // broken. Walk back to the first entry that actually differs in-scope.
+    while (before && this._scopedEqual(target, before, this._undoScope) && this._undoStack.length) {
+      this._redoStack.push(target);
+      target = this._undoStack.pop();
+    }
     this._lastStable = target;
     this._abortLaunchForRestore();
-    // Lerp the oscillators back to the undo target rather than snapping there.
-    this._applySnapshotSmooth(target, this._recallGlideMs);
+    // Lerp back to the undo target (only the undo-scope params) rather than snapping.
+    this._applySnapshotSmooth(target, this._undoScope, this._undoGlideMs);
     return true;
   }
 
@@ -433,15 +503,21 @@ class FrequencyManager {
    */
   redo() {
     if (this._redoStack.length === 0) return false;
-    if (this._lastStable) {
-      this._undoStack.push(this._lastStable);
+    const before = this._lastStable;
+    const pushUndo = (snap) => {
+      this._undoStack.push(snap);
       if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
+    };
+    if (before) pushUndo(before);
+    let target = this._redoStack.pop();
+    while (before && this._scopedEqual(target, before, this._undoScope) && this._redoStack.length) {
+      pushUndo(target);
+      target = this._redoStack.pop();
     }
-    const target = this._redoStack.pop();
     this._lastStable = target;
     this._abortLaunchForRestore();
-    // Lerp forward to the redo target rather than snapping there.
-    this._applySnapshotSmooth(target, this._recallGlideMs);
+    // Lerp forward to the redo target (only the undo-scope params).
+    this._applySnapshotSmooth(target, this._undoScope, this._undoGlideMs);
     return true;
   }
 
@@ -504,7 +580,7 @@ class FrequencyManager {
       if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
     }
     this._redoStack = [];
-    this._applySnapshotSmooth(slot.snapshot, this._recallGlideMs);
+    this._applySnapshotSmooth(slot.snapshot, this._recallScope, this._recallGlideMs);
     return true;
   }
 
@@ -525,6 +601,37 @@ class FrequencyManager {
     if (clamped === this._recallGlideMs) return;
     this._recallGlideMs = clamped;
     this._persistRecallGlideMs();
+    this._fire();
+  }
+
+  // ─── Parameter-lock scope API (consumed by the tunings-menu UI) ──────
+  getRecallScope() { return [...this._recallScope]; }
+  getUndoScope() { return [...this._undoScope]; }
+  get undoGlideMs() { return this._undoGlideMs; }
+
+  setUndoGlideMs(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, n));
+    if (clamped === this._undoGlideMs) return;
+    this._undoGlideMs = clamped;
+    this._persistUndoGlideMs();
+    this._fire();
+  }
+
+  // Unified parameter toggle — capture-recall and undo/redo track the SAME
+  // parameters ("Parameters tracked"), so flip both scopes together.
+  toggleParam(key) {
+    if (!PARAM_KEYS.includes(key)) return;
+    if (this._recallScope.has(key)) {
+      this._recallScope.delete(key);
+      this._undoScope.delete(key);
+    } else {
+      this._recallScope.add(key);
+      this._undoScope.add(key);
+    }
+    this._persistScope('tuningRecallScope', this._recallScope);
+    this._persistScope('tuningUndoScope', this._undoScope);
     this._fire();
   }
 
@@ -641,6 +748,9 @@ class FrequencyManager {
   // glide always covers every currently-launching voice.
   launchVoice(index) {
     if (!this._stagedTargets || !audioEngine.initialized) return false;
+    // Single-dot launch is a frequency gesture; only meaningful when freq is in
+    // the recall scope (its markers are hidden otherwise).
+    if (!this._recallScope.has('freq')) return false;
     const target = this._stagedTargets[index];
     if (!Number.isFinite(target)) return false;
     const existing = this._launching.get(index);
@@ -659,20 +769,64 @@ class FrequencyManager {
   // as a "return all" once voices have landed and drifted.
   launchAll() {
     if (!this._stagedTargets || !audioEngine.initialized) return false;
-    let added = false;
-    this._beginLaunch();
-    for (let i = 0; i < this._stagedTargets.length; i++) {
-      const t = this._stagedTargets[i];
-      const existing = this._launching.get(i);
-      if (!Number.isFinite(t) || (existing && !existing.finishing)) continue;
-      this._addLaunch(i, t);
-      added = true;
-    }
-    if (!added) return false;   // nothing new to launch
+    const scope = this._recallScope;
+    if (scope.size === 0) return false;   // empty recall scope → applies nothing
     const slot = this._saveSlots.find((s) => s.id === this._stagedSlotId);
-    if (slot?.snapshot) this._restoreManagerFields(slot.snapshot);
+    const snap = slot?.snapshot;
+    const count = audioEngine.getOscillatorCount();
+    this._beginLaunch();
+    let did = false;
+    let didFreqLaunch = false;
+
+    // Frequency — the marker-driven glide (restores tuning context too).
+    if (scope.has('freq')) {
+      let added = false;
+      for (let i = 0; i < this._stagedTargets.length; i++) {
+        const t = this._stagedTargets[i];
+        const existing = this._launching.get(i);
+        if (!Number.isFinite(t) || (existing && !existing.finishing)) continue;
+        this._addLaunch(i, t);
+        added = true;
+      }
+      if (added) {
+        if (snap) this._restoreManagerFields(snap);
+        this._ensureLaunchLoop();
+        didFreqLaunch = true;
+        did = true;
+      }
+    }
+
+    // Volume — glides silently over the recall timing. When there's no freq
+    // launch loop to settle `_lastStable` on arrival, do it in the glide's
+    // completion so the post-recall state becomes the new baseline for undo.
+    if (scope.has('vol') && snap && Array.isArray(snap.volumes)) {
+      if (audioEngine.cancelVolumeGlide) audioEngine.cancelVolumeGlide();
+      const onDone = didFreqLaunch ? null : () => {
+        this._lastStable = this._takeSnapshot();
+        this._fire();
+      };
+      audioEngine.glideVolumes(snap.volumes.slice(0, count), this._recallGlideMs, onDone);
+      did = true;
+    }
+
+    // On/off — applied immediately (click-free envelope fade); the drone/mute
+    // buttons reflect it.
+    if (scope.has('onoff') && snap && Array.isArray(snap.mutes)) {
+      for (let i = 0; i < count; i++) {
+        const target = !!snap.mutes[i];
+        if (audioEngine.isMuted(i) !== target) {
+          if (target) audioEngine.muteOscillator(i);
+          else audioEngine.unmuteOscillator(i);
+        }
+      }
+      did = true;
+    }
+
+    if (!did) return false;   // nothing new to apply
+    // On/off-only recall (no freq loop, no vol glide) settles immediately —
+    // mutes + volumes are already at rest, so re-baseline now.
+    if (!didFreqLaunch && !scope.has('vol')) this._lastStable = this._takeSnapshot();
     this._stageVersion += 1;
-    this._ensureLaunchLoop();
     this._fire();
     return true;
   }
@@ -765,8 +919,16 @@ class FrequencyManager {
   }
 
   _takeSnapshot() {
+    // Always full (lossless capture). Scope is applied at recall/undo time,
+    // never here. Volumes read on the raw 0..1 scale (getVolume, NOT
+    // getAllVolumes which returns 0-100 percentages).
+    const count = audioEngine.getOscillatorCount();
+    const volumes = [];
+    for (let i = 0; i < count; i++) volumes.push(audioEngine.getVolume(i));
     return {
       frequencies: audioEngine.getAllFrequencies(),
+      volumes,
+      mutes: audioEngine.getAllMutedStates(),
       slotRatios: new Map(this._slotRatios),
       anchorSlot: this._anchorSlot,
       tuningSystem: this._tuningSystem,
@@ -774,27 +936,47 @@ class FrequencyManager {
   }
 
   /**
-   * Glide engine frequencies toward the snapshot's targets while
-   * setting manager-only fields (anchor / ratios / limit) immediately.
-   * The undo-restore guard stays raised for the full duration so the
-   * per-frame engine listener doesn't treat the glide as user drift
-   * and purge locks. On completion we capture the landed state as
-   * `_lastStable` so further edits diff against it.
+   * Apply a snapshot through a scope mask, gliding over `durationMs`. Only
+   * params in `scope` are written: freq glides in pitch space (and restores
+   * the tuning context), vol glides in level space, onoff toggles the mute
+   * state (click-free envelope fade — the timing slider governs freq/vol, not
+   * the mute fade, which is fixed by the drone envelope). The undo-restore
+   * guard stays raised until every started glide finishes so the per-frame
+   * engine listener doesn't treat the motion as user drift.
    */
-  _applySnapshotSmooth(snap, durationMs) {
-    // Cancel any in-flight glide so back-to-back recalls behave.
-    if (audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
+  _applySnapshotSmooth(snap, scope, durationMs) {
+    const wantFreq = scope.has('freq');
+    const wantVol = scope.has('vol');
+    const wantOnoff = scope.has('onoff');
+
+    // Cancel any in-flight glides so back-to-back recalls behave.
+    if (wantFreq && audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
+    if (wantVol && audioEngine.cancelVolumeGlide) audioEngine.cancelVolumeGlide();
 
     this._inUndoRestore = true;
-    this._anchorSlot = snap.anchorSlot;
-    this._persistRootSlot();
-    this._slotRatios = new Map(snap.slotRatios);
-    this._tuningSystem = snap.tuningSystem
-      || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])
-      || DEFAULT_SYSTEM;
+
+    if (wantFreq) {
+      // Restore the tuning context immediately; frequencies glide.
+      this._anchorSlot = snap.anchorSlot;
+      this._persistRootSlot();
+      this._slotRatios = new Map(snap.slotRatios);
+      this._tuningSystem = snap.tuningSystem
+        || ({ 5: '5-limit', 7: '7-limit', 11: '11-limit' }[snap.limit])
+        || DEFAULT_SYSTEM;
+    }
 
     const count = audioEngine.getOscillatorCount();
-    const targets = snap.frequencies.slice(0, count);
+
+    // On/off is applied up front (its fade is the engine's, not timed).
+    if (wantOnoff && Array.isArray(snap.mutes)) {
+      for (let i = 0; i < count; i++) {
+        const target = !!snap.mutes[i];
+        if (audioEngine.isMuted(i) !== target) {
+          if (target) audioEngine.muteOscillator(i);
+          else audioEngine.unmuteOscillator(i);
+        }
+      }
+    }
 
     const finish = () => {
       this._inUndoRestore = false;
@@ -803,24 +985,70 @@ class FrequencyManager {
       this._fire();
     };
 
-    // Fire once now so the UI reflects the new anchor / ratios while
-    // the glide is in motion.
+    // Fire once now so the UI reflects the restored context / mutes while any
+    // glide is in motion.
     this._fire();
-    audioEngine.glideToFrequencies(targets, durationMs, finish, this._recallCurveFn());
+
+    const dur = Math.max(0, Number(durationMs) || 0);
+    if (dur <= 0) {
+      // Instant: batch-write then settle synchronously.
+      if (wantFreq) audioEngine.setAllFrequenciesBatch(snap.frequencies.slice(0, count));
+      if (wantVol && Array.isArray(snap.volumes)) audioEngine.setAllVolumesBatch(snap.volumes.slice(0, count));
+      finish();
+      return;
+    }
+
+    // Timed: run the freq + vol glides concurrently; finish once both land.
+    let pending = 0;
+    const done = () => { pending -= 1; if (pending <= 0) finish(); };
+    if (wantFreq) {
+      pending += 1;
+      audioEngine.glideToFrequencies(snap.frequencies.slice(0, count), dur, done, this._recallCurveFn());
+    }
+    if (wantVol && Array.isArray(snap.volumes)) {
+      pending += 1;
+      audioEngine.glideVolumes(snap.volumes.slice(0, count), dur, done);
+    }
+    if (pending === 0) finish();   // onoff-only (or empty): nothing to glide
   }
 
-  _snapshotsEqual(a, b) {
-    if (a.anchorSlot !== b.anchorSlot) return false;
-    if (a.tuningSystem !== b.tuningSystem) return false;
-    if (a.frequencies.length !== b.frequencies.length) return false;
-    for (let i = 0; i < a.frequencies.length; i++) {
-      if (Math.abs(a.frequencies[i] - b.frequencies[i]) > 1e-4) return false;
+  // Equality restricted to a scope's parameters. Used to decide whether an
+  // edit is worth an undo entry (compared against `_undoScope`) and to skip
+  // no-op undo/redo steps. Param → fields:
+  //   freq  → anchor + tuning system + frequencies + locked ratios
+  //   vol   → volumes
+  //   onoff → mutes
+  _scopedEqual(a, b, scope) {
+    if (scope.has('freq')) {
+      if (a.anchorSlot !== b.anchorSlot) return false;
+      if (a.tuningSystem !== b.tuningSystem) return false;
+      if (a.frequencies.length !== b.frequencies.length) return false;
+      for (let i = 0; i < a.frequencies.length; i++) {
+        if (Math.abs(a.frequencies[i] - b.frequencies[i]) > 1e-4) return false;
+      }
+      if (a.slotRatios.size !== b.slotRatios.size) return false;
+      for (const [k, v] of a.slotRatios) {
+        const v2 = b.slotRatios.get(k);
+        if (!v2 || v2.n !== v.n || v2.d !== v.d) return false;
+      }
     }
-    if (a.slotRatios.size !== b.slotRatios.size) return false;
-    for (const [k, v] of a.slotRatios) {
-      const v2 = b.slotRatios.get(k);
-      if (!v2 || v2.n !== v.n || v2.d !== v.d) return false;
+    if (scope.has('vol')) {
+      if (!FrequencyManager._numArraysEqual(a.volumes, b.volumes, 1e-3)) return false;
     }
+    if (scope.has('onoff')) {
+      if (!FrequencyManager._boolArraysEqual(a.mutes, b.mutes)) return false;
+    }
+    return true;
+  }
+
+  static _numArraysEqual(a, b, tol) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > tol) return false;
+    return true;
+  }
+  static _boolArraysEqual(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!!a[i] !== !!b[i]) return false;
     return true;
   }
 
@@ -839,7 +1067,13 @@ class FrequencyManager {
       this._lastStable = now;
       return;
     }
-    if (this._snapshotsEqual(this._lastStable, now)) return;
+    // Only an in-undoScope change is worth an undo entry. An out-of-scope-only
+    // change still updates the baseline (so stored snapshots stay current) but
+    // does NOT push history — this is what makes undo "follow the scope".
+    if (this._scopedEqual(this._lastStable, now, this._undoScope)) {
+      this._lastStable = now;
+      return;
+    }
     this._undoStack.push(this._lastStable);
     if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
     // A real edit branches history — any pending redo is now stranded.

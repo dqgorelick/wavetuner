@@ -5,7 +5,10 @@ import midiOutput from '../audio/MidiOutput';
 import palette, { useTheme } from '../theme/palette';
 
 /**
- * MidiPanel — appears above the Mixer when MIDI learn mode is on.
+ * MidiPanel — a right-side slide-in overlay sharing the Settings panel's
+ * chassis (`.settings-panel`). Mutually exclusive with Settings: opening one
+ * closes the other (see App.jsx). Always mounted so it can animate in/out via
+ * the `isOpen` → `.open` class.
  *
  * Sources its data from midiCCMap (mapping rows) and audioEngine
  * (oscillator count, for marking out-of-range bindings). React state
@@ -23,7 +26,7 @@ function formatTargetLabel(target) {
   return target.kind;
 }
 
-function MidiPanel({ oscillatorCount }) {
+function MidiPanel({ isOpen, onClose, oscillatorCount }) {
   useTheme();
   // Bump on every midiCCMap change. We don't need the values — we read
   // them straight from the singleton on render. This avoids holding a
@@ -96,11 +99,21 @@ function MidiPanel({ oscillatorCount }) {
 
   return (
     <div
-      className="midi-panel"
+      className={`settings-panel midi-menu${isOpen ? ' open' : ''}`}
       role="region"
-      aria-label="MIDI mappings"
+      aria-label="MIDI"
+      aria-hidden={!isOpen}
       onPointerDown={stopPointer}
     >
+      <div className="settings-header">
+        <h3>MIDI</h3>
+        <button className="settings-close" onClick={onClose} title="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18">
+            <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+          </svg>
+        </button>
+      </div>
+
       {/* MIDI devices — input + output (MPE). Lives at the top of the MIDI
           menu so all MIDI controls are in one place, above the mappings. */}
       <div className="midi-panel-header">

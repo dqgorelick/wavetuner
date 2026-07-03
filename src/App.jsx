@@ -233,6 +233,17 @@ const VIZ_MODES = [
       </g>
     ),
   },
+  {
+    id: 4,
+    label: 'Timeline',
+    icon: (
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <path d="M3 7 h6 M13 7 h8" />
+        <path d="M3 12 h9 M16 12 h5" />
+        <path d="M3 17 h4 M11 17 h7" />
+      </g>
+    ),
+  },
 ];
 
 
@@ -351,7 +362,8 @@ function App() {
   //                   (phase calibration on the audio-only Lissajous, audio-
   //                   feature FFT when nothing's reading it) and halves the
   //                   feature update rate. Visually ~identical, much cheaper.
-  //   'off'         — blanks the scope and skips the render loop entirely.
+  //   'off'         — falls back to the lightweight Timeline visualizer
+  //                   (vizMode 4) instead of blanking the scope.
   const [vizQuality, setVizQuality] = useState(() => {
     try {
       const v = localStorage.getItem('vizQuality');
@@ -382,6 +394,16 @@ function App() {
   // / richer drift; lower = crisper figures (especially at high freqs).
   // Default 6 reads as "a few clean cycles" across the audible range.
   const [vizCycles, setVizCycles] = useState(INITIAL_URL_STATE.vizCycles ?? lsNum('vizCycles', 13));
+  // Timeline visualizer (vizMode 4) controls. windowSec = X-range (seconds
+  // of history visible); freqMin/freqMax = Y-range (log-frequency window).
+  const [timelineWindowSec, setTimelineWindowSec] = useState(() => lsNum('timelineWindowSec', 12));
+  const [timelineFreqMin, setTimelineFreqMin] = useState(() => lsNum('timelineFreqMin', 55));
+  const [timelineFreqMax, setTimelineFreqMax] = useState(() => lsNum('timelineFreqMax', 4186));
+  // Y-range auto-fit: when on, Low/High track the sounding frequencies.
+  // Defaults on.
+  const [timelineAutoRange, setTimelineAutoRange] = useState(() => {
+    try { return localStorage.getItem('timelineAutoRange') !== '0'; } catch { return true; }
+  });
   // Visual-effect feedback sliders. Drive the shader's u_extraScale /
   // u_extraBlend uniforms and Hydra's `window.vfx.scale` / `.blend`
   // globals. Defaults match the Feedback-chromatic preset constants so
@@ -404,11 +426,16 @@ function App() {
     lsSet('vizRotation', vizRotation);
     lsSet('vizMode', vizMode);
     lsSet('vizCycles', vizCycles);
+    lsSet('timelineWindowSec', timelineWindowSec);
+    lsSet('timelineFreqMin', timelineFreqMin);
+    lsSet('timelineFreqMax', timelineFreqMax);
+    lsSet('timelineAutoRange', timelineAutoRange ? '1' : '0');
     lsSet('vfxScale', vfxScale);
     lsSet('vfxBlend', vfxBlend);
   }, [
     staticMode, staticPeriods, staticLineWidth, staticOutlineThickness,
     vizScale, vizLineWidth, vizOutline, vizRotation, vizMode, vizCycles,
+    timelineWindowSec, timelineFreqMin, timelineFreqMax, timelineAutoRange,
     vfxScale, vfxBlend,
   ]);
   const handleVfxDrag = useCallback((scale, blend) => {
@@ -964,8 +991,21 @@ function App() {
     }
   }, [vizCycles, vfxScale, vfxBlend]);
 
+  // Settings and the MIDI menu are mutually exclusive right-side overlays —
+  // opening one closes the other so they never stack on top of each other.
   const handleSettingsToggle = useCallback(() => {
-    setIsSettingsOpen(prev => !prev);
+    setIsSettingsOpen(prev => {
+      const next = !prev;
+      if (next) setIsMidiPanelOpen(false);
+      return next;
+    });
+  }, []);
+  const handleMidiToggle = useCallback(() => {
+    setIsMidiPanelOpen(prev => {
+      const next = !prev;
+      if (next) setIsSettingsOpen(false);
+      return next;
+    });
   }, []);
 
   // Pull oscillator count + routing back from the engine after a path that
@@ -1132,6 +1172,10 @@ function App() {
         staticOutlineThickness={staticOutlineThickness}
         vizMode={vizMode}
         vizCycles={vizCycles}
+        timelineWindowSec={timelineWindowSec}
+        timelineFreqMin={timelineFreqMin}
+        timelineFreqMax={timelineFreqMax}
+        timelineAutoRange={timelineAutoRange}
         vizScale={vizScale}
         vizLineWidth={vizLineWidth}
         vizOutline={vizOutline}
@@ -1176,9 +1220,6 @@ function App() {
             </div>
           )}
           <div className="right-stack">
-            {isMidiPanelOpen && (
-              <MidiPanel oscillatorCount={oscillatorCount} />
-            )}
             {isMixerOpen && (
               <Mixer
                 oscillatorCount={oscillatorCount}
@@ -1297,6 +1338,15 @@ function App() {
             onVizCyclesChange={setVizCycles}
             vizRotation={vizRotation}
             onVizRotationChange={setVizRotation}
+            vizMode={vizMode}
+            timelineWindowSec={timelineWindowSec}
+            onTimelineWindowChange={setTimelineWindowSec}
+            timelineFreqMin={timelineFreqMin}
+            onTimelineFreqMinChange={setTimelineFreqMin}
+            timelineFreqMax={timelineFreqMax}
+            onTimelineFreqMaxChange={setTimelineFreqMax}
+            timelineAutoRange={timelineAutoRange}
+            onTimelineAutoRangeChange={setTimelineAutoRange}
             vizQuality={vizQuality}
             onVizQualityChange={setVizQuality}
             vfxScale={vfxScale}
@@ -1361,7 +1411,7 @@ function App() {
           </button>
           <button
             className={`midi-toggle${isMidiPanelOpen ? ' active' : ''}`}
-            onClick={() => setIsMidiPanelOpen((v) => !v)}
+            onClick={handleMidiToggle}
             title={isMidiPanelOpen ? 'Close MIDI menu' : 'MIDI — devices, MPE output, and CC mappings'}
             aria-label="MIDI"
             aria-pressed={isMidiPanelOpen}
@@ -1381,6 +1431,11 @@ function App() {
               <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
             </svg>
           </button>
+          <MidiPanel
+            isOpen={isMidiPanelOpen}
+            onClose={() => setIsMidiPanelOpen(false)}
+            oscillatorCount={oscillatorCount}
+          />
           <SettingsPanel
             isOpen={isSettingsOpen}
             onClose={handleSettingsToggle}

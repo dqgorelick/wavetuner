@@ -847,6 +847,295 @@ function drawXY(
   strokePath('rgba(255, 255, 255, 1)', whiteWidth);
 }
 
+// ── Timeline / piano-roll visualizer (vizMode 4) ───────────────────────
+// A scrolling-waterfall view of every sounding frequency over time. "Now"
+// is pinned to the right edge; history scrolls left and falls off. Reads
+// ONLY the note/voice model (drone frequencies + keyboard voices), never
+// the analyzer buffer — see research/timeline-visualizer.md.
+//
+// Persistent history lives module-level (not in React) so the imperative
+// rAF loop can accumulate samples across frames. Each "lane" is one
+// sounding source (a drone slot or a live voice) and holds a polyline of
+// {t, f, amp} samples. Drones draw as long steady bands; played notes as
+// short segments that bend with detune / transpose / glides.
+const TL_RETAIN_SEC = 180;   // keep this much history so widening the X range reveals it
+const TL_COMPACT_AT = 4096;  // slice a lane's dead head off once it grows past this
+const TL_BAND_FRAC = 0.7;    // centered middle 70% of the usable HEIGHT (Y band)
+const TL_BAND_FRAC_X = 0.6;  // centered middle 60% of the WIDTH (X / time band)
+const TL_GAP_SEC = 0.1;      // break the line when samples are further apart than this
+                             // (a drone toggled off/on) → dashed instead of bridged
+// The timeline's traces are much thinner than the scope's, so the Outline /
+// White line sliders barely register here. Amplify their effect 8× so the
+// same slider travel gives a meaningful width range on the timeline.
+const TL_STROKE_GAIN = 8;
+
+// Auto-range (Y axis auto-fit) tuning. The view eases toward framing whatever
+// is currently sounding, with padding above/below and a minimum span so a
+// single note doesn't zoom to a razor-thin band. Expansion is fast (catch a
+// new extreme quickly); contraction is slow (don't twitch when a note ends).
+const TL_AUTO_PAD_OCT = 0.5;        // half-octave breathing room each side
+const TL_AUTO_MIN_SPAN_OCT = 2.2;   // never show less than ~2 octaves
+const TL_AUTO_EASE_EXPAND = 0.22;
+const TL_AUTO_EASE_CONTRACT = 0.035;
+const TL_AUTO_LO_FLOOR = 20;        // absolute Hz clamps
+const TL_AUTO_HI_CEIL = 20000;
+
+// laneKey → { kind:'drone'|'voice', slot, source, points:[{t,f,amp}], head, active, lastT }
+const _timelineLanes = new Map();
+// Eased auto-range bounds, in log2(Hz). Null until first computed / reset when
+// auto-range is off so re-enabling snaps to the live content.
+let _tlAutoEased = null;
+
+function _ensureLane(key, meta) {
+  let lane = _timelineLanes.get(key);
+  if (!lane) {
+    lane = { ...meta, points: [], head: 0, active: true, lastT: 0 };
+    _timelineLanes.set(key, lane);
+  } else {
+    // Refresh mutable metadata (a voice's slot can change on retune).
+    lane.slot = meta.slot;
+    if (meta.source !== undefined) lane.source = meta.source;
+  }
+  return lane;
+}
+
+// Sample every currently-sounding source once per frame into its lane.
+function sampleTimeline(now) {
+  // Drones — continuous bands. Sounding Hz includes global transpose so
+  // they line up with voice frequencies on the same axis.
+  const freqs = audioEngine.getSoundingFrequencies();
+  const vols = audioEngine.volumeValues || [];
+  const droneGain = audioEngine.getDroneVizGain();
+  for (let i = 0; i < freqs.length; i++) {
+    const key = 'd:' + i;
+    const f = freqs[i];
+    const audible =
+      f > 0 && !audioEngine.isMuted(i) && droneGain > 0.001 && (vols[i] || 0) > 0;
+    if (audible) {
+      const lane = _ensureLane(key, { kind: 'drone', slot: i });
+      lane.points.push({ t: now, f, amp: Math.min(1, (vols[i] || 0) * droneGain) });
+      lane.active = true;
+      lane.lastT = now;
+    } else {
+      const lane = _timelineLanes.get(key);
+      if (lane) lane.active = false;
+    }
+  }
+
+  // Keyboard + MIDI voices — discrete note segments. Voice amp is the raw
+  // per-voice gain; fold in the keyboard bus viz gain so a muted bus hides
+  // notes (matching the other scope modes).
+  const kbdGain = audioEngine.getKeyboardVizGain();
+  const voices = keyboardVoiceManager.getActiveVoices();
+  const seen = new Set();
+  for (const v of voices) {
+    if (!(v.freq > 0)) continue;
+    const amp = (v.amp || 0) * kbdGain;
+    if (amp <= 0.0005) continue; // released and faded out — stop extending
+    const key = 'v:' + v.id;
+    seen.add(key);
+    const lane = _ensureLane(key, { kind: 'voice', slot: v.slot, source: v.source });
+    lane.points.push({ t: now, f: v.freq, amp: Math.min(1, amp) });
+    lane.active = true;
+    lane.lastT = now;
+  }
+
+  // Prune old points; drop dead lanes. Voice lanes not seen this frame end.
+  const cutoff = now - TL_RETAIN_SEC;
+  for (const [key, lane] of _timelineLanes) {
+    if (lane.kind === 'voice' && !seen.has(key)) lane.active = false;
+    const pts = lane.points;
+    while (lane.head < pts.length && pts[lane.head].t < cutoff) lane.head++;
+    if (lane.head > TL_COMPACT_AT) {
+      lane.points = pts.slice(lane.head);
+      lane.head = 0;
+    }
+    if (lane.head >= lane.points.length && !lane.active) {
+      _timelineLanes.delete(key);
+    }
+  }
+}
+
+// Target Y-range (in log2 Hz) that frames every currently-sounding lane, with
+// padding and a minimum span. Returns null when nothing is visible so the
+// caller can hold the last eased range instead of collapsing.
+//
+// Crucially this frames every frequency still VISIBLE in the X window — not
+// just what's sounding right now — including notes that have ended but haven't
+// scrolled off yet. So the range only starts to contract once an extreme
+// actually leaves the left edge, i.e. it lags shrinking by ~windowSec and
+// stays big meanwhile (no jumping when a note stops).
+function _timelineAutoTarget(now, win) {
+  let lo = Infinity;
+  let hi = 0;
+  const cutoff = now - win;
+  for (const lane of _timelineLanes.values()) {
+    const pts = lane.points;
+    for (let i = lane.head; i < pts.length; i++) {
+      const p = pts[i];
+      if (p.t < cutoff) continue; // scrolled off the left — no longer framed
+      if (p.f > 0) {
+        if (p.f < lo) lo = p.f;
+        if (p.f > hi) hi = p.f;
+      }
+    }
+  }
+  if (hi <= 0) return null;
+  let loLog = Math.log2(lo) - TL_AUTO_PAD_OCT;
+  let hiLog = Math.log2(hi) + TL_AUTO_PAD_OCT;
+  const span = hiLog - loLog;
+  if (span < TL_AUTO_MIN_SPAN_OCT) {
+    const c = (loLog + hiLog) / 2;
+    loLog = c - TL_AUTO_MIN_SPAN_OCT / 2;
+    hiLog = c + TL_AUTO_MIN_SPAN_OCT / 2;
+  }
+  loLog = Math.max(Math.log2(TL_AUTO_LO_FLOOR), loLog);
+  hiLog = Math.min(Math.log2(TL_AUTO_HI_CEIL), hiLog);
+  return { loLog, hiLog };
+}
+
+// Draw the timeline into [0,0,width,height] (height = usable area above the
+// orbs). `now` is audioContext.currentTime. windowSec = X-range. When
+// autoRange is on the Y-range eases to frame the sounding content; otherwise
+// fMin / fMax (the manual sliders) set it.
+function drawTimeline(
+  ctx, width, height, now, windowSec, fMin, fMax, autoRange, lineScale,
+  r, g, b, outlineScale = 1, lineWidthScale = 1
+) {
+  const win = Math.max(0.1, windowSec);
+  let lo, hi;
+  if (autoRange) {
+    const target = _timelineAutoTarget(now, win);
+    if (target) {
+      if (!_tlAutoEased) {
+        _tlAutoEased = { lo: target.loLog, hi: target.hiLog };
+      } else {
+        // Expand fast toward a new extreme, contract slowly when one leaves.
+        const eLo = target.loLog < _tlAutoEased.lo ? TL_AUTO_EASE_EXPAND : TL_AUTO_EASE_CONTRACT;
+        const eHi = target.hiLog > _tlAutoEased.hi ? TL_AUTO_EASE_EXPAND : TL_AUTO_EASE_CONTRACT;
+        _tlAutoEased.lo += (target.loLog - _tlAutoEased.lo) * eLo;
+        _tlAutoEased.hi += (target.hiLog - _tlAutoEased.hi) * eHi;
+      }
+    } else if (!_tlAutoEased) {
+      // Nothing sounding yet — seed from the manual range so the first notes
+      // ease in from a sane starting frame.
+      _tlAutoEased = {
+        lo: Math.log2(Math.max(1, Math.min(fMin, fMax))),
+        hi: Math.log2(Math.max(fMin, fMax)),
+      };
+    }
+    lo = Math.pow(2, _tlAutoEased.lo);
+    hi = Math.max(lo * 1.02, Math.pow(2, _tlAutoEased.hi));
+  } else {
+    // Manual: reset the eased state so re-enabling auto snaps to live content.
+    _tlAutoEased = null;
+    lo = Math.max(1, Math.min(fMin, fMax));
+    hi = Math.max(lo * 1.02, Math.max(fMin, fMax));
+  }
+  const logLo = Math.log2(lo);
+  const logSpan = Math.log2(hi) - logLo || 1;
+  // Draw into a centered band so the traces sit in the middle of the screen
+  // rather than filling edge to edge: 70% of the height (Y = log-frequency),
+  // 60% of the width (X = time, "now" at the band's right edge xRight,
+  // history running left to xLeft).
+  const bandH = height * TL_BAND_FRAC;
+  const bandTop = (height - bandH) / 2;
+  const bandW = width * TL_BAND_FRAC_X;
+  const xLeft = (width - bandW) / 2;
+  const xRight = xLeft + bandW;
+  const yOf = (f) => bandTop + bandH * (1 - (Math.log2(f) - logLo) / logSpan);
+  const xOf = (t) => xRight - ((now - t) / win) * bandW;
+
+  // Opaque background — the timeline has no persistence fade.
+  ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+  ctx.fillRect(0, 0, width, height);
+
+  // Clip to the band so notes below fMin / above fMax don't bleed out.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, bandTop, width, bandH);
+  ctx.clip();
+
+  // Every trace shares the global 20-minute cycling color (same r/g/b the XY
+  // scope uses) rather than per-orb slot colors.
+  const cycColor = `rgba(${r | 0}, ${g | 0}, ${b | 0}, 1)`;
+
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  for (const lane of _timelineLanes.values()) {
+    const pts = lane.points;
+    if (lane.head >= pts.length) continue;
+    // Current amplitude drives width + alpha so quiet / releasing notes
+    // thin out and fade. Use the latest sample's amp.
+    const a = pts[pts.length - 1].amp;
+    const color = cycColor;
+    // Base widths scaled by amplitude, then by the same Visualizer-panel
+    // sliders the oscilloscope uses: `outlineScale` (Outline) widens the
+    // colored halo, `lineWidthScale` (White line) the white core. 0% Outline
+    // collapses the halo to nothing → just the white core, matching drawXY.
+    const baseW = 3.6 * lineScale * (0.5 + a * 0.8);
+    const colorW = baseW * outlineScale * TL_STROKE_GAIN;
+    const whiteW = Math.max(0.5, baseW * 0.3 * lineWidthScale * TL_STROKE_GAIN);
+    const alpha = Math.min(1, 0.45 + a * 0.55);
+
+    // Build the visible polyline once, reuse for outline + core passes.
+    // Break the path across time gaps (> TL_GAP_SEC) so a drone toggled
+    // off/on draws as separate dashes instead of a straight bridge across
+    // the silent stretch.
+    const trace = () => {
+      ctx.beginPath();
+      let penDown = false;
+      let prevT = 0;
+      for (let i = lane.head; i < pts.length; i++) {
+        const p = pts[i];
+        const x = xOf(p.t);
+        if (x < -4) { prevT = p.t; continue; } // older than the visible window
+        const y = yOf(p.f);
+        if (!penDown || p.t - prevT > TL_GAP_SEC) {
+          ctx.moveTo(x, y);
+          penDown = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+        prevT = p.t;
+      }
+      ctx.stroke();
+    };
+
+    // Colored outline under a white core — the same neon look as the
+    // oscilloscope's XY / standing-wave traces (drawXY). Skip the halo pass
+    // entirely when Outline is dialed to 0.
+    ctx.globalAlpha = alpha;
+    if (colorW > 0.1) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = colorW;
+      trace();
+    }
+    ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
+    ctx.lineWidth = whiteW;
+    trace();
+  }
+
+  ctx.globalAlpha = 1;
+
+  // Soft LEFT edge fade only — old history dissolves into the background as
+  // it scrolls off the left, but the RIGHT edge (where "now" is, so where new
+  // notes onset) stays crisp so onsets read sharply. Opaque black over the
+  // left margin, fading to clear over the inner `fadeW`, then clear all the
+  // way to the right.
+  const fadeW = bandW * 0.16;
+  const grad = ctx.createLinearGradient(0, 0, width, 0);
+  grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
+  grad.addColorStop(Math.max(0, xLeft / width), 'rgba(0, 0, 0, 1)');
+  grad.addColorStop(Math.min(1, (xLeft + fadeW) / width), 'rgba(0, 0, 0, 0)');
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, bandTop, width, bandH);
+
+  ctx.restore();
+}
+
 /**
  * Oscilloscope component - Canvas-based visualization
  * Uses refs and imperative animation loop to avoid React re-render overhead
@@ -858,6 +1147,14 @@ export default function Oscilloscope({
   staticOutlineThickness = 0,
   vizMode = 0,
   vizCycles = 13,
+  // Timeline (vizMode 4) controls. windowSec = X-range (seconds of history
+  // visible); freqMin/freqMax = Y-range (log-frequency window in Hz).
+  timelineWindowSec = 12,
+  timelineFreqMin = 55,
+  timelineFreqMax = 4186,
+  // When true, the Y-range auto-fits to the sounding frequencies (the
+  // freqMin/freqMax sliders are ignored).
+  timelineAutoRange = true,
   // Lissajous-specific multipliers (vizMode 0). Sliders in the Hydra
   // panel drive these; defaults of 1 preserve the look from before
   // those sliders existed.
@@ -940,6 +1237,14 @@ export default function Oscilloscope({
   useEffect(() => {
     vizCyclesRef.current = vizCycles;
   }, [vizCycles]);
+  const timelineWindowRef = useRef(timelineWindowSec);
+  useEffect(() => { timelineWindowRef.current = timelineWindowSec; }, [timelineWindowSec]);
+  const timelineFreqMinRef = useRef(timelineFreqMin);
+  useEffect(() => { timelineFreqMinRef.current = timelineFreqMin; }, [timelineFreqMin]);
+  const timelineFreqMaxRef = useRef(timelineFreqMax);
+  useEffect(() => { timelineFreqMaxRef.current = timelineFreqMax; }, [timelineFreqMax]);
+  const timelineAutoRangeRef = useRef(timelineAutoRange);
+  useEffect(() => { timelineAutoRangeRef.current = timelineAutoRange; }, [timelineAutoRange]);
 
   // Per-oscillator rendered amplitude, tweened toward the real (muted-or-not)
   // volume each frame so mute/unmute fades the static trace instead of
@@ -989,23 +1294,14 @@ export default function Oscilloscope({
       if (!audioEngine.initialized) return;
 
       const quality = vizQualityRef.current;
-
-      // ── Quality tier: 'off' ──────────────────────────────────────────
-      // Blank the scope once, then idle. The rAF stays alive (cheap early
-      // return) so flipping back to pretty/performance resumes instantly
-      // without re-mounting the canvas.
-      if (quality === 'off') {
-        if (!offClearedRef.current) {
-          const { width, height } = dimensionsRef.current;
-          ctx.clearRect(0, 0, width, height);
-          offClearedRef.current = true;
-        }
-        return;
-      }
       offClearedRef.current = false;
 
-      const perf = quality === 'performance';
-      const vizMode = vizModeRef.current;
+      // 'off' is no longer a blank tier — it falls back to the lightweight
+      // timeline (vizMode 4) so there's always something showing. Both
+      // 'off' and 'performance' take the cheaper per-frame path.
+      const perf = quality !== 'pretty';
+      const vizMode = quality === 'off' ? 4 : vizModeRef.current;
+      const isTimeline = vizMode === 4;
 
       // Advance per-oscillator phase accumulators once per frame so the
       // static waveform draws the actual audio phase (and therefore the
@@ -1024,7 +1320,9 @@ export default function Oscilloscope({
       // The plain Lissajous (0) reads the analyzer directly and ignores
       // phase entirely, so performance mode skips all of it there. Pretty
       // mode keeps the original always-on behavior so the look can't shift.
-      if (!perf || vizMode !== 0) {
+      // The timeline (4) reads frequencies only, never phase, so it skips
+      // all of this regardless of tier.
+      if (!isTimeline && (!perf || vizMode !== 0)) {
         audioEngine.updatePhases();
         keyboardVoiceManager.updatePhases();
         calibrateTickRef.current = (calibrateTickRef.current + 1) & 1;
@@ -1282,6 +1580,28 @@ export default function Oscilloscope({
           outlineScale: vizOutlineRef.current,
           rotation: vizRotationRef.current,
         });
+
+      } else if (vizMode === 4) {
+        // ── MODE 4: Timeline / piano-roll ────────────────────────────
+        // Scrolling waterfall of every sounding frequency over time.
+        // Accumulate this frame's samples into the module-level history,
+        // then draw the visible window. Uses audioContext.currentTime as
+        // the clock (there's no sequencer/transport in the app).
+        const nowSec = audioEngine.audioContext
+          ? audioEngine.audioContext.currentTime
+          : performance.now() / 1000;
+        sampleTimeline(nowSec);
+        drawTimeline(
+          ctx, width, usableHeight, nowSec,
+          timelineWindowRef.current,
+          timelineFreqMinRef.current,
+          timelineFreqMaxRef.current,
+          timelineAutoRangeRef.current,
+          lineScale,
+          r, g, b,
+          vizOutlineRef.current,
+          vizLineWidthRef.current
+        );
       }
     };
 

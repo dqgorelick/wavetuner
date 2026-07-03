@@ -23,6 +23,9 @@ function CaptureBar() {
   const slots = frequencyManager.getSlots();
   const byName = (n) => slots.find((s) => s.name === n) || null;
   const stagedId = frequencyManager.stagedSlotId;
+  // Empty recall scope → recalling a slot applies nothing, so the numerals go
+  // inert (dashed, non-performing).
+  const recallEmpty = frequencyManager.getRecallScope().length === 0;
 
   // Filled slot: first click stages it (return markers appear); a second click
   // (already staged) recalls every voice at once. Empty slots do nothing.
@@ -32,6 +35,7 @@ function CaptureBar() {
     if (frequencyManager.stagedSlotId === slot.id) frequencyManager.launchAll();
     else frequencyManager.stageSlot(slot.id);
   };
+  const deleteSlot = (slot) => frequencyManager.deleteSlot(slot.id);
 
   return (
     <div className="capture-bar" role="group" aria-label="Undo, redo and capture slots">
@@ -68,21 +72,61 @@ function CaptureBar() {
         const slot = byName(n);
         const filled = !!slot;
         const staged = filled && stagedId === slot.id;
+        // Delete only appears once the slot is loaded (staged/launched) — you
+        // must select a slot before its ✕ shows, so a stray tap can't wipe an
+        // unopened save.
+        const canDelete = staged && !recallEmpty;
+        const state = filled ? (staged ? 'staged' : 'filled') : 'empty';
         return (
-          <button
+          <div
             key={n}
-            type="button"
-            className={`cap-slot ${filled ? (staged ? 'staged' : 'filled') : 'empty'}`}
-            onClick={() => clickSlot(n)}
-            disabled={!filled}
-            title={filled
-              ? (staged ? `Recall save ${n}` : `Stage save ${n}`)
-              : `Save slot ${n} — empty (use Capture to fill)`}
-            aria-label={`Save slot ${n}`}
-            aria-pressed={staged}
+            className={`cap-slot-wrap ${state}${recallEmpty ? ' inert' : ''}`}
           >
-            {n}
-          </button>
+            <button
+              type="button"
+              className="cap-slot-main"
+              onClick={() => clickSlot(n)}
+              disabled={!filled || recallEmpty}
+              title={recallEmpty
+                ? 'No parameters selected — pick at least one in the tuning menu to recall'
+                : filled
+                  ? (staged ? `Recall save ${n}` : `Stage save ${n}`)
+                  : `Save slot ${n} — empty (use Capture to fill)`}
+              aria-label={`Save slot ${n}`}
+              aria-pressed={staged}
+            >
+              {n}
+            </button>
+            {/* Always reserve the delete column's width so the numeral stays
+                centered whether or not the ✕ is present — a filled/active slot
+                shouldn't shift its label. */}
+            {canDelete ? (
+              <button
+                type="button"
+                className="cap-slot-del"
+                onClick={() => deleteSlot(slot)}
+                tabIndex={-1}
+                title={`Clear save ${n}`}
+                aria-label={`Clear save ${n}`}
+              >
+                <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            ) : (
+              // Not yet loaded: this column is a transparent extension of the
+              // load button so clicking the reserved ✕ area still stages the
+              // slot instead of hitting a dead zone.
+              <button
+                type="button"
+                className="cap-slot-spacer"
+                onClick={() => clickSlot(n)}
+                disabled={!filled || recallEmpty}
+                tabIndex={-1}
+                aria-hidden="true"
+              />
+            )}
+          </div>
         );
       })}
 

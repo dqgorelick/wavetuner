@@ -29,9 +29,15 @@ const glideSecToPos = (sec) => {
   const clamped = Math.max(0, Math.min(GLIDE_MAX_S, sec));
   return Math.log((clamped / GLIDE_MAX_S) * (GLIDE_CURVE_BASE - 1) + 1) / Math.log(GLIDE_CURVE_BASE);
 };
-// Sub-second glides read with 2 decimals (the log scale resolves them);
-// longer ones with 1.
-const formatGlide = (sec) => (sec < 1 ? `${sec.toFixed(2)}s` : `${sec.toFixed(1)}s`);
+// Timing readout: milliseconds under 1 s, seconds (2 decimals) at/above 1 s.
+const formatTiming = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`);
+
+// Parameter-lock chips shown in the capture-scope panel.
+const SCOPE_PARAMS = [
+  { key: 'freq', label: 'freq', title: 'Frequency / pitch (and its markers on the spectrum)' },
+  { key: 'vol', label: 'vol', title: 'Per-voice volume' },
+  { key: 'onoff', label: 'on/off', title: 'Per-voice on/off (mute)' },
+];
 
 function freqToNote(freq) {
   if (!Number.isFinite(freq) || freq <= 0) return { note: '--', octave: 0, cents: 0, midi: 0 };
@@ -521,6 +527,106 @@ function useFreqVersion() {
   });
 }
 
+// Capture-scope panel (parameter lock). One shared parameter set ("Parameters
+// tracked") governs both what a recall applies and what undo/redo tracks, then
+// a separate glide timing for Capture and for Undo/Redo. Capture itself always
+// stores everything; the scope is a live mask. See PARAMETER_LOCK.md.
+function ScopePanel() {
+  useFreqVersion();
+  const scope = frequencyManager.getRecallScope();
+  const recallGlideMs = frequencyManager.recallGlideMs;
+  const undoGlideMs = frequencyManager.undoGlideMs;
+
+  const timingRow = (label, glideMs, onSet) => (
+    <div className="scope-timing" title="Glide/recall timing. 0 = instant snap.">
+      <span className="scope-timing-label">{label}</span>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.001"
+        value={glideSecToPos(glideMs / 1000)}
+        onChange={(e) => onSet(glidePosToSec(parseFloat(e.target.value)) * 1000)}
+        className="freq-rail-glide-slider"
+        style={{ '--glide-fill': `${glideSecToPos(glideMs / 1000) * 100}%` }}
+        aria-label={`${label} timing milliseconds`}
+      />
+      <span className="freq-rail-glide-value">{formatTiming(glideMs)}</span>
+    </div>
+  );
+
+  return (
+    <div className="scope-panel">
+      <div className="scope-sec">
+        <span className="scope-title">Parameters tracked</span>
+        <div className="scope-chips" role="group" aria-label="Parameters tracked">
+          {SCOPE_PARAMS.map((p) => {
+            const on = scope.includes(p.key);
+            return (
+              <button
+                key={p.key}
+                type="button"
+                className={`scope-chip${on ? ' on' : ''}`}
+                onClick={() => frequencyManager.toggleParam(p.key)}
+                aria-pressed={on}
+                title={p.title}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="scope-sec">
+        <span className="scope-title">Parameter timing</span>
+        {timingRow('captures', recallGlideMs, (ms) => frequencyManager.setRecallGlideMs(ms))}
+        {timingRow('undo/redo', undoGlideMs, (ms) => frequencyManager.setUndoGlideMs(ms))}
+      </div>
+    </div>
+  );
+}
+
+// Global-transpose readout for the tuning menu, sitting to the right of the
+// Align button. The value is set by dragging the frequency-label strip on the
+// spectrum bar (a DAW-BPM-style master offset that lives outside saved states);
+// this shows the current amount, resets it on click, and exposes the
+// snap-to-semitones toggle. Subscribes to the engine so it tracks live drags.
+function TransposeControl() {
+  const [semi, setSemi] = useState(() => audioEngine.getTransposeSemitones());
+  const [snap, setSnap] = useState(() => audioEngine.getTransposeSnap());
+  useEffect(() => audioEngine.addTransposeListener(() => {
+    setSemi(audioEngine.getTransposeSemitones());
+    setSnap(audioEngine.getTransposeSnap());
+  }), []);
+  const value = semi === 0
+    ? '0'
+    : `${semi > 0 ? '+' : ''}${snap ? semi.toFixed(0) : semi.toFixed(2)}`;
+  return (
+    <div
+      className="tuning-transpose"
+      title="Global transpose — drag the frequency-label strip on the spectrum bar. Lives outside saved states."
+    >
+      <span className="tuning-ctl-label">transpose</span>
+      <button
+        type="button"
+        className="tuning-ctl-btn tuning-transpose-val"
+        onClick={() => audioEngine.setTransposeSemitones(0)}
+        title="Click to reset transpose to 0"
+      >
+        {value} st
+      </button>
+      <label className="tuning-transpose-snap" title="Snap transpose to whole semitones">
+        <input
+          type="checkbox"
+          checked={snap}
+          onChange={(e) => audioEngine.setTransposeSnap(e.target.checked)}
+        />
+        snap
+      </label>
+    </div>
+  );
+}
+
 // Tuning panel — the per-slot scale editor (Root above, rows below)
 // plus the Align / Save / Undo / Redo actions and save-slot chips.
 // Lives in the left-stack alongside the mixer; toggled by the TUNING
@@ -575,14 +681,11 @@ export function TuningPanel({
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  const followRoot = frequencyManager.followRoot;
   const anchorSlot = frequencyManager.anchorSlot;
   const anchorColor = palette.oscColor(anchorSlot, oscillatorCount);
 
   const activeSystem = tuningSystem || frequencyManager.tuningSystem;
   const activeSystemDef = getSystem(activeSystem);
-
-  const recommended = activeSystemDef?.recommendedScale === 12 ? 12 : 7;
 
   // Freeze the per-row inputs into plain text during ANY freq glide, not
   // just orb-drag / Align (the `frozen` prop). Save-state recall glides
@@ -612,27 +715,10 @@ export function TuningPanel({
             resizes this to match scaleSize, but the user can nudge it
             after. */}
         <div className="tuning-topbar">
-          <span className="tuning-topbar-label">voices: {oscillatorCount}, root: #{anchorSlot + 1}</span>
-          <div className="tuning-topbar-right">
-            {/* Follow root — the "follow-#N" caption is plain text; the
-                [X]/[ ] checkbox to its right is the actual toggle. When on,
-                moving the root note transposes every voice (whole chord
-                tracks the root); when off, only ratio-locked voices follow. */}
-            <span className="tuning-follow">
-              <span className="tuning-follow-label">follow-#{anchorSlot + 1}</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={followRoot}
-                aria-label={`Follow root voice ${anchorSlot + 1}`}
-                className={`tuning-follow-box${followRoot ? ' is-active' : ''}`}
-                onClick={() => frequencyManager.setFollowRoot(!followRoot)}
-                title={followRoot
-                  ? `Follow root: ON — moving root #${anchorSlot + 1} transposes every voice`
-                  : `Follow root: OFF — only ratio-locked voices follow root #${anchorSlot + 1}`}
-              >{followRoot ? '[X]' : '[ ]'}</button>
-            </span>
-            <div className="tuning-chip-group" role="group" aria-label="Tuning count">
+          <span className="tuning-topbar-label">root: #{anchorSlot + 1}</span>
+          <div className="tuning-topbar-voices">
+            <span className="tuning-topbar-label">voices: {oscillatorCount}</span>
+            <div className="tuning-chip-group" role="group" aria-label="Voice count">
               <button
                 type="button"
                 className="tuning-chip"
@@ -704,14 +790,11 @@ export function TuningPanel({
               <span>Load</span>
             </button>
           </div>
-          <div className="tuning-system-hint-row">
-            (conventional: {recommended} notes)
-          </div>
         </div>
       </div>
-      {/* Action buttons render OUTSIDE the panel — as a sibling in the
-          .left-stack flex column they appear directly below the panel
-          without the panel's background or padding. */}
+      {/* Controls below the panel — no panel background, but left-inset to
+          line up with the panel's content (the "root/voices" topbar). */}
+      <div className="tuning-below">
       <div className="tuning-actions">
         <button
           type="button"
@@ -725,31 +808,9 @@ export function TuningPanel({
           </svg>
           <span>Align</span>
         </button>
+        <TransposeControl />
       </div>
-      <div
-        className="freq-rail-glide"
-        title="Glide duration applied when a saved state is recalled. 0 = instant snap."
-      >
-        <label className="freq-rail-glide-label" htmlFor="freq-rail-glide-slider">
-          glide
-        </label>
-        <input
-          id="freq-rail-glide-slider"
-          type="range"
-          min="0"
-          max="1"
-          step="0.001"
-          value={glideSecToPos(frequencyManager.recallGlideMs / 1000)}
-          onChange={(e) => {
-            frequencyManager.setRecallGlideMs(glidePosToSec(parseFloat(e.target.value)) * 1000);
-          }}
-          className="freq-rail-glide-slider"
-          aria-label="Recall glide seconds"
-        />
-        <span className="freq-rail-glide-value">
-          {formatGlide(frequencyManager.recallGlideMs / 1000)}
-        </span>
-      </div>
+      <ScopePanel />
       <div
         className="freq-rail-glide freq-rail-curve-row"
         title="Easing curve applied when a saved state is recalled. Click to cycle: linear, ease in, ease out, ease in-out."
@@ -762,6 +823,7 @@ export function TuningPanel({
         >
           {frequencyManager.recallCurveLabel}
         </button>
+      </div>
       </div>
     </>
   );

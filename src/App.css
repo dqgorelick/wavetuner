@@ -129,39 +129,56 @@ p {
 }
 .mixer-panel { width: 275px; }
 .tuning-panel { width: 280px; }
-.midi-panel { width: 275px; }
 
-/* MIDI mappings panel — sits in .right-stack above the mixer when
-   the user is in MIDI learn mode. Same translucent chassis as the
-   mixer so the two panels read as a single stack. Constrained
-   height + inner scroll: with many mappings the panel would
-   otherwise grow past the viewport top and visually collide with
-   the corner toggles. */
-.midi-panel {
-  padding: 9px 10px;
-  background: rgba(0, 0, 0, 0.5);
-  border-radius: 12px;
-  backdrop-filter: blur(10px);
+/* MIDI menu — shares the Settings panel's slide-in chassis (see
+   .settings-panel), but anchored to the LEFT and sliding in from the left so
+   it never covers the mixer (bottom-right), which MIDI-learn needs clickable.
+   The device/MPE sections + the MAPPINGS sub-header stay fixed while the
+   mappings list itself scrolls, so a long mapping list never pushes the
+   controls off-panel. Mutually exclusive with Settings (App.jsx). */
+.settings-panel.midi-menu {
+  right: auto;
+  left: 16px;
+  /* Closed: parked off the left edge (base panel parks off the right). */
+  transform: translateX(calc(-100% - 24px));
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  /* Leave clear room above for the top-row buttons (~70px) and below
-     for the mixer + center play button. The whole menu scrolls as one
-     so the device controls + mappings never overflow the viewport. */
-  max-height: calc(100vh - 360px);
+  overflow: hidden;            /* the mappings body scrolls, not the panel */
+}
+.settings-panel.midi-menu.open {
+  transform: translateX(0);
+}
+/* Everything above the mappings list holds its natural height. */
+.settings-panel.midi-menu .settings-section,
+.settings-panel.midi-menu .midi-panel-header,
+.settings-panel.midi-menu .midi-row-armed {
+  flex: 0 0 auto;
+}
+/* Section sub-headers (MIDI IN / OUT / MAPPINGS) match a settings-section's
+   horizontal inset now that the panel root has no padding of its own. */
+.settings-panel.midi-menu .midi-panel-header {
+  padding: 10px 16px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.settings-panel.midi-menu .midi-row-armed {
+  margin: 6px 12px 0;
+}
+/* Mappings list — the scroll area. Fills the remaining panel height. */
+.settings-panel.midi-menu .midi-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  /* Subtle scrollbar — WebKit only, matches the panel's dark
-     translucent palette. */
+  padding: 8px 16px 12px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
-.midi-panel::-webkit-scrollbar { width: 6px; }
-.midi-panel::-webkit-scrollbar-track { background: transparent; }
-.midi-panel::-webkit-scrollbar-thumb {
+.settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar { width: 6px; }
+.settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar-track { background: transparent; }
+.settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.18);
   border-radius: 3px;
 }
-.midi-panel::-webkit-scrollbar-thumb:hover {
+.settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.32);
 }
 /* Row container — flows naturally inside the single scrolling panel. */
@@ -316,18 +333,61 @@ p {
    scale-size radio so the panel reads as one consistent control
    language. */
 .tuning-topbar {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 14px;
   padding: 2px 0;
+  /* Scootch root + voices (and the connector, which rides this box) up so
+     they tuck closer under the last tuning row. */
+  margin-top: -3px;
+  /* Cap at the desktop panel-content width so the right-aligned voices group
+     lands on the ‹ › rockers (fixed-grid) instead of drifting to the panel
+     edge when the panel widens at the mobile breakpoint. */
+  max-width: 280px;
+}
+/* Elbow connector: the root-selector rail (at panel-content x=9) drops past
+   the last row, rounds a corner, and points into the "root: #N" label — which
+   is indented to receive it. Same color/width as the .tuning-rows rail. Its
+   vertical top rises to meet the rail's bottom edge (below the last dot) so the
+   two lines read as one continuous line down into the elbow. */
+.tuning-topbar::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: -7px;
+  bottom: 50%;
+  width: 12px;
+  border-left: 2px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.16);
+  border-bottom-left-radius: 7px;
+  pointer-events: none;
+}
+.tuning-topbar > .tuning-topbar-label:first-child {
+  margin-left: 22px;
+}
+.tuning-topbar-voices {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+/* Controls below the panel: no background, but same box as the panel so their
+   content lines up with the root/voices topbar. */
+.tuning-below {
+  width: 280px;
+  padding: 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 .tuning-topbar-label {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.3px;
   font-weight: 700;
-  color: var(--text-color, #e8e8e8);
+  color: rgba(255, 255, 255, 0.6);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -494,11 +554,60 @@ p {
    here, so the grid is 4 columns now. Content-sized columns pinned
    left so each button is only as wide as its icon + label. */
 .tuning-actions {
-  display: grid;
-  grid-template-columns: repeat(4, auto);
-  justify-content: start;
-  gap: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+/* Shared control vocabulary for the row below the tuning panel — matches the
+   tuning menu's filled buttons + segmented chips. */
+.tuning-ctl-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.tuning-ctl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.tuning-ctl-btn:hover { background: rgba(255, 255, 255, 0.2); }
+.tuning-transpose {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.tuning-transpose-val {
+  min-width: 52px;
+  padding: 0 8px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.tuning-transpose-snap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+.tuning-transpose-snap input { accent-color: rgba(255, 255, 255, 0.75); }
 
 /* Tablet / mobile: lift both stacks above the spectrum bar's orb row
    so they aren't covered by the orbs at narrow widths, and clamp the
@@ -519,6 +628,9 @@ p {
   }
   .mixer-panel { width: min(275px, calc(100vw - 16px)); }
   .tuning-panel { width: min(310px, calc(100vw - 16px)); }
+  /* Pull the wide system dropdown in ~5px at the narrow panel width so the
+     footer line doesn't run edge-to-edge. The flex:1 select absorbs it. */
+  .tuning-system-row { padding-right: 5px; }
 }
 
 @media (max-width: 480px) {
@@ -851,6 +963,51 @@ p {
   white-space: nowrap;
   overflow: hidden;
 }
+/* Main row's label holds the collapse chevron beside the text. Inline-flex
+   so "Main" stays left-aligned with the Drone/KBD/MIDI labels and the button
+   tucks in right after it. */
+.mixer-bus-label-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+/* Disclosure toggle for the Drone / KBD / MIDI bus faders. A clear, tappable
+   pill — filled background (no outline) so it reads as a control, nudged a
+   little right of the "Main" label. Chevron rotates to point down when the
+   faders are shown. */
+.mixer-bus-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  margin-left: 5px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.mixer-bus-collapse:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+.mixer-bus-collapse.is-expanded {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.mixer-bus-collapse-chevron {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+.mixer-bus-collapse.is-expanded .mixer-bus-collapse-chevron {
+  transform: rotate(90deg);
+}
+
 /* Numeric readout in the note column. Right-aligned so decimals line
    up across the four bus rows. */
 .mixer-bus-value {
@@ -1551,6 +1708,12 @@ kbd {
   width: 100%;
   accent-color: rgba(240, 244, 255, 0.85);
 }
+.tune-slider-row.disabled {
+  opacity: 0.4;
+}
+.tune-slider-row.disabled .tune-slider {
+  cursor: not-allowed;
+}
 
 .curve-editor {
   margin-top: 10px;
@@ -1859,8 +2022,10 @@ kbd {
 }
 
 /* Top-row toggles — always-visible corner buttons. Right cluster:
-   settings (16px), midi (58px), share (100px). Left cluster: help
-   (16px), patches (58px), hydra (100px). */
+   settings (16px), share (58px), scope-mode (100px). Left cluster: help
+   (16px), patches (58px), hydra (100px), midi (142px). MIDI lives at the
+   right end of the left cluster so its button sits on the same side as the
+   MIDI menu, which slides in from the left. */
 .help-toggle,
 .patches-toggle,
 .hydra-toggle,
@@ -1898,10 +2063,10 @@ kbd {
 }
 
 .settings-toggle { right: 16px; }
-.midi-toggle     { right: 58px; }
-.share-toggle    { right: 100px; }
+.share-toggle    { right: 58px; }
 .patches-toggle  { left: 58px; }
 .hydra-toggle    { left: 100px; }
+.midi-toggle     { left: 142px; }
 .patches-toggle:hover,
 .settings-toggle:hover,
 .share-toggle:hover,
@@ -1980,7 +2145,7 @@ kbd {
 .scope-mode-buttons {
   position: fixed;
   top: 16px;
-  right: 142px;
+  right: 100px;
   /* Matches the other top-row toggles so a tall .right-stack panel
      can't visually overlap. */
   z-index: 700;
@@ -2201,31 +2366,82 @@ kbd {
 }
 .cap-bar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); color: #fff; }
 .cap-bar-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-.cap-slot {
-  width: 40px;
+/* Each slot is a fixed-width RECTANGLE carrying the state chrome (border/bg).
+   Filled slots show the numeral + an always-visible delete ✕ on the right;
+   empty slots are the same width so the row stays uniform. */
+.cap-slot-wrap {
+  display: inline-flex;
+  align-items: center;
+  width: 52px;
   height: 36px;
   border-radius: 7px;
-  cursor: pointer;
-  font-family: monospace;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: transparent;
   color: rgba(255, 255, 255, 0.4);
-  display: grid;
-  place-items: center;
+  overflow: hidden;
   transition: color 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
-.cap-slot.empty { color: rgba(255, 255, 255, 0.28); border-style: dashed; cursor: default; }
-.cap-slot.filled { color: #eef0f3; background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.26); }
-.cap-slot.filled:hover { border-color: rgba(255, 255, 255, 0.5); }
-.cap-slot.staged {
+.cap-slot-wrap.empty { color: rgba(255, 255, 255, 0.28); }
+.cap-slot-wrap.filled { color: #eef0f3; background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.26); }
+.cap-slot-wrap.filled:hover { border-color: rgba(255, 255, 255, 0.5); }
+.cap-slot-wrap.staged {
   color: #eaf3ff;
   border-color: #4a9eff;
   background: rgba(74, 158, 255, 0.16);
   box-shadow: 0 0 0 1px #4a9eff, 0 3px 14px -5px rgba(74, 158, 255, 0.65);
 }
+/* Empty recall scope: numerals are non-performing (dashed, dim). */
+.cap-slot-wrap.inert {
+  color: rgba(255, 255, 255, 0.28);
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: transparent;
+  box-shadow: none;
+}
+.cap-slot-main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.cap-slot-main:disabled { cursor: default; }
+.cap-slot-del {
+  flex: none;
+  width: 20px;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.5;
+  display: grid;
+  place-items: center;
+  transition: opacity 0.14s, color 0.14s;
+}
+.cap-slot-del:hover { color: #ff6b6b; opacity: 1; }
+/* Transparent stand-in that holds the delete column's width when a slot has
+   no ✕. It's a button so clicking this reserved area still loads the slot
+   (rather than a dead zone), and it keeps the numeral from recentering. */
+.cap-slot-spacer {
+  flex: none;
+  width: 20px;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.cap-slot-spacer:disabled { cursor: default; }
 .cap-x {
   width: 34px;
   height: 36px;
@@ -2445,14 +2661,19 @@ kbd {
   transform: translateY(0);
   pointer-events: auto;
 }
+/* Nudge the L/R/⊙ row (and its reset) down 2px — purely visual, so the
+   panel heights and the separately-fixed spectrum bar (.fsb-row) stay put.
+   The 4px gap to the drone squares below absorbs it without collision. */
 .pan-tray-cells {
   display: flex;
   gap: 4px;
   align-items: center;
+  transform: translateY(2px);
 }
 .pan-tray-slot {
   display: flex;
   align-items: center;
+  transform: translateY(2px);
 }
 .pan-tray-slot-right {
   justify-content: flex-start;
@@ -3247,13 +3468,41 @@ kbd {
      Use dvh-safe positioning (fixed bottom values), so the mobile browser
      URL bar appearing/disappearing keeps everything anchored at the true bottom. */
   .osc-controls-panel {
-    bottom: max(8px, env(safe-area-inset-bottom));
+    /* Lifted 44px (toggle row 36px + 8px gap) so the KBD/DRONE/MIXER/TUNING
+       strip below can sit directly under the play/save controls. */
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 44px);
     left: 0;
     right: 0;
     transform: none;
     max-width: 100%;
     padding: 0 8px;
     box-sizing: border-box;
+  }
+
+  /* Pull the KBD / DRONE / MIXER / TUNING toggles out of the right stack and
+     center them in a strip pinned to the very bottom, under the play/save row.
+     left:50% + translateX shrink-wraps to the buttons so the empty flanks
+     don't capture taps meant for the visualizer behind them. */
+  .right-toggles {
+    position: fixed;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    bottom: max(8px, env(safe-area-inset-bottom));
+    justify-content: center;
+    transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Tunings (left stack) and Mixer (right stack) ride 80px higher (220 → 300)
+     so they clear the lifted spectrum/controls and the centered toggle strip
+     now pinned at the bottom. Overrides the ≤1250 rules by source order. */
+  .left-stack,
+  .right-stack {
+    bottom: calc(300px + env(safe-area-inset-bottom));
+  }
+  #wrapper.kbd-tray-open .left-stack,
+  #wrapper.kbd-tray-open .right-stack {
+    bottom: calc(300px + env(safe-area-inset-bottom) + var(--kbd-tray-h));
   }
 
   .osc-count-bar {
@@ -3402,7 +3651,9 @@ kbd {
    the right. The bar itself is the natural-flow flex item in the middle. */
 .fsb-row {
   position: fixed;
-  bottom: calc(60px + env(safe-area-inset-bottom));
+  /* 73px lifts the spectrum bar + orb row above the controls panel, opening
+     up space between the spectrum and the pan-tray (L/R/⊙) buttons below. */
+  bottom: calc(73px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -3462,10 +3713,10 @@ kbd {
   transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s;
 }
 .capture-btn:hover:not(:disabled) {
-  border-color: #4a9eff;
+  border-color: rgba(255, 255, 255, 0.92);
   color: #fff;
-  background: rgba(74, 158, 255, 0.12);
-  box-shadow: 0 0 14px -4px rgba(74, 158, 255, 0.75);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 14px -4px rgba(255, 255, 255, 0.6);
 }
 .capture-btn:disabled {
   opacity: 0.3;
@@ -3722,6 +3973,31 @@ kbd {
   text-shadow: 0 0 6px currentColor, 0 0 2px rgba(0, 0, 0, 0.8);
 }
 
+/* Same-octave keyboard indicator: a small dot floating above the orb, shown
+   when a keyboard/MIDI note at this slot's EXACT octave is sounding. The orb
+   no longer lights up for that case, so a played drone isn't confused with a
+   played key. Collapsed (scale 0, transparent) at rest; pops in on `.active`.
+   Positioned by inline left/top (orb center x, KBD_DOT_CENTER_Y); the
+   translate(-50%, -50%) centers it on that point. */
+.fsb-kbd-dot {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dot-color);
+  box-shadow: 0 0 6px var(--dot-color), 0 0 2px var(--dot-color);
+  mix-blend-mode: plus-lighter;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0);
+  transition: opacity 0.08s linear, transform 0.12s ease;
+  z-index: 26;
+}
+.fsb-kbd-dot.active {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
 /* Octave columns flanking the number — a vertical stack of up to 5
    bubbles per side, each representing one octave's distance from the
    slot's pitch. Per the layout spec:
@@ -3744,7 +4020,7 @@ kbd {
    logic as before, just stacked vertically. */
 .fsb-octave-bubble {
   display: block;
-  width: 3px;
+  width: 5px;
   height: 0;
   margin: 0;
   border-radius: 50%;
@@ -3756,7 +4032,7 @@ kbd {
 }
 .fsb-octave-bubble[data-state='dim'],
 .fsb-octave-bubble[data-state='on'] {
-  height: 3px;
+  height: 5px;
   margin: 1px 0;
 }
 .fsb-octave-bubble[data-state='dim'] { opacity: 0.25; }
@@ -4513,13 +4789,13 @@ kbd {
    rather than via a wholesale `bottom += var(...)` because each element
    has its own bottom origin (some include safe-area inset, some don't). */
 #wrapper.kbd-tray-open .fsb-row {
-  bottom: calc(60px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
+  bottom: calc(73px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
 }
 /* Drone tray opens above the controls panel — push the spectrum bar up
    by --drone-tray-h so it sits clear of the new tray. Stacks additively
    with the kbd-tray shift via the wrapper variable defaults. */
 #wrapper.drone-tray-open .fsb-row {
-  bottom: calc(60px + var(--kbd-tray-h) + var(--drone-tray-h) + env(safe-area-inset-bottom));
+  bottom: calc(73px + var(--kbd-tray-h) + var(--drone-tray-h) + env(safe-area-inset-bottom));
 }
 #wrapper.kbd-tray-open .osc-controls-panel {
   bottom: calc(8px + var(--kbd-tray-h));
@@ -5340,19 +5616,21 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
+  height: 22px;
   background: rgba(255, 255, 255, 0.12);
   border: none;
-  color: rgba(255, 255, 255, 0.95);
-  padding: 4px 8px;
-  border-radius: 5px;
-  font-family: inherit;
+  color: #fff;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.3px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
+.freq-rail-action:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); }
 .freq-rail-action:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
@@ -5490,43 +5768,161 @@ kbd {
   color: rgba(255, 255, 255, 0.7);
 }
 .freq-rail-glide-label {
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0.3px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.6);
+  min-width: 62px;
   flex: none;
 }
+/* Match the mixer faders: a 2px track, a colored fill line, and a thin
+   vertical-bar handle (not a native round thumb). */
 .freq-rail-glide-slider {
   flex: 0 1 50%;
   min-width: 40px;
   height: 14px;
   cursor: pointer;
-  accent-color: rgba(255, 255, 255, 0.7);
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  touch-action: none;
+}
+.freq-rail-glide-slider::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 0;
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.7) var(--glide-fill, 0%),
+    rgba(255, 255, 255, 0.14) var(--glide-fill, 0%)
+  );
+}
+.freq-rail-glide-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 2px;
+  height: 14px;
+  margin-top: -6px;
+  border: none;
+  border-radius: 0;
+  background: #fff;
+  transition: box-shadow 0.15s;
+}
+.freq-rail-glide-slider:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 9px rgba(255, 255, 255, 0.85);
+}
+.freq-rail-glide-slider::-moz-range-track {
+  height: 2px;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.14);
+}
+.freq-rail-glide-slider::-moz-range-progress {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.7);
+}
+.freq-rail-glide-slider::-moz-range-thumb {
+  width: 2px;
+  height: 14px;
+  border: none;
+  border-radius: 0;
+  background: #fff;
+  transition: box-shadow 0.15s;
+}
+.freq-rail-glide-slider:hover::-moz-range-thumb {
+  box-shadow: 0 0 9px rgba(255, 255, 255, 0.85);
 }
 .freq-rail-glide-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.85);
   min-width: 40px;
   text-align: right;
   flex: none;
 }
 .freq-rail-glide-curve {
   flex: none;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 5px;
-  padding: 2px 7px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  border-radius: 6px;
+  padding: 0 10px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.15s;
 }
-.freq-rail-glide-curve:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.3);
+.freq-rail-glide-curve:hover { background: rgba(255, 255, 255, 0.2); }
+
+/* ── Parameter-lock (capture scope) panel ─────────────────────────── */
+.scope-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 6px;
 }
+.scope-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity 0.15s;
+}
+.scope-title {
+  font-family: monospace;
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+/* Segmented group — same chassis as the tuning menu's .tuning-chip-group. */
+.scope-chips {
+  display: inline-flex;
+  align-items: stretch;
+  width: 100%;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.scope-chip {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.65);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.scope-chip + .scope-chip { border-left: 1px solid rgba(255, 255, 255, 0.06); }
+.scope-chip.on { color: #fff; background: rgba(255, 255, 255, 0.22); }
+.scope-chip:hover:not(.on) { color: rgba(255, 255, 255, 0.92); }
+.scope-timing { display: flex; align-items: center; gap: 8px; }
+.scope-timing-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: rgba(255, 255, 255, 0.6);
+  min-width: 62px;
+}
+.scope-timing .freq-rail-glide-value { min-width: 54px; }
+/* Slider sits on the right side of the row, vertically centered. */
+.scope-timing .freq-rail-glide-slider { flex: 1; min-width: 0; }
 
 .dissonance-meter {
   width: calc(100% + 32px);
@@ -5605,6 +6001,31 @@ kbd {
    FrequencySliders already serves as the primary input there. */
 @media (max-width: 768px) {
   .freq-rail { display: none; }
+
+  /* The whole bottom cluster (spectrum + controls) rides 44px higher on mobile
+     to clear the centered toggle strip now pinned at the very bottom. These
+     .fsb-row overrides are placed after the desktop rules so they win by source
+     order (same specificity); +44 keeps the spectrum's spacing above the lifted
+     controls panel identical to desktop. */
+  .fsb-row {
+    bottom: calc(73px + 44px + env(safe-area-inset-bottom));
+  }
+  #wrapper.kbd-tray-open .fsb-row {
+    bottom: calc(73px + 44px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
+  }
+  #wrapper.drone-tray-open .fsb-row {
+    bottom: calc(73px + 44px + var(--kbd-tray-h) + var(--drone-tray-h) + env(safe-area-inset-bottom));
+  }
+
+  /* Keyboard tray open: lift both the centered toggle strip and the play/save
+     panel above it by the tray height. Placed after the desktop kbd-tray rules
+     so these win by source order (same specificity). */
+  #wrapper.kbd-tray-open .right-toggles {
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
+  }
+  #wrapper.kbd-tray-open .osc-controls-panel {
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 44px + var(--kbd-tray-h));
+  }
 }
 
 

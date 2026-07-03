@@ -324,6 +324,7 @@ function meterZone(holdLevel) {
 // visible long enough to read.
 const MasterFader = memo(function MasterFader({
   value, muted, peakL, peakR, peakHoldL, peakHoldR, onToggleMute, disabled,
+  busExpanded, onToggleBusExpanded,
 }) {
   const ballPct = Math.max(0, Math.min(1, value)) * 100;
   const metPctL = Math.max(0, Math.min(1, peakL)) * 100;
@@ -338,7 +339,20 @@ const MasterFader = memo(function MasterFader({
       className={`mixer-row mixer-row-master ${muted ? 'muted' : ''}`}
       style={{ '--mixer-color': BUS_COLOR }}
     >
-      <span className="mixer-bus-label">Main</span>
+      <span className="mixer-bus-label mixer-bus-label-main">
+        Main
+        <button
+          type="button"
+          className={`mixer-bus-collapse ${busExpanded ? 'is-expanded' : ''}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={onToggleBusExpanded}
+          title={busExpanded ? 'Hide Drone / KBD / MIDI faders' : 'Show Drone / KBD / MIDI faders'}
+          aria-label={busExpanded ? 'Hide bus faders' : 'Show bus faders'}
+          aria-expanded={busExpanded}
+        >
+          <span className="mixer-bus-collapse-chevron">▸</span>
+        </button>
+      </span>
       <span className="mixer-bus-value">{value.toFixed(2)}</span>
       <span className="mixer-source-tag mixer-source-tag-empty" />
       <div
@@ -429,6 +443,12 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
   const [peakR, setPeakR] = useState(0);
   const [peakHoldL, setPeakHoldL] = useState(0);
   const [peakHoldR, setPeakHoldR] = useState(0);
+  // The Drone / KBD / MIDI bus faders are collapsed by default — Main stays
+  // visible and its chevron toggles them so the strip is compact until you
+  // need per-source balance. Open/closed state persists across sessions.
+  const [busExpanded, setBusExpanded] = useState(() => {
+    try { return localStorage.getItem('mixerBusExpanded') === '1'; } catch { return false; }
+  });
 
   useEffect(() => {
     let raf;
@@ -684,36 +704,40 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
           visible — these knobs balance per-source loudness without
           restructuring the engine. */}
       <div className="mixer-bus-stack">
-        <BusFader
-          busKey="drone"
-          label="Drone"
-          value={busDrone}
-          muted={muteDrone}
-          stereoMode={stereoDrone}
-          onToggleMute={() => audioEngine.toggleDroneBusMute()}
-          onToggleStereo={() => droneStereo.setMode(stereoDrone === 'stereo' ? 'lr' : 'stereo')}
-          disabled={midiLearnOn}
-        />
-        <BusFader
-          busKey="kbd"
-          label="KBD"
-          value={busKbd}
-          muted={muteKbd}
-          stereoMode={stereoKbd}
-          onToggleMute={() => audioEngine.toggleKbdBusMute()}
-          onToggleStereo={() => keyboardStereo.setMode(stereoKbd === 'stereo' ? 'lr' : 'stereo')}
-          disabled={midiLearnOn}
-        />
-        <BusFader
-          busKey="midi"
-          label="MIDI"
-          value={busMidi}
-          muted={muteMidi}
-          stereoMode={stereoMidi}
-          onToggleMute={() => audioEngine.toggleMidiBusMute()}
-          onToggleStereo={() => midiStereo.setMode(stereoMidi === 'stereo' ? 'lr' : 'stereo')}
-          disabled={midiLearnOn}
-        />
+        {busExpanded && (
+          <>
+            <BusFader
+              busKey="drone"
+              label="Drone"
+              value={busDrone}
+              muted={muteDrone}
+              stereoMode={stereoDrone}
+              onToggleMute={() => audioEngine.toggleDroneBusMute()}
+              onToggleStereo={() => droneStereo.setMode(stereoDrone === 'stereo' ? 'lr' : 'stereo')}
+              disabled={midiLearnOn}
+            />
+            <BusFader
+              busKey="kbd"
+              label="KBD"
+              value={busKbd}
+              muted={muteKbd}
+              stereoMode={stereoKbd}
+              onToggleMute={() => audioEngine.toggleKbdBusMute()}
+              onToggleStereo={() => keyboardStereo.setMode(stereoKbd === 'stereo' ? 'lr' : 'stereo')}
+              disabled={midiLearnOn}
+            />
+            <BusFader
+              busKey="midi"
+              label="MIDI"
+              value={busMidi}
+              muted={muteMidi}
+              stereoMode={stereoMidi}
+              onToggleMute={() => audioEngine.toggleMidiBusMute()}
+              onToggleStereo={() => midiStereo.setMode(stereoMidi === 'stereo' ? 'lr' : 'stereo')}
+              disabled={midiLearnOn}
+            />
+          </>
+        )}
         <MasterFader
           value={master}
           muted={muteMaster}
@@ -723,6 +747,12 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
           peakHoldR={peakHoldR}
           onToggleMute={() => audioEngine.toggleMasterMute()}
           disabled={midiLearnOn}
+          busExpanded={busExpanded}
+          onToggleBusExpanded={() => setBusExpanded((v) => {
+            const next = !v;
+            try { localStorage.setItem('mixerBusExpanded', next ? '1' : '0'); } catch { /* ignore */ }
+            return next;
+          })}
         />
       </div>
     </div>

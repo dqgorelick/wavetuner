@@ -33,6 +33,7 @@ const DRONE_PLAY_VOL_CAP = 0.65;
 // (± = up/down), clamped to ±2 octaves; persisted to its own localStorage key.
 const TRANSPOSE_MAX_SEMITONES = 24;
 const TRANSPOSE_STORAGE_KEY = 'wavetuner.transposeSemitones';
+const TRANSPOSE_SNAP_KEY = 'wavetuner.transposeSnap';
 
 // Master-bus soft limiter / saturator curves. Integers match the values
 // the worklet expects via port.postMessage({ curve }).
@@ -230,6 +231,9 @@ class AudioEngine {
     // listeners so a transpose never wakes FrequencyManager's undo machinery.
     this._transposeSemitones = AudioEngine._loadTranspose();
     this._transposeRatio = Math.pow(2, this._transposeSemitones / 12);
+    // When snap is on, transpose quantizes to whole semitones (the tuning
+    // menu's checkbox); off = continuous. Persisted alongside the offset.
+    this._transposeSnap = AudioEngine._loadTransposeSnap();
     this._transposeListeners = new Set();
 
     AudioEngine.instance = this;
@@ -258,6 +262,19 @@ class AudioEngine {
   _persistTranspose() {
     try { localStorage.setItem(TRANSPOSE_STORAGE_KEY, String(this._transposeSemitones)); } catch { /* ignore */ }
   }
+  static _loadTransposeSnap() {
+    try { return localStorage.getItem(TRANSPOSE_SNAP_KEY) === '1'; } catch { return false; }
+  }
+  getTransposeSnap() { return this._transposeSnap; }
+  setTransposeSnap(on) {
+    const next = !!on;
+    if (next === this._transposeSnap) return;
+    this._transposeSnap = next;
+    try { localStorage.setItem(TRANSPOSE_SNAP_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+    // Enabling snap lands the current offset on the nearest whole semitone.
+    if (next) this.setTransposeSemitones(Math.round(this._transposeSemitones));
+    this._notifyTranspose();
+  }
 
   addTransposeListener(fn) {
     this._transposeListeners.add(fn);
@@ -281,8 +298,10 @@ class AudioEngine {
    * and persist once on release to avoid localStorage thrash.
    */
   setTransposeSemitones(semitones, { persist = true } = {}) {
+    let v = Number(semitones) || 0;
+    if (this._transposeSnap) v = Math.round(v);   // quantize to whole semitones
     const clamped = Math.max(-TRANSPOSE_MAX_SEMITONES,
-      Math.min(TRANSPOSE_MAX_SEMITONES, Number(semitones) || 0));
+      Math.min(TRANSPOSE_MAX_SEMITONES, v));
     if (Math.abs(clamped - this._transposeSemitones) < 1e-6) {
       if (persist) this._persistTranspose();
       return;
@@ -2343,6 +2362,9 @@ class AudioEngine {
 
     if (this.mutedStates[index]) {
       this.preMuteVolumes[index] = clampedVol;
+      // Notify so observers (FrequencyManager's undo snapshotter, the
+      // parameter-lock scope) see the level change even while muted.
+      this._notifyFrequencyChange();
       return;
     }
 
@@ -2357,6 +2379,10 @@ class AudioEngine {
       const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
       this.gainNodesR[index].gain.setTargetAtTime(partnerTarget, t, 0.016);
     }
+    // Volume is a parameter-lock dimension — notify so undo/recall observers
+    // record it. (setFrequency and the mute toggles already notify; setVolume
+    // historically did not.)
+    this._notifyFrequencyChange();
   }
   
   /**
@@ -2742,7 +2768,20 @@ class AudioEngine {
   getAllFrequencies() {
     return [...this.frequencyValues];
   }
-  
+
+  /**
+   * Actual sounding drone frequencies in Hz — the nominal frequencyValues
+   * scaled by the global transpose ratio (which getAllFrequencies omits;
+   * transpose is a playback-only offset never folded into the stored
+   * nominal Hz). Use this for anything that needs drones to line up with
+   * keyboard voice frequencies (which already include transpose), e.g. the
+   * timeline visualizer.
+   */
+  getSoundingFrequencies() {
+    const ratio = this._transposeRatio || 1;
+    return this.frequencyValues.map(f => f * ratio);
+  }
+
   /**
    * Get all volumes (as percentages 0-100)
    */

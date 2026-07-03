@@ -22,20 +22,14 @@ function CaptureButton() {
 
   const slots = frequencyManager.getSlots();
   const used = new Set(slots.map((s) => s.name));
-  const stagedId = frequencyManager.stagedSlotId;
-  const stagedSlot = stagedId != null ? slots.find((s) => s.id === stagedId) : null;
+  // Always fill the lowest empty slot (never overwrite) — clearing a slot's ✕
+  // is how you free one. Disabled when all four are full.
   const nextEmpty = NUMERALS.find((n) => !used.has(n)) || null;
-  // Overwrite the staged slot if one is selected; otherwise fill the next empty.
-  const target = stagedSlot ? stagedSlot.name : nextEmpty;
 
   const capture = () => {
-    if (!target) return;
-    const existing = slots.find((s) => s.name === target);
-    // "Overwrite" = delete then re-save under the same numeral (per the plan).
-    if (existing) frequencyManager.deleteSlot(existing.id);
-    const newId = frequencyManager.saveCurrent({ name: target });
-    // Auto-select the slot we just captured, so its return markers are armed
-    // and the next capture overwrites it in place (deselect first for a new slot).
+    if (!nextEmpty) return;
+    const newId = frequencyManager.saveCurrent({ name: nextEmpty });
+    // Select the slot we just captured so its return markers are armed.
     if (newId) frequencyManager.stageSlot(newId);
   };
 
@@ -44,10 +38,10 @@ function CaptureButton() {
       type="button"
       className="capture-btn"
       onClick={capture}
-      disabled={!target}
-      title={stagedSlot
-        ? `Overwrite save ${stagedSlot.name} with the current state`
-        : (nextEmpty ? `Capture current state to save ${nextEmpty}` : 'All slots full — select one to overwrite')}
+      disabled={!nextEmpty}
+      title={nextEmpty
+        ? `Capture current state to save ${nextEmpty}`
+        : 'All slots full — clear one with its ✕ to capture again'}
       aria-label="Capture current state"
     >
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

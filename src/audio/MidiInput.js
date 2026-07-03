@@ -86,6 +86,13 @@ class MidiInput {
     const next = !!on;
     if (next === this._enabled) return;
     this._enabled = next;
+    // Toggling MIDI input on or off releases any notes currently held via
+    // MIDI so they don't hang. Once disabled, _handleMessage drops the
+    // controller's own note-offs, so we have to emit them ourselves.
+    // Scoped to the 'midi' source — the on-screen / computer keyboards
+    // ('kbd') keep playing. Downstream, the MPE-out sync loop sees these
+    // voices vanish and sends the matching note-offs to the external synth.
+    keyboardVoiceManager.releaseAll('midi');
     this._fire();
   }
 

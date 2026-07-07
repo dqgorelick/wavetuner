@@ -1,12 +1,87 @@
 # WaveTuner iOS — Status & Test Checklist
 
-Living doc tracking what's shipped vs upcoming on the iOS port. Last updated 2026-05-22.
+Living doc tracking what's shipped vs upcoming on the iOS port. Last updated 2026-07-06.
 
 See `ios-port-plan.md` (same dir) for the full rationale on the rollout order.
 
 ---
 
 ## 🧪 Just landed — please test
+
+### 12. Listener main page + panel menu system (UI overhaul phases 3–8, 2026-07-06)
+
+The new app face (`ContentView.swift` rebuilt): full-bleed visual field, pinned spectrum bar, mute dots, transport, and all panels broken out of Settings into a menu row. Granular merged in as a menu entry. All landed in commits `3ec3af6..8f908f9`.
+
+**Main page**
+- [ ] Tap-to-start splash unchanged; after start: visual field fills the screen, bottom stack = spectrum bar → mute dots → transport → menu row
+- [ ] Mute dots: one large palette dot per drone; tap = mute (hollow) / unmute (filled)
+- [ ] Transport: ⏸ stops the engine (back to splash), ⏭ glides to the next factory chord, timer = auto-mode toggle (highlights), mic (disabled without headphones), ↩ Revert glides back to the last-applied chord (disabled until one applies)
+- [ ] Menu row opens: mixer · chords · tuning · perform · patches · grains · ⚙
+- [ ] Camera toggle now lives in Settings → ui; when on, flip/lens buttons sit at the visual field's top corners
+- [ ] Grains: menu entry opens the granular panel; engine keeps sounding with the sheet closed; dots still drive notes (GRANULAR-PORT.md checklist still applies)
+
+**Transpose swipe (headline interaction)**
+- [ ] Horizontal drag on the bar background (not an orb): tick ruler slides under stationary orbs, "+N st" capsule appears; orb drags completely unaffected
+- [ ] Double-tap background: transpose glides back to 0
+- [ ] Tuning panel: transpose readout row with snap (whole st) + reset
+- [ ] Save-state applies (Next chord) do NOT reset the live transpose (web parity)
+
+**Mixer panel** (web Mixer.jsx port)
+- [ ] Drone rows: sounding Hz (moves with transpose), fader, mute ×; vertical finger sweep across faders sets each to the finger's X (drag-anywhere)
+- [ ] Bus strip (collapsible): drone/kbd/midi 0–2× faders, unity detent at center, double-tap resets to 1×, per-bus mute
+- [ ] Master: fader track is live L/R peak meters with peak-hold ticks (green/amber/red)
+- [ ] Voice rows appear while any live voice sounds (kbd/midi plumbing still hidden, harmless)
+
+**Tunings panel** (web TuningPanel port)
+- [ ] Per-slot rows: root radio, mute marker, Hz/ratio/note/cents cells → tap opens compact editor sheet, commit on return; invalid input reads red
+- [ ] Root row: ÷2 ×2 transposes all proportionally; other rows: ‹ › steps to nearest system candidate
+- [ ] Footer: system picker + 7/12 + Load (resizes voices, loads scale from anchor); JI section (var/glide/random/align/snap/undo) below
+- Note: "align" is still 5-limit JI, not the active system (needs `computeJustIntonationTargets(systemKey:)` — flagged follow-up)
+
+**Save states menu**
+- [ ] Capture (named), tap-to-recall with playhead indicator, rename/overwrite via context menu, swipe delete, EditButton reorder, restore-factory footer (confirmed, user slots untouched)
+
+**Perform panel (RecallEngine v1)**
+- [ ] "parameters tracked" chips freq/vol/on-off/transpose (default: freq only) — only tracked params change on recall/undo/revert
+- [ ] Transition: glide / step (staggered starts) / step-all (staggered + every voice re-attacks)
+- [ ] Timing sliders: recall / step / undo; 0 reads "snap"; auto-mode dwell lives at the bottom
+- [ ] Empty scope: recall inert, but Revert still fixes freq+vol+onoff (guard)
+- [ ] Notes coming ON attack at transition start; notes going OFF hold and release at the end; a new recall mid-transition supersedes cleanly
+
+**Patches panel** — restyled cards (palette dots, relative dates); behavior unchanged: [ ] save/load/rename/delete still work
+
+### 11. Hydra chromatic shader (off by default — flip on to evaluate)
+
+The web's default `builtin_chromatic` Hydra sketch, hand-ported to a two-pass Metal pipeline (scope strokes → offscreen `s0` texture → RGB-split fragment shader with ping-pong feedback). Becomes the app default with the new main page; for now it's opt-in.
+
+- [ ] Settings → oscilloscope → renderer → **metal** (chromatic only renders on the Metal path)
+- [ ] A "visual style" pill row (plain / chromatic) appears under the renderer row once metal is selected — tap **chromatic**
+- [ ] Toggle survives force-quit (persisted to UserDefaults key `visualStyle`); renderer choice now persists too
+- [ ] **Round 2 (parity + stroke width):** RGB fringing is clearly visible (green/blue edges + red slivers, hue drifts over time), strokes leave a persistent multi-ghost trail, and the trail wobbles frame-to-frame (noise warp) — verified against the compiled web GLSL (`research/hydra-chromatic-compiled.frag.glsl`)
+- [ ] Settings → oscilloscope → **stroke width** slider (0.5–8×): thickens strokes on BOTH renderers; on metal+chromatic, thicker strokes bolden the whole visual
+- [ ] Metal "plain" style now matches the CG neon look (5-layer glow stack, real ribbon thickness instead of 1-px lines)
+- [ ] Scope shows the web look: RGB-split lissajous with slowly drifting chromatic aberration + a noise-warped feedback trail
+- [ ] Compare side-by-side with the web app's default visual — should read as the same instrument
+- [ ] Rotate the device — no stale feedback smears (textures rebuild, trail restarts from black)
+- [ ] Flip back to `plain` — old Metal lissajous unchanged; flip Renderer back to CG — untouched
+- Known inherited limits: 1-px lines, Hilbert blank on Metal, `.both` degrades to analysis (same as item 8)
+
+### 10. Save states (chord slots) — engine only, no UI yet
+
+Ordered lightweight chord snapshots (frequencies/volumes/mutes), distinct from named Patches. Backs the upcoming main page's Next-chord / auto-mode / Revert. Nothing visible yet — API surface only; first launch behavior unchanged.
+
+- Factory set seeds on first touch: Home → Major triad → Subdominant → Sus9 → Maj7 → Open fifth (5-limit JI over 101.25 Hz), persisted to `Application Support/WaveTuner/savestates.json` (`wavetuner.savestates.v1`)
+- Engine API: `advanceToNextSaveState()`, `applySaveState(_:glide:)`, `revertToLastSaveState()` (non-consuming "fix it"), `undoSaveStateApply()`, `captureSaveState(name:)`, auto-mode (`setAutoModeEnabled`, `setAutoDwellSeconds` 5-300s, default 30, never persists as on)
+- [ ] Smoke test from debugger if desired: call `advanceToNextSaveState()` a few times → frequencies glide (~2s) through the factory progression
+
+### 9. On-screen keyboard removed + MIDI settings hidden (UI overhaul pass 2, phase 1)
+
+Per `ios-ui-overhaul-plan.md`: the piano-keys chip and keyboard tray are gone; "midi & keyboard (testing)" and "mpe output" settings sections are gated behind `showMidiSettings = false` in SettingsPanel.swift (all code intact, one flag re-enables).
+
+- [ ] No piano-keys button on the scope zone; no keyboard tray anywhere
+- [ ] Settings shows no MIDI/MPE sections
+- [ ] Everything else unchanged: granular sheet, camera buttons, faders, generative mode
+- ⚠️ Known: the **drones count stepper** lived inside the gated MIDI section and is hidden with it — gets re-homed in the main-page scaffold pass
 
 ### 8. Metal oscilloscope renderer (experimental, off by default)
 
@@ -165,6 +240,8 @@ What changed: the engine now snapshots state to disk 1 second after every change
 ---
 
 ## ⏭️ Up next (suggested order)
+
+> **2026-07-06 — UI overhaul pass 2 kicked off.** The engine-feature rollout below is essentially complete; the next body of work (main-page redesign, mixer, tunings menu, perform panel, pianoroll/timeline, hydra chromatic shader as default, keyboard removal) is planned in **`ios-ui-overhaul-plan.md`** (same dir). Items 7b and 8 below are absorbed into that plan.
 
 The rollout order from `ios-port-plan.md`. I'll work through these one or two at a time.
 

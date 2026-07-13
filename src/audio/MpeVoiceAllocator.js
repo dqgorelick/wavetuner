@@ -170,6 +170,10 @@ export default class MpeVoiceAllocator {
   }
 
   _update(r, v) {
+    // Priority follows the CURRENT request, not the one that allocated the
+    // voice — a drone note demoted to a step tail (lower priority) must
+    // become stealable by the fresh notes contending for its channel.
+    v.priority = r.priority || 0;
     const semis = freqToMidi(r.freq) - v.note;
     if (Math.abs(semis) > this._bendRange) {
       // Swept past the ±bendRange window — re-anchor on a fresh unique note

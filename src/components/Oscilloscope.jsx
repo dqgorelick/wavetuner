@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
+import { dronePanWeights, panWidth } from '../audio/StereoMode';
+import { droneWave, keyboardWave } from '../audio/Wave';
+import {
+  getShapeTable, getHilbertTables, wtLookup, wtLookupRad,
+} from '../audio/visualShape';
 import { updateAudioFeatures } from '../audio/AudioFeatures';
 import palette from '../theme/palette';
 
@@ -196,8 +201,10 @@ function edgeWindow(p, fadeFrac) {
   return 1;
 }
 
-// Static synthesized view — per-oscillator colored sines (additive bloom)
-// with the XY-scope's cycling color tinting the aggregate composite line.
+// Static synthesized view — per-oscillator colored traces (additive bloom)
+// in each pool's morphed wave shape (idealized wavetable, so a square
+// drone draws as a square), with the XY-scope's cycling color tinting
+// the aggregate composite line.
 // All synthesis uses `freqs[]` + the tweened `renderVolumes` so mute/
 // unmute and freq tweaks animate smoothly.
 function drawStatic(
@@ -328,6 +335,12 @@ function drawStatic(
   const aggOuterWidth = aggWidth + outlineThickness * 2 * lineScale;
   const TWO_PI = Math.PI * 2;
 
+  // Per-pool morphed wave shapes (idealized wavetables, cached; rebuilt
+  // only when a shape slider moves). Lookup cost ≈ the Math.sin it
+  // replaces.
+  const droneWT = getShapeTable(droneWave);
+  const kbdWT = getShapeTable(keyboardWave);
+
   // Per-pool contribution amount = the effective amplitude this source
   // adds to the audio output (= slot volume × pool bus gain × master).
   // volSum / maxVol are computed in this gained space so the aggregate
@@ -406,9 +419,6 @@ function drawStatic(
   // LSQ noise gets averaged across a few frames). That smoothing
   // benefits the synth XY too, so we don't do a second pass here.
 
-  // Sample the composite (renderVol-weighted sum of sines) at sample i,
-  // optionally with a time-phase offset `dt` in seconds. Used by every
-  // aggregate variant.
   // ── per-oscillator colored layer (wave mode only) ─────────────────────
   if (mode === 'wave') {
     ctx.save();
@@ -429,7 +439,7 @@ function drawStatic(
       for (let i = 0; i < samples; i++) {
         const p = i / (samples - 1);
         const t = p * windowSec - windowHalf;
-        const amp = c * Math.sin(TWO_PI * f * t + relPhases[k]) * synthNorm * edgeWindow(p, edgeFade);
+        const amp = c * wtLookupRad(droneWT, TWO_PI * f * t + relPhases[k]) * synthNorm * edgeWindow(p, edgeFade);
         const x = traceOffsetX + p * traceWidth;
         const y = centerY - amp * ampScale;
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -459,7 +469,7 @@ function drawStatic(
       for (let i = 0; i < samples; i++) {
         const p = i / (samples - 1);
         const t = p * windowSec - windowHalf;
-        const amp = c * Math.sin(TWO_PI * v.freq * t + rp) * synthNorm * edgeWindow(p, edgeFade);
+        const amp = c * wtLookupRad(kbdWT, TWO_PI * v.freq * t + rp) * synthNorm * edgeWindow(p, edgeFade);
         const x = traceOffsetX + p * traceWidth;
         const y = centerY - amp * ampScale;
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -496,10 +506,10 @@ function drawStatic(
       let sum = 0;
       for (let k = 0; k < freqs.length; k++) {
         if (!isActive(k)) continue;
-        sum += droneContrib(k) * Math.sin(TWO_PI * freqs[k] * t + relPhases[k]);
+        sum += droneContrib(k) * wtLookupRad(droneWT, TWO_PI * freqs[k] * t + relPhases[k]);
       }
       for (const av of activeVoices) {
-        sum += av.contrib * Math.sin(TWO_PI * av.freq * t + av.relPhase);
+        sum += av.contrib * wtLookupRad(kbdWT, TWO_PI * av.freq * t + av.relPhase);
       }
       const x = traceOffsetX + p * traceWidth;
       const y = centerY - sum * synthNorm * ampScale * aggHeightScale * edgeWindow(p, edgeFade);
@@ -554,29 +564,33 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
 
   const L = new Float32Array(N);
   const R = new Float32Array(N);
-  const TWO_PI = Math.PI * 2;
+  const INV_TWO_PI = 1 / (Math.PI * 2);
 
-  // Helper to render one running osc into L/R via the rotation recurrence.
-  // Avoids calling Math.sin per sample. goesLeft/Right control which
-  // channels accumulate.
-  const renderOsc = (f, phase, amp, goesLeft, goesRight) => {
-    const dTheta = TWO_PI * f / sampleRate;
-    let theta = (phase || 0) - (N - 1 + sampleOffsetBackward) * dTheta;
-    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
-    let sinT = Math.sin(theta);
-    let cosT = Math.cos(theta);
-    const sinD = Math.sin(dTheta);
-    const cosD = Math.cos(dTheta);
+  // Per-pool morphed shapes so the synth scope draws what the pool
+  // actually sounds like (idealized wavetable — sharp corners).
+  const droneWT = getShapeTable(droneWave);
+  const kbdWT = getShapeTable(keyboardWave);
+
+  // Helper to render one running osc into L/R via a normalized-phase
+  // accumulator + wavetable lookup (no per-sample trig — same trick as
+  // the old sin/cos rotation recurrence, but shape-aware). ampL/ampR
+  // are the per-channel amplitudes — the continuous-pan counterpart of
+  // the old goesLeft/goesRight booleans.
+  const renderOsc = (f, phase, ampL, ampR, wt) => {
+    if (ampL <= 0 && ampR <= 0) return;
+    const dNorm = f / sampleRate; // < 0.5 for any audible f
+    let norm = (phase || 0) * INV_TWO_PI - (N - 1 + sampleOffsetBackward) * dNorm;
+    norm -= Math.floor(norm);
     for (let s = 0; s < N; s++) {
-      const v = amp * sinT;
-      if (goesLeft) L[s] += v;
-      if (goesRight) R[s] += v;
-      const newSin = sinT * cosD + cosT * sinD;
-      const newCos = cosT * cosD - sinT * sinD;
-      sinT = newSin;
-      cosT = newCos;
+      const v = wtLookup(wt, norm);
+      if (ampL > 0) L[s] += ampL * v;
+      if (ampR > 0) R[s] += ampR * v;
+      norm += dNorm;
+      if (norm >= 1) norm -= 1;
     }
   };
+
+  const pans = audioEngine.getVoicePans ? audioEngine.getVoicePans() : [];
 
   for (let k = 0; k < freqs.length; k++) {
     const muted = audioEngine.isMuted(k);
@@ -587,21 +601,31 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
 
     const partner = partners[k];
     const stereoMode = partner && partner.audible;
+    const channels = routingMap[k] || [];
+    const beyondStereo = channels.some((ch) => ch >= 2);
 
     if (stereoMode) {
-      // Each drone is two oscillators in stereo mode: primary goes L
-      // only, partner goes R only. Routing map is bypassed.
-      renderOsc(f, phases[k], amp, true, false);
+      // Each drone is two oscillators in stereo mode. Mirror the tap
+      // weights: primary/partner slide per the slot's pan (collapse
+      // model) and the partner fades out with panWidth.
+      const pan = beyondStereo ? 0 : (pans[k] || 0);
+      const w = dronePanWeights(pan, 'stereo');
+      renderOsc(f, phases[k], amp * w.primary[0], amp * w.primary[1], droneWT);
       if (partner.freq > 0) {
-        renderOsc(partner.freq, partner.phase, amp, false, true);
+        const partnerAmp = amp * panWidth(pan);
+        renderOsc(partner.freq, partner.phase, partnerAmp * w.partner[0], partnerAmp * w.partner[1], droneWT);
       }
-    } else {
-      // L/R mode: primary follows routingMap; partner silent.
-      const channels = routingMap[k] || [];
+    } else if (beyondStereo || channels.length === 0) {
+      // Multichannel patch-bay slots keep the discrete projection onto
+      // the two visualized channels; unrouted slots are silent.
       const goesLeft = channels.includes(0);
       const goesRight = channels.includes(1);
       if (!goesLeft && !goesRight) continue;
-      renderOsc(f, phases[k], amp, goesLeft, goesRight);
+      renderOsc(f, phases[k], goesLeft ? amp : 0, goesRight ? amp : 0, droneWT);
+    } else {
+      // lr mode: single osc, continuous balance-law pan.
+      const w = dronePanWeights(pans[k] || 0, 'lr');
+      renderOsc(f, phases[k], amp * w.primary[0], amp * w.primary[1], droneWT);
     }
   }
 
@@ -619,23 +643,7 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
     const panAngle = (v.pan + 1) * Math.PI / 4; // [-1,1] → [0, π/2]
     const lAmp = Math.cos(panAngle) * amp;
     const rAmp = Math.sin(panAngle) * amp;
-
-    const dTheta = TWO_PI * f / sampleRate;
-    let theta = v.phase - (N - 1 + sampleOffsetBackward) * dTheta;
-    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
-    let sinT = Math.sin(theta);
-    let cosT = Math.cos(theta);
-    const sinD = Math.sin(dTheta);
-    const cosD = Math.cos(dTheta);
-
-    for (let s = 0; s < N; s++) {
-      L[s] += lAmp * sinT;
-      R[s] += rAmp * sinT;
-      const newSin = sinT * cosD + cosT * sinD;
-      const newCos = cosT * cosD - sinT * sinD;
-      sinT = newSin;
-      cosT = newCos;
-    }
+    renderOsc(f, v.phase, lAmp, rAmp, kbdWT);
   }
 
   return { L, R };
@@ -645,12 +653,15 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
 // where ĥ is the Hilbert transform (90° phase shift) of x. For a pure
 // sine x = amp·sin(θ), the Hilbert partner is −amp·cos(θ), so each
 // oscillator traces a perfect circle of radius = its amplitude,
-// rotating at its own frequency. A mix of N oscillators composes
-// rotating vectors into epicycle / Fourier-drawing figures. Vector
-// magnitude = instantaneous envelope; vector angle = instantaneous
-// phase. Output fits the same [-1, 1] envelope as synthStereoData
-// (same masterScale-based count clipping), so drawXY's mapping works
-// as-is.
+// rotating at its own frequency. For a morphed shape Σ bₙ·sin(nθ) the
+// partner is Σ −bₙ·cos(nθ) (the identity is per-harmonic), so each
+// oscillator traces its pool's analytic-signal curve instead of a
+// circle — collapsing back to the circle at shape = sine. A mix of N
+// oscillators composes rotating vectors into epicycle / Fourier-drawing
+// figures. Vector magnitude = instantaneous envelope; vector angle =
+// instantaneous phase. Output fits the same [-1, 1] envelope as
+// synthStereoData (same masterScale-based count clipping), so drawXY's
+// mapping works as-is.
 function synthHilbertData(bufferSize, sampleRate) {
   const freqs = audioEngine.getAllFrequencies();
   const phases = audioEngine.getAllPhases();
@@ -661,7 +672,24 @@ function synthHilbertData(bufferSize, sampleRate) {
 
   const X = new Float32Array(bufferSize);
   const Y = new Float32Array(bufferSize);
-  const TWO_PI = Math.PI * 2;
+  const INV_TWO_PI = 1 / (Math.PI * 2);
+
+  // Band-limited analytic pair per pool (x = sin-basis, y = its Hilbert
+  // partner), from the same Fourier coefficients the audio uses.
+  const droneH = getHilbertTables(droneWave);
+  const kbdH = getHilbertTables(keyboardWave);
+
+  const renderAnalytic = (f, phase, amp, pair) => {
+    const dNorm = f / sampleRate;
+    let norm = (phase || 0) * INV_TWO_PI - (bufferSize - 1) * dNorm;
+    norm -= Math.floor(norm);
+    for (let s = 0; s < bufferSize; s++) {
+      X[s] += amp * wtLookup(pair.x, norm);
+      Y[s] += amp * wtLookup(pair.y, norm);
+      norm += dNorm;
+      if (norm >= 1) norm -= 1;
+    }
+  };
 
   for (let k = 0; k < freqs.length; k++) {
     const muted = audioEngine.isMuted(k);
@@ -669,24 +697,7 @@ function synthHilbertData(bufferSize, sampleRate) {
     if (amp <= 0) continue;
     const f = freqs[k];
     if (!(f > 0)) continue;
-
-    const dTheta = TWO_PI * f / sampleRate;
-    let theta = (phases[k] || 0) - (bufferSize - 1) * dTheta;
-    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
-    let sinT = Math.sin(theta);
-    let cosT = Math.cos(theta);
-    const sinD = Math.sin(dTheta);
-    const cosD = Math.cos(dTheta);
-
-    for (let s = 0; s < bufferSize; s++) {
-      // x = signal = amp·sin(θ); y = Hilbert(x) = −amp·cos(θ).
-      X[s] += amp * sinT;
-      Y[s] -= amp * cosT;
-      const newSin = sinT * cosD + cosT * sinD;
-      const newCos = cosT * cosD - sinT * sinD;
-      sinT = newSin;
-      cosT = newCos;
-    }
+    renderAnalytic(f, phases[k], amp, droneH);
   }
 
   // Keyboard voices — Hilbert is mono (analytic of the L+R mix), so
@@ -698,23 +709,7 @@ function synthHilbertData(bufferSize, sampleRate) {
     if (!(f > 0)) continue;
     const amp = v.amp * keyboardScale;
     if (amp <= 0) continue;
-
-    const dTheta = TWO_PI * f / sampleRate;
-    let theta = v.phase - (bufferSize - 1) * dTheta;
-    theta -= TWO_PI * Math.floor((theta + Math.PI) / TWO_PI);
-    let sinT = Math.sin(theta);
-    let cosT = Math.cos(theta);
-    const sinD = Math.sin(dTheta);
-    const cosD = Math.cos(dTheta);
-
-    for (let s = 0; s < bufferSize; s++) {
-      X[s] += amp * sinT;
-      Y[s] -= amp * cosT;
-      const newSin = sinT * cosD + cosT * sinD;
-      const newCos = cosT * cosD - sinT * sinD;
-      sinT = newSin;
-      cosT = newCos;
-    }
+    renderAnalytic(f, v.phase, amp, kbdH);
   }
 
   return { X, Y };
@@ -901,13 +896,21 @@ function _ensureLane(key, meta) {
 
 // Sample every currently-sounding source once per frame into its lane.
 function sampleTimeline(now) {
+  // Every lane fed this frame goes in `seen`; anything unfed ends (goes
+  // inactive) in the prune pass below.
+  const seen = new Set();
+
   // Drones — continuous bands. Sounding Hz includes global transpose so
-  // they line up with voice frequencies on the same axis.
+  // they line up with voice frequencies on the same axis. Lanes are keyed
+  // by slot + step generation: a glide bends one lane's polyline, while a
+  // step transition bumps the generation — the old lane simply ENDS and a
+  // new one starts at the target pitch, so the step draws as two discrete
+  // segments instead of a connecting vertical bridge.
   const freqs = audioEngine.getSoundingFrequencies();
   const vols = audioEngine.volumeValues || [];
   const droneGain = audioEngine.getDroneVizGain();
   for (let i = 0; i < freqs.length; i++) {
-    const key = 'd:' + i;
+    const key = 'd:' + i + ':g' + audioEngine.getSlotGeneration(i);
     const f = freqs[i];
     const audible =
       f > 0 && !audioEngine.isMuted(i) && droneGain > 0.001 && (vols[i] || 0) > 0;
@@ -916,9 +919,49 @@ function sampleTimeline(now) {
       lane.points.push({ t: now, f, amp: Math.min(1, (vols[i] || 0) * droneGain) });
       lane.active = true;
       lane.lastT = now;
-    } else {
-      const lane = _timelineLanes.get(key);
-      if (lane) lane.active = false;
+      seen.add(key);
+    }
+  }
+
+  // Step tails — the OLD note of an in-flight step transition keeps sounding
+  // through its overlap window. Feed it into its own (previous-generation)
+  // lane so the crossfade draws as two notes at once: the outgoing pitch
+  // holds while the incoming one starts, then the tail lane ends when the
+  // window closes. No isMuted check: muting a slot mid-overlap targets the
+  // NEW voice's gain — the tail keeps ringing, so keep drawing it.
+  if (droneGain > 0.001) {
+    const transpose = audioEngine.getTransposeRatio();
+    for (const tail of audioEngine.getStepTails()) {
+      const key = 'd:' + tail.slot + ':g' + tail.gen;
+      const lane = _ensureLane(key, { kind: 'drone', slot: tail.slot });
+      lane.points.push({
+        t: now,
+        f: tail.freq * transpose,
+        amp: Math.min(1, (tail.level || 0) * droneGain),
+      });
+      lane.active = true;
+      lane.lastT = now;
+      seen.add(key);
+    }
+
+    // Travelling voices (voice-led transitions, GENERATIVE.md §6.6) — notes
+    // mid-gliss BETWEEN slots. The source slot's lane ended at departure
+    // (the slot went silent) and the destination's lane starts at landing;
+    // this lane is the audible bridge, bending from the old chord's pitch
+    // to the new one's. Keyed by traveller id, so it ends on its own when
+    // the voice lands (adopted by the destination slot) or releases (merge).
+    for (const tv of audioEngine.getTravelers()) {
+      if (!(tv.hz > 0)) continue;
+      const key = 'tv:' + tv.id;
+      const lane = _ensureLane(key, { kind: 'drone', slot: tv.fromIndex });
+      lane.points.push({
+        t: now,
+        f: tv.hz * transpose,
+        amp: Math.min(1, (tv.level || 0) * droneGain),
+      });
+      lane.active = true;
+      lane.lastT = now;
+      seen.add(key);
     }
   }
 
@@ -927,7 +970,6 @@ function sampleTimeline(now) {
   // notes (matching the other scope modes).
   const kbdGain = audioEngine.getKeyboardVizGain();
   const voices = keyboardVoiceManager.getActiveVoices();
-  const seen = new Set();
   for (const v of voices) {
     if (!(v.freq > 0)) continue;
     const amp = (v.amp || 0) * kbdGain;
@@ -940,10 +982,12 @@ function sampleTimeline(now) {
     lane.lastT = now;
   }
 
-  // Prune old points; drop dead lanes. Voice lanes not seen this frame end.
+  // Prune old points; drop dead lanes. Any lane not fed this frame has
+  // ended — a released voice, a muted/silenced drone, a superseded step
+  // generation, or an expired step tail.
   const cutoff = now - TL_RETAIN_SEC;
   for (const [key, lane] of _timelineLanes) {
-    if (lane.kind === 'voice' && !seen.has(key)) lane.active = false;
+    if (!seen.has(key)) lane.active = false;
     const pts = lane.points;
     while (lane.head < pts.length && pts[lane.head].t < cutoff) lane.head++;
     if (lane.head > TL_COMPACT_AT) {
@@ -1396,19 +1440,21 @@ export default function Oscilloscope({
       //   0 (Circle), 2 (Face)  → 'audio'  (analyzer's actual signal,
       //                            so wavefolding + setPeriodicWave
       //                            shapes show through visibly)
-      //   3 (Hilbert)           → 'synth'  (the per-osc circles +
-      //                            Fourier-epicycle interpretation only
-      //                            holds for pure sines; the FIR
-      //                            audio path is technically valid but
-      //                            visually less informative)
+      //   3 (Hilbert)           → 'synth'  (per-osc analytic curves —
+      //                            circles at shape=sine, the pool's
+      //                            band-limited analytic figure once
+      //                            morphed; the FIR audio path is
+      //                            technically valid but visually
+      //                            less informative)
       //   1 (Standing line)     → synth, baked into drawStatic
       //
       // Pulls a stereo (L, R) pair appropriate for the source.
       // 'audio' returns subarray views of the analyzer's time-domain
       // buffer (post-master, post-fold, post-shape — the actual sound).
-      // 'synth' returns freshly-synthesized pure-sine arrays from osc
-      // phase. Both are length-bounded by synthN so the viz density
-      // stays consistent across sources.
+      // 'synth' returns freshly-synthesized arrays from osc phase in
+      // each pool's morphed wave shape (idealized, pre-fold). Both are
+      // length-bounded by synthN so the viz density stays consistent
+      // across sources.
       const getXY = (source) => {
         if (source === 'audio') {
           // Read the analyzer directly. In 'stereo' mode (drone or

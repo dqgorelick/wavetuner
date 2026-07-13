@@ -7,7 +7,7 @@
 import { droneEnvelope } from './Envelope';
 import { droneWave } from './Wave';
 import { droneFold, keyboardFold } from './Fold';
-import { droneStereo, keyboardStereo, midiStereo } from './StereoMode';
+import { droneStereo, keyboardStereo, midiStereo, dronePanWeights, panWidth } from './StereoMode';
 import { getCandidates, getSystem, DEFAULT_SYSTEM, canonicalRatioForVoice } from './jiRatios';
 
 // Topology-change ramp for adding/removing drone slots via the count
@@ -46,6 +46,10 @@ export const SATURATION_CURVES = {
 };
 
 class AudioEngine {
+  // How long expired step tails linger for the visualizers (ms). Must cover
+  // the spectrum bar's post-landing hop animation (~200 ms) with margin.
+  static STEP_TAIL_VIZ_GRACE_MS = 400;
+
   constructor() {
     if (AudioEngine.instance) {
       return AudioEngine.instance;
@@ -139,6 +143,42 @@ class AudioEngine {
     // the user's freq/volume/mute settings come back instead of being random.
     this.removedSlots = [];
 
+    // Step-transition bookkeeping. slotGenerations[i] bumps every time a
+    // slot is retriggered via stepToFrequency; MidiOutput folds it into the
+    // drone request id so the MPE reconciler sees a step as a fresh
+    // noteOff/noteOn instead of a pitch bend (a glide keeps the id stable).
+    // _stepTails records the OLD note during the overlap window —
+    // { slot, gen, freq, level, until } — so MIDI can keep it sounding
+    // alongside the new one. Web Audio tails manage themselves via
+    // scheduled gain ramps and osc.stop(); this list is MIDI-only.
+    this.slotGenerations = [];
+    this._stepTails = [];
+
+    // Travelling voices (voice-leading transitions, GENERATIVE.md §6.6):
+    // a sounding note detached from its slot so it can glide ACROSS slot
+    // indices — chord A's note becomes chord B's note on a different
+    // oscillator. Each entry owns the detached node pair; the slot it left
+    // got a fresh silent pair at detach, and the destination slot adopts
+    // these nodes at landing (phase-continuous — the note never restarts).
+    // Map id → { fromIndex, osc, gain, oscR, gainR, nominalHz, offset,
+    // channels, level }.
+    this._travelers = new Map();
+    this._travelerSeq = 0;
+    // MIDI wire-id aliases (slot index → id string). Normally a slot's
+    // outgoing MPE voice is keyed `drone:{slot}:g{gen}`, but a slot that
+    // ADOPTED a travelling voice keeps the traveller's id — set at landing —
+    // so a detach → glide → land arc reads as ONE continuously-bending note
+    // on the wire, mirroring the local phase-continuous gliss. The alias
+    // dies whenever the note does (mute, step retrigger, traveller-
+    // invalidating rebuilds).
+    this._wireAliases = new Map();
+
+    // Per-slot "release tail still sounding" timestamps (performance.now()
+    // ms). A mute flips mutedStates immediately but the drone envelope's
+    // release keeps the note audible — UI reads isSlotReleasing(i) to show
+    // a note as GOING off (pulse) rather than off until the tail ends.
+    this._releaseUntilMs = [];
+
     // Per-slot list of additional partials (ratio-locked sub-oscillators
     // bound to their parent slot). extraPartials[i] is an array of
     // { ratio, vol, muted, _osc, _gain, _oscR, _gainR } — each entry is a
@@ -204,16 +244,31 @@ class AudioEngine {
     // Multi-channel routing - maps oscillator index to array of output channels
     this.routingMap = {}; // { oscIndex: [outputChannel1, outputChannel2, ...] }
     this.outputChannelCount = 2; // Default stereo
-    
+
+    // Continuous per-voice pan, −1 (hard L) … 0 (mode origin: stereo
+    // split / lr ⊙) … +1 (hard R). Source of truth for the L/R image on
+    // stereo outputs; routingMap keeps a discrete projection ([0], [1]
+    // or [0,1]) in sync for the patch bay, LSQ calibration and legacy
+    // consumers. Slots the patch bay routes to channels ≥ 2 bypass pan
+    // entirely (discrete multichannel routing wins there).
+    this.panValues = [];
+
     // Device management
     this.currentDeviceId = null;
-    
+
     // Audio graph nodes for routing
     this.channelGains = [];      // One gain per output channel for final mixing
     this.stereoMerger = null;    // Merges channels to stereo for output
-    
+
     // Callbacks for state change notifications
     this.onRoutingChange = null;
+    // Fired as (index, pan) whenever a voice's continuous pan changes —
+    // by the dial, a routing write, a patch load or a defaults reset.
+    // `onPanChange` is the App-owned single callback (state mirroring);
+    // `_panListeners` lets any other component subscribe independently
+    // (e.g. the spectrum bar's PAN status flash on the orbs).
+    this.onPanChange = null;
+    this._panListeners = new Set();
 
     // Listeners notified whenever any oscillator's frequency target changes
     // OR the oscillator count changes (which adds/removes scale degrees).
@@ -235,6 +290,7 @@ class AudioEngine {
     // menu's checkbox); off = continuous. Persisted alongside the offset.
     this._transposeSnap = AudioEngine._loadTransposeSnap();
     this._transposeListeners = new Set();
+    this._transposeGlideRaf = null;   // rAF handle for an in-flight transpose slide
 
     AudioEngine.instance = this;
   }
@@ -293,9 +349,11 @@ class AudioEngine {
    * Set the global transpose in semitones (float; ± = up/down). Playback-only:
    * it re-ramps live drone oscillators and (via the transpose listener →
    * Tuning) retunes held keyboard voices, but NEVER writes frequencyValues,
-   * so save-states / undo are untouched and a saved patch round-trips at its
-   * written pitch. `persist` defaults to true; pass false during a live drag
-   * and persist once on release to avoid localStorage thrash.
+   * so a saved patch round-trips at its written pitch. FrequencyManager
+   * snapshots the offset separately (parameter lock — recall/undo move it
+   * only when 'transpose' is a tracked param). `persist` defaults to true;
+   * pass false during a live drag and persist once on release to avoid
+   * localStorage thrash.
    */
   setTransposeSemitones(semitones, { persist = true } = {}) {
     let v = Number(semitones) || 0;
@@ -674,13 +732,14 @@ class AudioEngine {
   _retargetDronesForSustain() {
     if (!this.isInitialized || !this.audioContext) return;
     for (let i = 0; i < this.oscillatorCount; i++) {
+      const width = panWidth(this.getVoicePan(i));
       if (!this.mutedStates[i]) {
         const gainNode = this.gainNodes[i];
         const gainNodeR = this.gainNodesR[i];
         const peak = this.volumeValues[i];
         if (gainNode) droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, peak);
         if (gainNodeR && droneStereo.mode === 'stereo') {
-          droneEnvelope.retargetSustain(gainNodeR.gain, this.audioContext, peak);
+          droneEnvelope.retargetSustain(gainNodeR.gain, this.audioContext, peak * width);
         }
       }
       // Partials follow the same shared sustain. Each uses its own
@@ -692,7 +751,7 @@ class AudioEngine {
           if (p.muted || !p._gain) continue;
           droneEnvelope.retargetSustain(p._gain.gain, this.audioContext, p.vol);
           if (p._gainR && droneStereo.mode === 'stereo') {
-            droneEnvelope.retargetSustain(p._gainR.gain, this.audioContext, p.vol);
+            droneEnvelope.retargetSustain(p._gainR.gain, this.audioContext, p.vol * width);
           }
         }
       }
@@ -1070,16 +1129,18 @@ class AudioEngine {
 
       oscillator.connect(gainNode);
       oscillatorR.connect(gainNodeR);
-      // Partner always feeds the right channel directly. Audibility is
-      // controlled by gainNodeR's value (0 in lr mode, full in stereo).
-      gainNodeR.connect(this.channelGains[1]);
 
       // Default routing depends on mode (alternating hard-pan in lr, L/R
       // split in stereo). Stash in routingMap; the actual node connect goes
       // through _connectDroneToChannels so stereo mode is honored from the
-      // start.
+      // start. Pan seeds from the routing so a slot restored with an
+      // overridden route keeps its image; fresh slots get the mode origin.
       if (!this.routingMap[index] || this.routingMap[index].length === 0) {
         this.routingMap[index] = this._defaultRouting(index);
+      }
+      if (!Number.isFinite(this.panValues[index])) {
+        const fromRoute = this._panFromChannels(this.routingMap[index]);
+        this.panValues[index] = fromRoute !== null ? fromRoute : this._defaultPan(index);
       }
       this.oscillators[index] = oscillator;
       this.gainNodes[index] = gainNode;
@@ -1142,6 +1203,63 @@ class AudioEngine {
   }
 
   /**
+   * Mode-aware origin pan for one slot — the continuous counterpart of
+   * _defaultRouting. 'stereo' origin is the split (center); 'lr' origin
+   * is the alternating hard-pan. Slots whose lr default lands beyond
+   * the stereo pair (multichannel devices) sit at 0 — pan is inert for
+   * them anyway.
+   */
+  _defaultPan(index) {
+    if (droneStereo.mode === 'stereo') return 0;
+    const n = this.channelGains.length || 2;
+    const ch = index % n;
+    if (ch === 0) return -1;
+    if (ch === 1) return 1;
+    return 0;
+  }
+
+  /** Continuous pan for slot i, falling back to the mode origin. */
+  getVoicePan(i) {
+    const p = this.panValues[i];
+    return Number.isFinite(p) ? p : this._defaultPan(i);
+  }
+
+  /** Per-slot pans for every live slot (visualizers, patch capture). */
+  getVoicePans() {
+    return Array.from({ length: this.oscillatorCount }, (_, i) => this.getVoicePan(i));
+  }
+
+  /** True when a slot's routing goes beyond the stereo pair — the
+   *  patch bay assigned it to channels ≥ 2 on a multichannel device.
+   *  Those slots keep the legacy discrete connects; pan is inert. */
+  _usesBeyondStereo(channels) {
+    return channels.some((ch) => ch >= 2);
+  }
+
+  /** Subscribe to per-voice pan changes. Returns an unsubscribe fn. */
+  addPanListener(fn) {
+    this._panListeners.add(fn);
+    return () => this._panListeners.delete(fn);
+  }
+
+  /** Notify the App callback and every pan listener of a pan change. */
+  _emitPanChange(index, pan) {
+    this.onPanChange?.(index, pan);
+    for (const fn of this._panListeners) {
+      try { fn(index, pan); } catch (e) { console.error('pan listener error', e); }
+    }
+  }
+
+  /** Discrete → continuous: the pan a routing array projects onto.
+   *  null when the array is empty or beyond the stereo pair. */
+  _panFromChannels(channels) {
+    if (!Array.isArray(channels) || channels.length === 0) return null;
+    if (this._usesBeyondStereo(channels)) return null;
+    if (channels.length >= 2) return 0;
+    return channels[0] === 1 ? 1 : -1;
+  }
+
+  /**
    * Setup default routing (odd → left, even → right; stereo → split)
    */
   _setupDefaultRouting() {
@@ -1158,21 +1276,26 @@ class AudioEngine {
   _dronePrimaryFreq(i) {
     // Global transpose scales the nominal pitch; the stereo detune `offset`
     // stays additive in Hz (beat rate is a fixed slot property, per below).
+    // The offset narrows with |pan| (panWidth) so a hard-panned voice
+    // converges on its true orb frequency — see setVoicePan.
     const nominal = (this.frequencyValues[i] || 0) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[i] || 0;
-    const shift = droneStereo.mode === 'stereo' ? offset / 2 : offset;
+    const shift = droneStereo.mode === 'stereo'
+      ? (offset * panWidth(this.getVoicePan(i))) / 2
+      : offset;
     return Math.max(0.001, Math.min(20000, nominal + shift));
   }
 
   /**
-   * Partner oscillator's played freq. Always base - offset/2 — only
-   * audible in 'stereo' mode, but kept current so a mode flip doesn't
-   * have to retune the partner before fading it in.
+   * Partner oscillator's played freq. Always base - offset·width/2 —
+   * only audible in 'stereo' mode, but kept current so a mode flip
+   * doesn't have to retune the partner before fading it in.
    */
   _dronePartnerFreq(i) {
     const nominal = (this.frequencyValues[i] || 0) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[i] || 0;
-    return Math.max(0.001, Math.min(20000, nominal - offset / 2));
+    return Math.max(0.001, Math.min(20000,
+      nominal - (offset * panWidth(this.getVoicePan(i))) / 2));
   }
 
   /**
@@ -1182,7 +1305,7 @@ class AudioEngine {
    */
   _droneTargetGain(i) {
     if (this.mutedStates[i]) return 0;
-    return (this.volumeValues[i] || 0.5) * droneEnvelope.sustain * this._stereoEqualLoudnessScale();
+    return (this.volumeValues[i] || 0.5) * droneEnvelope.sustain * this._slotLoudnessScale(i);
   }
 
   /**
@@ -1203,19 +1326,28 @@ class AudioEngine {
    * KeyboardVoiceManager.noteOn — see the `peak = isStereo ? ...`
    * line. Kept separate because percussive/transient voices align
    * better with the standard -3 dB rule than continuous drones do.
+   *
+   * With the per-voice pan dial the compensation lerps 0.5 → 1.0 with
+   * |pan|: at center the voice is the classic two-channel split (0.5
+   * applies as before); at a full extreme it degenerates to a single
+   * oscillator in one channel — exactly an lr hard-pan, whose level is
+   * 1.0. Both endpoints therefore match the two pre-pan calibrations.
    */
-  _stereoEqualLoudnessScale() {
-    return droneStereo.mode === 'stereo' ? 0.5 : 1;
+  _slotLoudnessScale(i) {
+    if (droneStereo.mode !== 'stereo') return 1;
+    return 0.5 + 0.5 * Math.abs(this.getVoicePan(i));
   }
 
   /**
-   * Steady-state gain target for the partner oscillator: same as the
-   * primary in 'stereo' mode (already includes the equal-loudness
-   * scale via _droneTargetGain), 0 in 'lr' mode (silent partner).
+   * Steady-state gain target for the partner oscillator: the primary's
+   * target scaled by panWidth in 'stereo' mode (the partner fades out
+   * as the voice pans, reaching 0 at the extremes — so a hard-panned
+   * voice is one clean oscillator, never two identical-frequency oscs
+   * summing at arbitrary phase), 0 in 'lr' mode (silent partner).
    */
   _dronePartnerTargetGain(i) {
     if (droneStereo.mode !== 'stereo') return 0;
-    return this._droneTargetGain(i);
+    return this._droneTargetGain(i) * panWidth(this.getVoicePan(i));
   }
 
   /**
@@ -1228,14 +1360,17 @@ class AudioEngine {
   _partialPrimaryFreq(slotIndex, partial) {
     const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[slotIndex] || 0;
-    const shift = droneStereo.mode === 'stereo' ? offset / 2 : offset;
+    const shift = droneStereo.mode === 'stereo'
+      ? (offset * panWidth(this.getVoicePan(slotIndex))) / 2
+      : offset;
     return Math.max(0.001, Math.min(20000, nominal + shift));
   }
 
   _partialPartnerFreq(slotIndex, partial) {
     const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[slotIndex] || 0;
-    return Math.max(0.001, Math.min(20000, nominal - offset / 2));
+    return Math.max(0.001, Math.min(20000,
+      nominal - (offset * panWidth(this.getVoicePan(slotIndex))) / 2));
   }
 
   /** Steady-state gain target for a partial — its own vol/mute, scaled by
@@ -1243,14 +1378,14 @@ class AudioEngine {
    *  cascade to extras here; the slot-level mute logic in toggleMute
    *  applies to extras separately so the user can mute the whole slot
    *  in one gesture from existing UI without losing per-partial state. */
-  _partialTargetGain(partial) {
+  _partialTargetGain(partial, slotIndex) {
     if (partial.muted) return 0;
-    return (partial.vol || 0) * droneEnvelope.sustain * this._stereoEqualLoudnessScale();
+    return (partial.vol || 0) * droneEnvelope.sustain * this._slotLoudnessScale(slotIndex);
   }
 
-  _partialPartnerTargetGain(partial) {
+  _partialPartnerTargetGain(partial, slotIndex) {
     if (droneStereo.mode !== 'stereo') return 0;
-    return this._partialTargetGain(partial);
+    return this._partialTargetGain(partial, slotIndex) * panWidth(this.getVoicePan(slotIndex));
   }
 
   /** Build the audio nodes for a single partial. Mirrors the primary
@@ -1275,7 +1410,6 @@ class AudioEngine {
 
     osc.connect(gain);
     oscR.connect(gainR);
-    if (this.channelGains[1]) gainR.connect(this.channelGains[1]);
 
     partial._osc = osc;
     partial._gain = gain;
@@ -1285,8 +1419,8 @@ class AudioEngine {
 
     const primaryFreq = this._partialPrimaryFreq(slotIndex, partial);
     const partnerFreq = this._partialPartnerFreq(slotIndex, partial);
-    const primaryTarget = this._partialTargetGain(partial);
-    const partnerTarget = this._partialPartnerTargetGain(partial);
+    const primaryTarget = this._partialTargetGain(partial, slotIndex);
+    const partnerTarget = this._partialPartnerTargetGain(partial, slotIndex);
     const t = this.audioContext.currentTime;
 
     osc.frequency.setValueAtTime(primaryFreq, t);
@@ -1346,50 +1480,68 @@ class AudioEngine {
     if (!this.channelGains.length) return;
 
     const channels = this.routingMap[slotIndex] || [];
-    const isBoth = channels.length >= 2;
 
-    try { partial._gain.disconnect(); } catch { /* ignore */ }
-    if (droneStereo.mode === 'stereo') {
-      const ch = isBoth ? 0 : (channels[0] ?? 0);
-      if (this.channelGains[ch]) partial._gain.connect(this.channelGains[ch]);
-    } else {
-      for (const ch of channels) {
-        if (ch >= 0 && ch < this.channelGains.length) {
-          partial._gain.connect(this.channelGains[ch]);
+    if (this._usesBeyondStereo(channels)) {
+      // Legacy discrete multichannel routing — no pan taps.
+      const isBoth = channels.length >= 2;
+      try { partial._gain.disconnect(); } catch { /* ignore */ }
+      partial._gain._tapL = null;
+      partial._gain._tapR = null;
+      if (droneStereo.mode === 'stereo') {
+        const ch = isBoth ? 0 : (channels[0] ?? 0);
+        if (this.channelGains[ch]) partial._gain.connect(this.channelGains[ch]);
+      } else {
+        for (const ch of channels) {
+          if (ch >= 0 && ch < this.channelGains.length) {
+            partial._gain.connect(this.channelGains[ch]);
+          }
         }
       }
+      if (partial._gainR) {
+        try { partial._gainR.disconnect(); } catch { /* ignore */ }
+        partial._gainR._tapL = null;
+        partial._gainR._tapR = null;
+        if (droneStereo.mode === 'stereo') {
+          const ch = isBoth ? 1 : (channels[0] ?? 1);
+          if (this.channelGains[ch]) partial._gainR.connect(this.channelGains[ch]);
+        } else {
+          const right = this.channelGains[1];
+          if (right) partial._gainR.connect(right);
+        }
+      }
+      return;
     }
 
-    if (partial._gainR) {
-      try { partial._gainR.disconnect(); } catch { /* ignore */ }
-      if (droneStereo.mode === 'stereo') {
-        const ch = isBoth ? 1 : (channels[0] ?? 1);
-        if (this.channelGains[ch]) partial._gainR.connect(this.channelGains[ch]);
-      } else {
-        const right = this.channelGains[1];
-        if (right) partial._gainR.connect(right);
-      }
+    if (channels.length === 0 && droneStereo.mode !== 'stereo') {
+      // lr with no routes = deliberately disconnected (patch bay cleared it).
+      this._clearPanTaps(partial._gain);
+      this._clearPanTaps(partial._gainR);
+      return;
     }
+
+    this._wirePanTaps(partial._gain, partial._gainR, this.getVoicePan(slotIndex));
   }
 
   /**
    * Re-route both the primary and partner oscillators for drone slot
-   * `i` per the current mode. Topology:
+   * `i` per the current mode and pan.
    *
-   *   'lr' mode:
-   *     primary → routingMap[i] channels (single channel by default)
-   *     partner → channelGains[1]   (silent — gain=0 in this mode)
+   * Stereo-pair slots (routing ⊆ {L, R}, the normal case) get the pan-tap
+   * topology: each gain node feeds BOTH channel buses through a pair of
+   * persistent tap gains whose weights encode the voice's continuous pan
+   * (see _wirePanTaps). Pan moves then never touch the graph — setVoicePan
+   * just ramps the tap AudioParams, click-free at any drag speed.
    *
-   *   'stereo' mode:
-   *     primary → channelGains[0]                            (L only)
-   *     partner → channelGains[1]   (or droneStereoDelay → channelGains[1]
-   *                                   when phaseOffsetMs > 0, for an
-   *                                   extra delay-based phase shift)
+   * Slots the patch bay routed to channels ≥ 2 (multichannel devices)
+   * keep the legacy discrete connects — pan is inert for them.
    *
    * Called from _createSingleOscillator, addRouting, removeRouting,
    * and the droneStereo mode/phase change subscription. disconnect()
    * only severs OUTGOING edges, so the osc → gain incoming edge
-   * survives across the swap.
+   * survives across the swap. Node-swap paths (stepToFrequency,
+   * travellers) rely on taps living ON the gain node (g._tapL/_tapR):
+   * a retired gain keeps its taps for its release tail while the
+   * slot's new gain gets a fresh pair here.
    */
   _connectDroneToChannels(i) {
     const gainNode = this.gainNodes[i];
@@ -1397,37 +1549,87 @@ class AudioEngine {
     if (!this.channelGains.length) return;
 
     const channels = this.routingMap[i] || [];
-    // In stereo mode "both" (the default, channels = [0,1]) is the classic
-    // split: primary → L, partner → R. A single-channel override pins BOTH
-    // oscillators of the pair to that one side — the detune/beating is kept
-    // but the image collapses to mono-L or mono-R for that voice.
-    const isBoth = channels.length >= 2;
 
-    if (gainNode) {
-      try { gainNode.disconnect(); } catch { /* ignore */ }
-      if (droneStereo.mode === 'stereo') {
-        const ch = isBoth ? 0 : (channels[0] ?? 0);
-        if (this.channelGains[ch]) gainNode.connect(this.channelGains[ch]);
-      } else {
-        for (const ch of channels) {
-          if (ch >= 0 && ch < this.channelGains.length) {
-            gainNode.connect(this.channelGains[ch]);
+    if (this._usesBeyondStereo(channels)) {
+      // Legacy discrete multichannel routing — no pan taps.
+      const isBoth = channels.length >= 2;
+      if (gainNode) {
+        try { gainNode.disconnect(); } catch { /* ignore */ }
+        gainNode._tapL = null;
+        gainNode._tapR = null;
+        if (droneStereo.mode === 'stereo') {
+          const ch = isBoth ? 0 : (channels[0] ?? 0);
+          if (this.channelGains[ch]) gainNode.connect(this.channelGains[ch]);
+        } else {
+          for (const ch of channels) {
+            if (ch >= 0 && ch < this.channelGains.length) {
+              gainNode.connect(this.channelGains[ch]);
+            }
           }
         }
       }
+      if (gainNodeR) {
+        try { gainNodeR.disconnect(); } catch { /* ignore */ }
+        gainNodeR._tapL = null;
+        gainNodeR._tapR = null;
+        if (droneStereo.mode === 'stereo') {
+          const ch = isBoth ? 1 : (channels[0] ?? 1);
+          if (this.channelGains[ch]) gainNodeR.connect(this.channelGains[ch]);
+        } else {
+          const right = this.channelGains[1];
+          if (right) gainNodeR.connect(right);
+        }
+      }
+      return;
     }
 
-    if (gainNodeR) {
-      try { gainNodeR.disconnect(); } catch { /* ignore */ }
-      if (droneStereo.mode === 'stereo') {
-        // Partner follows the override: split → R, mono-L/R → same side.
-        const ch = isBoth ? 1 : (channels[0] ?? 1);
-        if (this.channelGains[ch]) gainNodeR.connect(this.channelGains[ch]);
-      } else {
-        const right = this.channelGains[1];
-        if (right) gainNodeR.connect(right);
-      }
+    if (channels.length === 0 && droneStereo.mode !== 'stereo') {
+      // lr with no routes = deliberately disconnected (patch bay cleared it).
+      this._clearPanTaps(gainNode);
+      this._clearPanTaps(gainNodeR);
+      return;
     }
+
+    this._wirePanTaps(gainNode, gainNodeR, this.getVoicePan(i));
+  }
+
+  /** Disconnect a gain node's outputs and drop its tap refs. */
+  _clearPanTaps(g) {
+    if (!g) return;
+    try { g.disconnect(); } catch { /* ignore */ }
+    g._tapL = null;
+    g._tapR = null;
+  }
+
+  /**
+   * (Re)build the pan-tap pair for a primary/partner gain duo: each gain
+   * connects to channelGains[0] via a fresh tapL and channelGains[1] via
+   * a fresh tapR, weights per dronePanWeights(pan, mode). Fresh taps per
+   * call keep the function idempotent across device changes (channelGains
+   * get rebuilt) and node swaps; orphaned taps GC once their gain
+   * disconnects. Continuous pan moves do NOT come through here — they
+   * ramp the existing taps in setVoicePan.
+   */
+  _wirePanTaps(gainNode, gainNodeR, pan) {
+    if (!this.audioContext) return;
+    const t = this.audioContext.currentTime;
+    const { primary, partner } = dronePanWeights(pan, droneStereo.mode);
+    const wire = (g, [wL, wR]) => {
+      if (!g) return;
+      try { g.disconnect(); } catch { /* ignore */ }
+      const tapL = this.audioContext.createGain();
+      const tapR = this.audioContext.createGain();
+      tapL.gain.setValueAtTime(wL, t);
+      tapR.gain.setValueAtTime(wR, t);
+      g.connect(tapL);
+      g.connect(tapR);
+      if (this.channelGains[0]) tapL.connect(this.channelGains[0]);
+      if (this.channelGains[1]) tapR.connect(this.channelGains[1]);
+      g._tapL = tapL;
+      g._tapR = tapR;
+    };
+    wire(gainNode, primary);
+    wire(gainNodeR, partner);
   }
 
   /**
@@ -1465,10 +1667,10 @@ class AudioEngine {
       const partials = this.extraPartials[i] || [];
       for (const p of partials) {
         if (p._gain) {
-          gains.push({ node: p._gain, target: () => this._partialTargetGain(p) });
+          gains.push({ node: p._gain, target: () => this._partialTargetGain(p, slot) });
         }
         if (p._gainR) {
-          gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p) });
+          gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p, slot) });
         }
       }
     }
@@ -1528,8 +1730,8 @@ class AudioEngine {
       gains.push({ node: this.gainNodesR[i], target: () => this._dronePartnerTargetGain(i) });
     }
     for (const p of partialsNow) {
-      if (p._gain) gains.push({ node: p._gain, target: () => this._partialTargetGain(p) });
-      if (p._gainR) gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p) });
+      if (p._gain) gains.push({ node: p._gain, target: () => this._partialTargetGain(p, i) });
+      if (p._gainR) gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p, i) });
     }
 
     // Nothing to fade (slot has no gain nodes yet) — just reconnect.
@@ -1597,9 +1799,12 @@ class AudioEngine {
       }
       
       const newCount = Math.max(this.minOscillators, Math.min(this.maxOscillators, count));
-      
+
       if (newCount === this.oscillatorCount) return;
-      
+
+      // Slot indices are about to change meaning — no traveller may land.
+      this.releaseAllTravelers();
+
       const oldCount = this.oscillatorCount;
       
       if (newCount > oldCount) {
@@ -1620,6 +1825,9 @@ class AudioEngine {
             this.volumeValues[i] = restored.vol;
             this.mutedStates[i] = restored.muted;
             this.preMuteVolumes[i] = restored.preMuteVol;
+            // undefined pan (pre-pan save) falls through to the seed in
+            // _createSingleOscillator.
+            this.panValues[i] = Number.isFinite(restored.pan) ? restored.pan : undefined;
           } else {
             const randomIndex = Math.floor(Math.random() * oldCount);
             const basePitch = this.frequencyValues[randomIndex] || 60;
@@ -1628,6 +1836,7 @@ class AudioEngine {
             this.volumeValues[i] = 0.5;
             this.mutedStates[i] = false;
             this.preMuteVolumes[i] = 0.5;
+            this.panValues[i] = undefined; // seed from mode origin at create
           }
           // Fresh slot starts with no extras. Existing slots' extras
           // (lower indices) are untouched.
@@ -1649,6 +1858,7 @@ class AudioEngine {
             vol: this.volumeValues[i],
             muted: this.mutedStates[i],
             preMuteVol: this.preMuteVolumes[i],
+            pan: this.panValues[i],
           });
 
           const osc = this.oscillators[i];
@@ -1696,6 +1906,7 @@ class AudioEngine {
           this.mutedStates.splice(i, 1);
           this.preMuteVolumes.splice(i, 1);
           this.droneDetuneOffsets.splice(i, 1);
+          this.panValues.splice(i, 1);
           this.phases.splice(i, 1);
           this.smoothedFreqs.splice(i, 1);
           this._lastPhaseUpdate.splice(i, 1);
@@ -1743,11 +1954,15 @@ class AudioEngine {
       if (index < 0 || index >= this.oscillatorCount) return;
       if (this.oscillatorCount <= this.minOscillators) return;
 
+      // Slot indices shift down past the removal point — strand no traveller.
+      this.releaseAllTravelers();
+
       this.removedSlots.push({
         freq: this.frequencyValues[index],
         vol: this.volumeValues[index],
         muted: this.mutedStates[index],
         preMuteVol: this.preMuteVolumes[index],
+        pan: this.panValues[index],
       });
 
       const t = this.audioContext.currentTime;
@@ -1797,6 +2012,7 @@ class AudioEngine {
       this.mutedStates.splice(index, 1);
       this.preMuteVolumes.splice(index, 1);
       this.droneDetuneOffsets.splice(index, 1);
+      this.panValues.splice(index, 1);
       this.phases.splice(index, 1);
       this.smoothedFreqs.splice(index, 1);
       this._lastPhaseUpdate.splice(index, 1);
@@ -1935,9 +2151,9 @@ class AudioEngine {
     if (!this.audioContext || !partial._gain) return;
     if (this.audioContext.state === 'suspended') this.audioContext.resume();
     const t = this.audioContext.currentTime;
-    partial._gain.gain.setTargetAtTime(this._partialTargetGain(partial), t, 0.016);
+    partial._gain.gain.setTargetAtTime(this._partialTargetGain(partial, slotIndex), t, 0.016);
     if (partial._gainR) {
-      partial._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(partial), t, 0.016);
+      partial._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(partial, slotIndex), t, 0.016);
     }
   }
 
@@ -1950,9 +2166,9 @@ class AudioEngine {
     partial.muted = !partial.muted;
     if (!this.audioContext || !partial._gain) return;
     const t = this.audioContext.currentTime;
-    partial._gain.gain.setTargetAtTime(this._partialTargetGain(partial), t, 0.016);
+    partial._gain.gain.setTargetAtTime(this._partialTargetGain(partial, slotIndex), t, 0.016);
     if (partial._gainR) {
-      partial._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(partial), t, 0.016);
+      partial._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(partial, slotIndex), t, 0.016);
     }
   }
 
@@ -2023,6 +2239,7 @@ class AudioEngine {
       // regardless and the routingMap update only takes effect when
       // mode flips back to 'lr').
       this.routingMap[oscIndex] = [...channels, newChannel];
+      this._syncPanFromRouting(oscIndex);
       this._connectDroneToChannels(oscIndex);
       // Extras inherit the slot's routing — reconnect after the map
       // update so they stay aligned with their parent's channels.
@@ -2038,6 +2255,21 @@ class AudioEngine {
     } catch (err) {
       console.error('AudioEngine: Failed to add routing', err);
     }
+  }
+
+  /**
+   * After a discrete routing write (patch bay, URL restore, old patches),
+   * pull panValues to the projection the new channel set implies so the
+   * continuous dial, detune width and gain targets stay coherent with
+   * the wiring. Beyond-stereo/empty sets leave pan untouched (inert).
+   */
+  _syncPanFromRouting(oscIndex) {
+    const p = this._panFromChannels(this.routingMap[oscIndex] || []);
+    if (p === null) return;
+    if (Number.isFinite(this.panValues[oscIndex]) && Math.abs(this.panValues[oscIndex] - p) < 1e-3) return;
+    // Full setVoicePan (minus the routing write-back) so detune width,
+    // loudness lerp and partner fade follow the discrete change too.
+    this.setVoicePan(oscIndex, p, { syncRouting: false });
   }
   
   /**
@@ -2059,6 +2291,7 @@ class AudioEngine {
       // Update routing map - just remove the channel, don't reassign
       const newChannels = channels.filter(ch => ch !== outputChannel);
       this.routingMap[oscIndex] = newChannels;
+      this._syncPanFromRouting(oscIndex);
       // Helper handles the disconnect + reconnect per current mode.
       // In 'stereo' mode the audio stays on L+R; the map change only
       // takes effect when mode flips back to 'lr'.
@@ -2122,19 +2355,108 @@ class AudioEngine {
       .filter((c) => Number.isInteger(c) && c >= 0 && c < max)
       .sort((a, b) => a - b);
     this.routingMap[oscIndex] = clean.length ? clean : [oscIndex % max];
+    const next = this.routingMap[oscIndex];
 
     try {
-      // Both modes read the map now: 'lr' picks the primary's channel(s),
-      // 'stereo' decides split (both) vs mono-L/R for the detune pair.
-      // Reroute just this one voice click-free so the rest of the bed
-      // keeps sounding.
-      this._clickFreeVoiceRouteSwap(oscIndex);
+      const pan = this._panFromChannels(next);
+      if (pan !== null) {
+        // Stereo-pair routing is just a pan detent now — setVoicePan
+        // ramps the tap weights, so the swap is click-free with no dip.
+        this.setVoicePan(oscIndex, pan, { syncRouting: false });
+      } else {
+        // Multichannel target — legacy dip-and-reroute.
+        this._clickFreeVoiceRouteSwap(oscIndex);
+      }
       if (this.onRoutingChange) {
-        this.onRoutingChange(oscIndex, this.routingMap[oscIndex]);
+        this.onRoutingChange(oscIndex, next);
       }
     } catch (err) {
       console.error('AudioEngine: Failed to set voice routing', err);
     }
+  }
+
+  /**
+   * Continuous per-voice pan, −1 … +1. The dial behind the drone tray:
+   * center is the mode origin (stereo split / lr ⊙ both), the extremes
+   * are hard L/R. In stereo mode the whole detune pair slides toward the
+   * pan side (collapse model) while the effective detune AND the partner
+   * oscillator's gain narrow with panWidth — at a full extreme the voice
+   * degenerates to a single clean oscillator at its true orb frequency,
+   * exactly an lr hard-pan. Everything here is AudioParam ramps on the
+   * persistent tap/gain nodes — no graph edits, so dragging the dial is
+   * click-free at any speed.
+   */
+  setVoicePan(oscIndex, pan, { syncRouting = true } = {}) {
+    if (oscIndex < 0) return;
+    const p = Math.max(-1, Math.min(1, Number(pan) || 0));
+    this.panValues[oscIndex] = p;
+    if (!this.isInitialized || !this.audioContext || oscIndex >= this.oscillatorCount) {
+      this._emitPanChange(oscIndex, p);
+      return;
+    }
+
+    const t = this.audioContext.currentTime;
+    const TAU = 0.03;
+    const channels = this.routingMap[oscIndex] || [];
+    const beyondStereo = this._usesBeyondStereo(channels);
+
+    if (!beyondStereo) {
+      // 1. Image: ramp the tap weights.
+      const { primary, partner } = dronePanWeights(p, droneStereo.mode);
+      const retap = (g, [wL, wR]) => {
+        if (!g || !g._tapL || !g._tapR) return;
+        g._tapL.gain.setTargetAtTime(wL, t, TAU);
+        g._tapR.gain.setTargetAtTime(wR, t, TAU);
+      };
+      retap(this.gainNodes[oscIndex], primary);
+      retap(this.gainNodesR[oscIndex], partner);
+      for (const pt of this.extraPartials[oscIndex] || []) {
+        retap(pt._gain, primary);
+        retap(pt._gainR, partner);
+      }
+    }
+
+    if (droneStereo.mode === 'stereo') {
+      // 2. Detune narrows with |pan| — glide the pair (and partials)
+      // toward/away from the true orb frequency.
+      if (this.oscillators[oscIndex]) {
+        this.oscillators[oscIndex].frequency.setTargetAtTime(this._dronePrimaryFreq(oscIndex), t, 0.016);
+      }
+      if (this.oscillatorsR[oscIndex]) {
+        this.oscillatorsR[oscIndex].frequency.setTargetAtTime(this._dronePartnerFreq(oscIndex), t, 0.016);
+      }
+      // 3. Loudness: primary lerps the equal-loudness comp (0.5 → 1),
+      // partner fades out with width. Skip muted slots — their release
+      // tail / silence must not be re-targeted.
+      if (!this.mutedStates[oscIndex]) {
+        if (this.gainNodes[oscIndex]) {
+          this.gainNodes[oscIndex].gain.setTargetAtTime(this._droneTargetGain(oscIndex), t, TAU);
+        }
+        if (this.gainNodesR[oscIndex]) {
+          this.gainNodesR[oscIndex].gain.setTargetAtTime(this._dronePartnerTargetGain(oscIndex), t, TAU);
+        }
+      }
+      for (const pt of this.extraPartials[oscIndex] || []) {
+        if (pt._osc) pt._osc.frequency.setTargetAtTime(this._partialPrimaryFreq(oscIndex, pt), t, 0.016);
+        if (pt._oscR) pt._oscR.frequency.setTargetAtTime(this._partialPartnerFreq(oscIndex, pt), t, 0.016);
+        if (!pt.muted) {
+          if (pt._gain) pt._gain.gain.setTargetAtTime(this._partialTargetGain(pt, oscIndex), t, TAU);
+          if (pt._gainR) pt._gainR.gain.setTargetAtTime(this._partialPartnerTargetGain(pt, oscIndex), t, TAU);
+        }
+      }
+    }
+
+    // 4. Keep the discrete projection in sync for the patch bay, LSQ
+    // calibration, kbd fallback and legacy patch/URL consumers.
+    if (syncRouting && !beyondStereo) {
+      const proj = p <= -0.99 ? [0] : p >= 0.99 ? [1] : [0, 1];
+      const changed = proj.length !== channels.length || proj.some((c, k) => channels[k] !== c);
+      if (changed) {
+        this.routingMap[oscIndex] = proj;
+        this.onRoutingChange?.(oscIndex, proj);
+      }
+    }
+    this._emitPanChange(oscIndex, p);
   }
 
   /**
@@ -2154,18 +2476,33 @@ class AudioEngine {
     for (let i = 0; i < this.oscillatorCount; i++) {
       const prev = this.routingMap[i] || [];
       const def = stereo ? [0, 1] : [i % max];
-      const changed =
+      const defPan = this._defaultPan(i);
+      const mapChanged =
         prev.length !== def.length || def.some((c, k) => prev[k] !== c);
+      const panChanged = Math.abs(this.getVoicePan(i) - defPan) > 1e-3;
+      const wasBeyondStereo = this._usesBeyondStereo(prev);
       this.routingMap[i] = def;
       // Reroute only the voices that actually moved. reconnect:false is the
       // mode-swap path — the caller's _clickFreeDroneRouteSwap handles the
-      // graph, so there we only rewrite the map values.
-      if (reconnect && changed && this.gainNodes[i]) {
+      // graph, so there we only rewrite the map + pan values.
+      if (reconnect && (mapChanged || panChanged) && this.gainNodes[i]) {
         try {
-          this._clickFreeVoiceRouteSwap(i);
+          if (wasBeyondStereo || this._usesBeyondStereo(def)) {
+            // Crossing to/from a multichannel assignment needs a real
+            // graph swap — keep the click-free dip for that.
+            this.panValues[i] = defPan;
+            this._clickFreeVoiceRouteSwap(i);
+            this._emitPanChange(i, defPan);
+          } else {
+            // Pure stereo-pair reset — glide the dial home, no dip.
+            this.setVoicePan(i, defPan, { syncRouting: false });
+          }
         } catch (err) {
           console.error('AudioEngine: Failed to reset routing', err);
         }
+      } else if (panChanged) {
+        this.panValues[i] = defPan;
+        this._emitPanChange(i, defPan);
       }
       if (this.onRoutingChange) this.onRoutingChange(i, this.routingMap[i]);
     }
@@ -2373,11 +2710,10 @@ class AudioEngine {
     }
 
     const t = this.audioContext.currentTime;
-    const target = clampedVol * droneEnvelope.sustain * this._stereoEqualLoudnessScale();
+    const target = clampedVol * droneEnvelope.sustain * this._slotLoudnessScale(index);
     this.gainNodes[index].gain.setTargetAtTime(target, t, 0.016);
     if (this.gainNodesR[index]) {
-      const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
-      this.gainNodesR[index].gain.setTargetAtTime(partnerTarget, t, 0.016);
+      this.gainNodesR[index].gain.setTargetAtTime(this._dronePartnerTargetGain(index), t, 0.016);
     }
     // Volume is a parameter-lock dimension — notify so undo/recall observers
     // record it. (setFrequency and the mute toggles already notify; setVolume
@@ -2434,11 +2770,10 @@ class AudioEngine {
         this.preMuteVolumes[i] = clampedVol;
         continue;
       }
-      const target = clampedVol * sustain * this._stereoEqualLoudnessScale();
+      const target = clampedVol * sustain * this._slotLoudnessScale(i);
       this.gainNodes[i].gain.setTargetAtTime(target, t, 0.016);
       if (this.gainNodesR[i]) {
-        const partnerTarget = droneStereo.mode === 'stereo' ? target : 0;
-        this.gainNodesR[i].gain.setTargetAtTime(partnerTarget, t, 0.016);
+        this.gainNodesR[i].gain.setTargetAtTime(this._dronePartnerTargetGain(i), t, 0.016);
       }
     }
   }
@@ -2749,6 +3084,640 @@ class AudioEngine {
   }
 
   /**
+   * Smoothly slide the global transpose to a target semitone offset over
+   * `durationMs` — the transpose sibling of glideToFrequencies/glideVolumes,
+   * so a scoped recall/undo can lerp the master pitch offset alongside the
+   * per-voice params. Each frame writes through setTransposeSemitones, so
+   * clamping applies as usual and, with snap on, the slide lands stepwise on
+   * whole semitones. Persistence is deferred to the final frame so a slide
+   * doesn't thrash localStorage.
+   */
+  glideTranspose(targetSemitones, durationMs = 1000, onComplete = null, easing = null) {
+    if (this._transposeGlideRaf != null) {
+      cancelAnimationFrame(this._transposeGlideRaf);
+      this._transposeGlideRaf = null;
+    }
+    let target = Number(targetSemitones) || 0;
+    target = Math.max(-TRANSPOSE_MAX_SEMITONES,
+      Math.min(TRANSPOSE_MAX_SEMITONES, target));
+    const start = this._transposeSemitones;
+    if (durationMs <= 0 || Math.abs(target - start) < 1e-6) {
+      this.setTransposeSemitones(target);
+      if (onComplete) onComplete();
+      return;
+    }
+    const startMs = performance.now();
+    const ease = typeof easing === 'function'
+      ? easing
+      : (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+    const step = () => {
+      const elapsed = performance.now() - startMs;
+      const t = Math.min(1, elapsed / durationMs);
+      const k = ease(t);
+      this.setTransposeSemitones(start + (target - start) * k, { persist: t >= 1 });
+      if (t >= 1) {
+        this._transposeGlideRaf = null;
+        if (onComplete) onComplete();
+        return;
+      }
+      this._transposeGlideRaf = requestAnimationFrame(step);
+    };
+    this._transposeGlideRaf = requestAnimationFrame(step);
+  }
+
+  cancelTransposeGlide() {
+    if (this._transposeGlideRaf != null) {
+      cancelAnimationFrame(this._transposeGlideRaf);
+      this._transposeGlideRaf = null;
+    }
+  }
+
+  // ─── Step transition (retrigger instead of glide) ──────────────────────
+  /**
+   * Jump a slot to a new pitch by REPLACING its oscillator pair rather than
+   * bending it — the "step" counterpart to the glide tween.
+   *
+   * A fresh primary+partner pair starts at the target pitch with a
+   * drone-envelope attack. The slot's references swap to the new nodes
+   * immediately, so every per-slot API (setFrequency/setVolume/mute/routing)
+   * acts on the new voice from the first frame. The OLD pair becomes an
+   * unowned tail: it holds its level through the overlap window, releases
+   * per the drone envelope, then stops and disconnects itself. During the
+   * overlap both notes sound at once.
+   *
+   * All 12 slots can step simultaneously — each step transiently doubles
+   * that slot's oscillator count (2 → 4 including stereo partners), so a
+   * full-board step peaks at 48 short-lived oscillators, well within what
+   * Web Audio handles comfortably.
+   *
+   * Partials (extraPartials) are retuned instantly rather than crossfaded —
+   * the primary retrigger carries the step gesture.
+   *
+   * @param {number} index      Slot to step
+   * @param {number} frequency  Target Hz
+   * @param {number} overlapMs  How long old + new sound together. 0 = handoff.
+   * @returns {boolean} true if the step was applied
+   */
+  stepToFrequency(index, frequency, overlapMs = 0) {
+    if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return false;
+    if (!this.audioContext) return false;
+    const oldOsc = this.oscillators[index];
+    const oldGain = this.gainNodes[index];
+    const oldOscR = this.oscillatorsR[index];
+    const oldGainR = this.gainNodesR[index];
+    if (!oldOsc || !oldGain) return false;
+
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
+    const clampedFreq = Math.max(0.001, Math.min(20000, frequency));
+    const overlapSec = Math.max(0, overlapMs) / 1000;
+    const t = this.audioContext.currentTime;
+
+    // MIDI bookkeeping: the outgoing note becomes a tail for the overlap
+    // window, and the generation bump re-keys the slot's request id so the
+    // MPE reconciler retriggers. Muted slots weren't sounding over MIDI, so
+    // they leave no tail.
+    const prevFreq = this.frequencyValues[index];
+    const prevGen = this.slotGenerations[index] || 0;
+    // The OLD note's wire id (which may be an adopted traveller id) rides
+    // out on the tail; the bumped generation keys the fresh note.
+    const prevWireId = this.getSlotWireId(index);
+    this.slotGenerations[index] = prevGen + 1;
+    this._wireAliases.delete(index);
+    this._pruneStepTails();
+    if (!this.mutedStates[index] && Number.isFinite(prevFreq) && prevFreq > 0) {
+      const nowMs = performance.now();
+      this._stepTails.push({
+        slot: index,
+        gen: prevGen,
+        wireId: prevWireId,
+        freq: prevFreq,
+        level: this.volumeValues[index] ?? 0.5,
+        startMs: nowMs,                          // viz: descent progress origin
+        until: nowMs + Math.max(0, overlapMs),
+      });
+    }
+
+    // Commit the pitch first so the freq/gain helpers below read the target.
+    this.frequencyValues[index] = clampedFreq;
+
+    // Fresh replacement pair — mirrors _createSingleOscillator.
+    const oscillator = this.audioContext.createOscillator();
+    const gainNode = this.audioContext.createGain();
+    const oscillatorR = this.audioContext.createOscillator();
+    const gainNodeR = this.audioContext.createGain();
+
+    const wave = droneWave.getPeriodicWave(this.audioContext);
+    if (wave) {
+      oscillator.setPeriodicWave(wave);
+      oscillatorR.setPeriodicWave(wave);
+    }
+
+    oscillator.connect(gainNode);
+    oscillatorR.connect(gainNodeR);
+
+    // Swap the slot's references BEFORE wiring so _connectDroneToChannels
+    // connects the NEW pair. The old pair keeps its channel connections for
+    // the tail — disconnect() there only ever severs the node it's called
+    // on, and we never call it on the old nodes until their osc ends.
+    this.oscillators[index] = oscillator;
+    this.gainNodes[index] = gainNode;
+    this.oscillatorsR[index] = oscillatorR;
+    this.gainNodesR[index] = gainNodeR;
+    this._connectDroneToChannels(index);
+
+    oscillator.frequency.setValueAtTime(this._dronePrimaryFreq(index), t);
+    oscillatorR.frequency.setValueAtTime(this._dronePartnerFreq(index), t);
+
+    // Fresh attack on the new voice. Peak is the slider level (vol ×
+    // loudness comp); applyNoteOn's decay then settles on peak·sustain,
+    // which equals the steady-state target used at every other gain site.
+    //
+    // The attack is capped at the total handoff window (overlap + release):
+    // a drone attack LONGER than that would leave a hole — the old voice
+    // reaches silence while the new one is still swelling in, which reads
+    // as the audio pausing on every step. Capping keeps the crossfade
+    // continuous; attacks that already fit are respected verbatim.
+    const peak = this.mutedStates[index]
+      ? 0
+      : (this.volumeValues[index] ?? 0.5) * this._slotLoudnessScale(index);
+    const attackCap = Math.max(0.02, overlapSec + droneEnvelope.release);
+    const stepAttack = droneEnvelope.attack > attackCap ? attackCap : null;
+    droneEnvelope.applyNoteOn(gainNode.gain, this.audioContext, peak, stepAttack);
+    if (droneStereo.mode === 'stereo') {
+      // Partner fades with panWidth — silent at the pan extremes.
+      droneEnvelope.applyNoteOn(gainNodeR.gain, this.audioContext,
+        peak * panWidth(this.getVoicePan(index)), stepAttack);
+    } else {
+      gainNodeR.gain.setValueAtTime(0, t);
+    }
+
+    oscillator.start();
+    oscillatorR.start();
+
+    // Reseed the visual phase accumulators for the new pair.
+    this.phases[index] = 0;
+    this.smoothedFreqs[index] = this._dronePrimaryFreq(index);
+    this._lastPhaseUpdate[index] = t;
+    this.phasesR[index] = 0;
+    this.smoothedFreqsR[index] = this._dronePartnerFreq(index);
+    this._lastPhaseUpdateR[index] = t;
+
+    // Old pair: hold at its current level through the overlap window, then
+    // release per the drone envelope, then stop + disconnect itself.
+    const releaseAt = t + overlapSec;
+    const stopAt = releaseAt + droneEnvelope.release + 0.05;
+    const tailPair = (o, g) => {
+      if (!o) return;
+      try {
+        if (g) {
+          const cur = g.gain.value;
+          g.gain.cancelScheduledValues(t);
+          g.gain.setValueAtTime(cur, t);
+          g.gain.setValueAtTime(cur, releaseAt);
+          g.gain.linearRampToValueAtTime(0, releaseAt + droneEnvelope.release);
+        }
+        o.onended = () => {
+          try { o.disconnect(); } catch { /* ignore */ }
+          try { g && g.disconnect(); } catch { /* ignore */ }
+        };
+        o.stop(stopAt);
+      } catch (e) {
+        console.warn('Error stopping stepped oscillator', index, e);
+      }
+    };
+    tailPair(oldOsc, oldGain);
+    tailPair(oldOscR, oldGainR);
+
+    // Partials follow the new pitch instantly (16 ms smoothing).
+    const partials = this.extraPartials[index];
+    if (partials) {
+      for (const p of partials) {
+        if (p._osc) p._osc.frequency.setTargetAtTime(this._partialPrimaryFreq(index, p), t, 0.016);
+        if (p._oscR) p._oscR.frequency.setTargetAtTime(this._partialPartnerFreq(index, p), t, 0.016);
+      }
+    }
+
+    this._notifyFrequencyChange();
+    return true;
+  }
+
+  /** Drop step tails whose overlap window has passed. */
+  _pruneStepTails(nowMs = performance.now()) {
+    if (this._stepTails.length === 0) return;
+    // Keep records a grace period past their audible window: the spectrum
+    // bar plays a post-landing hop animation off the expired tail. Audible
+    // consumers (MIDI, waterfall) read getStepTails, which re-filters to
+    // the live window.
+    this._stepTails = this._stepTails.filter(
+      (tail) => tail.until + AudioEngine.STEP_TAIL_VIZ_GRACE_MS > nowMs
+    );
+  }
+
+  /** Live step tails (old notes still inside their overlap window). */
+  getStepTails() {
+    this._pruneStepTails();
+    const now = performance.now();
+    return this._stepTails.filter((tail) => tail.until > now);
+  }
+
+  /**
+   * All step-tail records including just-expired ones (up to the viz grace
+   * period past their window) — the spectrum bar reads these to run the
+   * descent AND the post-landing hop, including for 0 ms handoffs whose
+   * audible window never spans a frame.
+   */
+  getStepTailsViz() {
+    this._pruneStepTails();
+    return this._stepTails;
+  }
+
+  /** Retrigger generation for a slot — folded into MIDI request ids. */
+  getSlotGeneration(index) {
+    return this.slotGenerations[index] || 0;
+  }
+
+  /**
+   * Stable wire id for a slot's outgoing MPE voice. Usually derived from
+   * slot + step generation; a slot that adopted a travelling voice answers
+   * with the traveller's inherited id instead (see _wireAliases), so the
+   * external synth hears the travel as one bending note, not off+on.
+   */
+  getSlotWireId(index) {
+    return this._wireAliases.get(index)
+      || `drone:${index}:g${this.slotGenerations[index] || 0}`;
+  }
+
+  // ─── Travelling voices (cross-slot voice-leading) ─────────────────────
+  // A travel is: detachTravelVoice(i) → [tween setTravelerFrequency] →
+  // landTravelVoice(id, j)  (or releaseTravelVoice(id) for a merge/exit).
+  // The note itself never restarts — the same oscillator pair keeps running
+  // through detach, flight and adoption, so the gliss is phase-continuous.
+
+  /**
+   * Detach slot `index`'s sounding node pair into a free-floating traveller
+   * and give the slot a fresh SILENT pair (the slot reads as muted from this
+   * moment — its bookkeeping settles at departure, not arrival, so chained
+   * travels through the same slot can't collide). Returns the traveller id,
+   * or null if the slot isn't audible. The caller owns retuning the vacated
+   * slot to wherever it should silently sit.
+   */
+  detachTravelVoice(index) {
+    if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return null;
+    if (!this.audioContext || this.mutedStates[index]) return null;
+    const osc = this.oscillators[index];
+    const gain = this.gainNodes[index];
+    if (!osc || !gain) return null;
+
+    this._travelerSeq += 1;
+    const id = this._travelerSeq;
+    this._travelers.set(id, {
+      id,
+      fromIndex: index,
+      osc,
+      gain,
+      oscR: this.oscillatorsR[index],
+      gainR: this.gainNodesR[index],
+      nominalHz: this.frequencyValues[index],
+      offset: this.droneDetuneOffsets[index] || 0,
+      pan: this.getVoicePan(index),
+      channels: (this.routingMap[index] || []).slice(),
+      level: this.volumeValues[index] ?? 0.5,
+      // The traveller INHERITS the slot's wire id: over MIDI the departure
+      // is NOT a note-off — the same wire voice keeps sounding and its
+      // pitch bends through the flight (MidiOutput requests travellers by
+      // this id). The landing slot inherits it back in landTravelVoice.
+      wireId: this.getSlotWireId(index),
+    });
+
+    // The slot goes muted NOW; its wire id travels with the detached voice,
+    // so the next note this slot sounds on its own is a fresh one.
+    this.mutedStates[index] = true;
+    this._wireAliases.delete(index);
+    this.preMuteVolumes[index] = this.volumeValues[index];
+
+    // Fresh silent pair for the slot, mirroring stepToFrequency's swap: the
+    // detached pair keeps its channel connections (disconnect is only ever
+    // called on the node it's severing), the new pair wires up its own.
+    const t = this.audioContext.currentTime;
+    const oscillator = this.audioContext.createOscillator();
+    const gainNode = this.audioContext.createGain();
+    const oscillatorR = this.audioContext.createOscillator();
+    const gainNodeR = this.audioContext.createGain();
+    const wave = droneWave.getPeriodicWave(this.audioContext);
+    if (wave) {
+      oscillator.setPeriodicWave(wave);
+      oscillatorR.setPeriodicWave(wave);
+    }
+    oscillator.connect(gainNode);
+    oscillatorR.connect(gainNodeR);
+    this.oscillators[index] = oscillator;
+    this.gainNodes[index] = gainNode;
+    this.oscillatorsR[index] = oscillatorR;
+    this.gainNodesR[index] = gainNodeR;
+    this._connectDroneToChannels(index);
+    oscillator.frequency.setValueAtTime(this._dronePrimaryFreq(index), t);
+    oscillatorR.frequency.setValueAtTime(this._dronePartnerFreq(index), t);
+    gainNode.gain.setValueAtTime(0, t);
+    gainNodeR.gain.setValueAtTime(0, t);
+    oscillator.start();
+    oscillatorR.start();
+    this.phases[index] = 0;
+    this.smoothedFreqs[index] = this._dronePrimaryFreq(index);
+    this._lastPhaseUpdate[index] = t;
+    this.phasesR[index] = 0;
+    this.smoothedFreqsR[index] = this._dronePartnerFreq(index);
+    this._lastPhaseUpdateR[index] = t;
+
+    this._notifyFrequencyChange();
+    return id;
+  }
+
+  /**
+   * Spawn a NEW travelling voice out of silence — the bloom entrance. A
+   * fresh pair attacks at `hz` (drone note-on envelope) and is meant to be
+   * tweened to `forSlot`'s pitch and landed there. It borrows the slot's
+   * routing (so the landing reconnects the same edges — seamless), detune
+   * offset and volume; the slot itself stays muted and PARKED until
+   * landing, so nothing slot-bound (orbs, spectrum) moves during the bloom.
+   * Returns the traveller id, or null pre-init.
+   */
+  spawnTravelVoice(hz, forSlot) {
+    if (!this.isInitialized || !this.audioContext) return null;
+    if (forSlot < 0 || forSlot >= this.oscillatorCount) return null;
+    const clamped = Math.max(0.001, Math.min(20000, hz));
+    const t = this.audioContext.currentTime;
+
+    const osc = this.audioContext.createOscillator();
+    const gain = this.audioContext.createGain();
+    const oscR = this.audioContext.createOscillator();
+    const gainR = this.audioContext.createGain();
+    const wave = droneWave.getPeriodicWave(this.audioContext);
+    if (wave) {
+      osc.setPeriodicWave(wave);
+      oscR.setPeriodicWave(wave);
+    }
+    osc.connect(gain);
+    oscR.connect(gainR);
+
+    // Wire to the destination slot's channels (mirrors
+    // _connectDroneToChannels, which only works on slot-registered nodes).
+    const channels = (this.routingMap[forSlot] || []).slice();
+    const pan = this.getVoicePan(forSlot);
+    if (this._usesBeyondStereo(channels)) {
+      // Legacy discrete multichannel wiring for patch-bay slots.
+      const isBoth = channels.length >= 2;
+      if (droneStereo.mode === 'stereo') {
+        const ch = isBoth ? 0 : (channels[0] ?? 0);
+        if (this.channelGains[ch]) gain.connect(this.channelGains[ch]);
+        const chR = isBoth ? 1 : (channels[0] ?? 1);
+        if (this.channelGains[chR]) gainR.connect(this.channelGains[chR]);
+      } else {
+        for (const ch of channels) {
+          if (ch >= 0 && ch < this.channelGains.length) gain.connect(this.channelGains[ch]);
+        }
+        if (this.channelGains[1]) gainR.connect(this.channelGains[1]);
+      }
+    } else {
+      this._wirePanTaps(gain, gainR, pan);
+    }
+
+    const offset = this.droneDetuneOffsets[forSlot] || 0;
+    const w = panWidth(pan);
+    const nominal = clamped * this._transposeRatio;
+    const shift = droneStereo.mode === 'stereo' ? (offset * w) / 2 : offset;
+    osc.frequency.setValueAtTime(Math.max(0.001, Math.min(20000, nominal + shift)), t);
+    oscR.frequency.setValueAtTime(Math.max(0.001, Math.min(20000, nominal - (offset * w) / 2)), t);
+
+    const level = Math.min(this.volumeValues[forSlot] ?? 0.5, DRONE_PLAY_VOL_CAP);
+    const peak = level * this._slotLoudnessScale(forSlot);
+    gain.gain.setValueAtTime(0, t);
+    gainR.gain.setValueAtTime(0, t);
+    droneEnvelope.applyNoteOn(gain.gain, this.audioContext, peak);
+    if (droneStereo.mode === 'stereo') {
+      droneEnvelope.applyNoteOn(gainR.gain, this.audioContext, peak * w);
+    }
+    osc.start();
+    oscR.start();
+
+    this._travelerSeq += 1;
+    const id = this._travelerSeq;
+    this._travelers.set(id, {
+      id,
+      fromIndex: forSlot,
+      osc,
+      gain,
+      oscR,
+      gainR,
+      nominalHz: clamped,
+      offset,
+      pan,
+      channels,
+      level,
+      // A bloom is a genuinely NEW note (it attacks locally too), so its
+      // wire id is fresh — note-on at spawn, then bend through the flight.
+      wireId: `travel:${id}`,
+    });
+    return id;
+  }
+
+  /**
+   * Retune a traveller mid-flight (the launch loop's per-frame write).
+   * Applies transpose and the traveller's frozen detune offset the same way
+   * a slot write would, so a travel sounds exactly like a slot glide.
+   */
+  setTravelerFrequency(id, hz) {
+    const tv = this._travelers.get(id);
+    if (!tv || !this.audioContext) return;
+    const clamped = Math.max(0.001, Math.min(20000, hz));
+    tv.nominalHz = clamped;
+    const nominal = clamped * this._transposeRatio;
+    const w = panWidth(tv.pan ?? 0);
+    const shift = droneStereo.mode === 'stereo' ? (tv.offset * w) / 2 : tv.offset;
+    const t = this.audioContext.currentTime;
+    tv.osc.frequency.setTargetAtTime(
+      Math.max(0.001, Math.min(20000, nominal + shift)), t, 0.016);
+    if (tv.oscR) {
+      tv.oscR.frequency.setTargetAtTime(
+        Math.max(0.001, Math.min(20000, nominal - (tv.offset * w) / 2)), t, 0.016);
+    }
+  }
+
+  /**
+   * Land a traveller on slot `toIndex`: the slot ADOPTS the travelling node
+   * pair — same oscillators, continuous phase, no retrigger — and unmutes.
+   * The slot's previous pair is discarded (it's silent in the planned flow;
+   * if it's somehow still audible it gets a quick release tail instead of a
+   * hard stop). Gain ramps from the traveller's in-flight level to the
+   * destination slot's own target; when the two slots route to different
+   * output channels the reroute hides inside a ~15 ms dip to silence —
+   * a synchronous disconnect/connect at audible gain would click.
+   */
+  landTravelVoice(id, toIndex) {
+    const tv = this._travelers.get(id);
+    if (!tv) return false;
+    if (!this.isInitialized || toIndex < 0 || toIndex >= this.oscillatorCount || !this.audioContext) {
+      this.releaseTravelVoice(id);
+      return false;
+    }
+    this._travelers.delete(id);
+    const t = this.audioContext.currentTime;
+
+    // Retire the destination's current pair.
+    const oldOsc = this.oscillators[toIndex];
+    const oldGain = this.gainNodes[toIndex];
+    const oldOscR = this.oscillatorsR[toIndex];
+    const oldGainR = this.gainNodesR[toIndex];
+    const wasAudible = !this.mutedStates[toIndex];
+    const retire = (o, g) => {
+      if (!o) return;
+      try {
+        if (g) {
+          const cur = g.gain.value;
+          g.gain.cancelScheduledValues(t);
+          g.gain.setValueAtTime(cur, t);
+          // Planned flow: silent pair, near-instant fade. Defensive flow
+          // (still audible): the drone release so nothing hard-stops.
+          g.gain.linearRampToValueAtTime(0, t + (wasAudible ? droneEnvelope.release : 0.02));
+        }
+        o.onended = () => {
+          try { o.disconnect(); } catch { /* ignore */ }
+          try { g && g.disconnect(); } catch { /* ignore */ }
+        };
+        o.stop(t + (wasAudible ? droneEnvelope.release : 0.02) + 0.05);
+      } catch (e) {
+        console.warn('Error retiring landed-on oscillator', toIndex, e);
+      }
+    };
+    retire(oldOsc, oldGain);
+    retire(oldOscR, oldGainR);
+
+    // Adoption: the slot's references now ARE the traveller's nodes.
+    this.oscillators[toIndex] = tv.osc;
+    this.gainNodes[toIndex] = tv.gain;
+    this.oscillatorsR[toIndex] = tv.oscR;
+    this.gainNodesR[toIndex] = tv.gainR;
+    this.mutedStates[toIndex] = false;
+    this.frequencyValues[toIndex] = tv.nominalHz;
+    // The slot also adopts the traveller's WIRE id, so the external synth's
+    // note continues seamlessly across the landing — no retrigger.
+    this._wireAliases.set(toIndex, tv.wireId);
+
+    const primaryTarget = this._droneTargetGain(toIndex);
+    const partnerTarget = this._dronePartnerTargetGain(toIndex);
+    const ramp = (g, target, secs) => {
+      if (!g) return;
+      const cur = g.gain.value;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(cur, t);
+      g.gain.linearRampToValueAtTime(target, t + secs);
+    };
+
+    const destChannels = (this.routingMap[toIndex] || []).slice().sort();
+    const sameRoute = String(destChannels) === String(tv.channels.slice().sort())
+      && Math.abs((tv.pan ?? 0) - this.getVoicePan(toIndex)) < 0.02;
+    if (sameRoute) {
+      // Same output edges: reconnect within one task (graph changes apply
+      // between render quanta, so this is seamless) and ramp to the slot's
+      // own level.
+      this._connectDroneToChannels(toIndex);
+      ramp(tv.gain, primaryTarget, 0.08);
+      ramp(tv.gainR, partnerTarget, 0.08);
+    } else {
+      // Different sides: dip to silence, reroute there, rise at the new
+      // position — same trick as _clickFreeVoiceRouteSwap, ~75 ms total.
+      ramp(tv.gain, 0, 0.012);
+      ramp(tv.gainR, 0, 0.012);
+      setTimeout(() => {
+        try {
+          this._connectDroneToChannels(toIndex);
+          const t2 = this.audioContext.currentTime;
+          const rise = (g, target) => {
+            if (!g) return;
+            g.gain.cancelScheduledValues(t2);
+            g.gain.setValueAtTime(0, t2);
+            g.gain.linearRampToValueAtTime(target, t2 + 0.06);
+          };
+          rise(tv.gain, this._droneTargetGain(toIndex));
+          rise(tv.gainR, this._dronePartnerTargetGain(toIndex));
+        } catch { /* context torn down mid-handoff */ }
+      }, 20);
+    }
+
+    // Ease onto the destination's own detune offset (a few Hz at most).
+    tv.osc.frequency.setTargetAtTime(this._dronePrimaryFreq(toIndex), t, 0.03);
+    if (tv.oscR) tv.oscR.frequency.setTargetAtTime(this._dronePartnerFreq(toIndex), t, 0.03);
+
+    // Viz phase accumulators restart for the adopted pair.
+    this.phases[toIndex] = 0;
+    this.smoothedFreqs[toIndex] = this._dronePrimaryFreq(toIndex);
+    this._lastPhaseUpdate[toIndex] = t;
+    this.phasesR[toIndex] = 0;
+    this.smoothedFreqsR[toIndex] = this._dronePartnerFreq(toIndex);
+    this._lastPhaseUpdateR[toIndex] = t;
+
+    this._notifyFrequencyChange();
+    return true;
+  }
+
+  /**
+   * Release a traveller without landing it — the merge/fade-out ending, and
+   * the cleanup path. Envelope release (or an explicit shorter one), then
+   * self-stop and disconnect.
+   */
+  releaseTravelVoice(id, releaseS = null) {
+    const tv = this._travelers.get(id);
+    if (!tv) return;
+    this._travelers.delete(id);
+    if (!this.audioContext) return;
+    const rel = Number.isFinite(releaseS) ? Math.max(0.02, releaseS) : droneEnvelope.release;
+    const t = this.audioContext.currentTime;
+    const tail = (o, g) => {
+      if (!o) return;
+      try {
+        if (g) {
+          const cur = g.gain.value;
+          g.gain.cancelScheduledValues(t);
+          g.gain.setValueAtTime(cur, t);
+          g.gain.linearRampToValueAtTime(0, t + rel);
+        }
+        o.onended = () => {
+          try { o.disconnect(); } catch { /* ignore */ }
+          try { g && g.disconnect(); } catch { /* ignore */ }
+        };
+        o.stop(t + rel + 0.05);
+      } catch (e) {
+        console.warn('Error releasing travel voice', id, e);
+      }
+    };
+    tail(tv.osc, tv.gain);
+    tail(tv.oscR, tv.gainR);
+  }
+
+  /** Release every in-flight traveller (osc-count changes, patch loads,
+   *  launch-state freezes — anything that invalidates slot indices). Wire
+   *  aliases go with them: these events restart notes locally, so the wire
+   *  must retrigger too. */
+  releaseAllTravelers(releaseS = 0.08) {
+    for (const id of [...this._travelers.keys()]) this.releaseTravelVoice(id, releaseS);
+    this._wireAliases.clear();
+  }
+
+  /** In-flight travellers for viz / MIDI: [{ id, fromIndex, hz, level, wireId }]. */
+  getTravelers() {
+    return [...this._travelers.values()].map((tv) => ({
+      id: tv.id,
+      fromIndex: tv.fromIndex,
+      hz: tv.nominalHz,
+      level: tv.level,
+      wireId: tv.wireId,
+    }));
+  }
+
+  /**
    * Get current frequency value for an oscillator
    */
   getFrequency(index) {
@@ -2815,7 +3784,11 @@ class AudioEngine {
     if (!this.gainNodes[index]) return;
 
     this.mutedStates[index] = true;
+    // The note is ending — a landed-traveller alias must not survive into
+    // whatever this slot sounds next.
+    this._wireAliases.delete(index);
     this.preMuteVolumes[index] = this.volumeValues[index];
+    this.markSlotReleasing(index);
 
     droneEnvelope.applyNoteOff(this.gainNodes[index].gain, this.audioContext);
     // Partner runs the same release tail when stereo mode has it audible;
@@ -2840,6 +3813,7 @@ class AudioEngine {
     if (!this.gainNodes[index]) return;
 
     this.mutedStates[index] = false;
+    this._releaseUntilMs[index] = 0;   // any release tail is superseded
     // Cap the resume level so pressing a drone's button never plays it above
     // DRONE_PLAY_VOL_CAP. Clamp the stored value (not just the envelope peak)
     // so every downstream read — _droneTargetGain, sustain retargets, the
@@ -2849,13 +3823,33 @@ class AudioEngine {
     }
     const peak = this.volumeValues[index];
     droneEnvelope.applyNoteOn(this.gainNodes[index].gain, this.audioContext, peak);
-    // Partner mirrors the unmute when stereo mode has it audible.
+    // Partner mirrors the unmute when stereo mode has it audible,
+    // scaled by panWidth (silent at the pan extremes).
     if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
-      droneEnvelope.applyNoteOn(this.gainNodesR[index].gain, this.audioContext, peak);
+      droneEnvelope.applyNoteOn(this.gainNodesR[index].gain, this.audioContext,
+        peak * panWidth(this.getVoicePan(index)));
     }
     this._notifyFrequencyChange();
   }
   
+  /**
+   * Stamp a slot as "note-off in progress" for the envelope release
+   * duration — muteOscillator calls this itself; voice-leading exits that
+   * release a DETACHED traveller (the slot flips muted while the sound
+   * fades elsewhere) call it explicitly so the UI still shows the note
+   * as going, not gone.
+   */
+  markSlotReleasing(index, seconds = null) {
+    const rel = Number.isFinite(seconds) ? seconds : droneEnvelope.release;
+    this._releaseUntilMs[index] = performance.now() + Math.max(0, rel) * 1000;
+  }
+
+  /** True while a muted slot's release tail is still audible. */
+  isSlotReleasing(index) {
+    return !!this.mutedStates[index]
+      && (this._releaseUntilMs[index] || 0) > performance.now();
+  }
+
   /**
    * Toggle mute for a specific oscillator
    */

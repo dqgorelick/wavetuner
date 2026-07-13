@@ -27,7 +27,9 @@
  */
 
 const VALID_MODES = new Set(['lr', 'stereo']);
-const MAX_DETUNE_HZ = 10;
+// Exported: the orb detune flash normalizes its spread angle against this
+// (full slider = ±90°), so the dial and the display share one ceiling.
+export const MAX_DETUNE_HZ = 10;
 
 /**
  * Smooth random curve in [0, 1] with N samples. Perlin-style: random
@@ -61,6 +63,52 @@ export function smoothRandomCurve(n) {
   return out;
 }
 
+/**
+ * Channel weights for one drone voice under the collapse-pan model.
+ * `pan` ∈ [−1, +1] is the per-voice dial; returns [L, R] weight pairs
+ * for the primary and partner oscillators.
+ *
+ * In 'stereo' mode the pair starts split (primary hard L, partner hard
+ * R) and the dial slides BOTH oscillators toward the pan side with an
+ * equal-power law over the moving half, so every detent reproduces the
+ * pre-pan graph exactly: center → [1,0]/[0,1] (classic split), full
+ * R → [0,1]/[0,1] (pair collapsed right), full L mirrored.
+ *
+ * In 'lr' mode there is one audible oscillator and the dial is a
+ * balance knob: the on-side stays at 1 while the opposite side
+ * attenuates, so center reproduces the legacy ⊙ "both" state ([1,1])
+ * and the extremes reproduce hard L/R. Partner weights are parked at
+ * [0,1] (its gain is 0 in lr; parked-on-R matches the legacy wiring so
+ * a mode flip only has to ramp gains, not re-place the image).
+ */
+export function dronePanWeights(pan, mode) {
+  const p = Math.max(-1, Math.min(1, pan || 0));
+  const q = Math.max(0, p) * (Math.PI / 2);   // rightward dial travel
+  const r = Math.max(0, -p) * (Math.PI / 2);  // leftward dial travel
+  if (mode === 'stereo') {
+    return {
+      primary: [Math.cos(q), Math.sin(q)],
+      partner: [Math.sin(r), Math.cos(r)],
+    };
+  }
+  return {
+    primary: [Math.cos(q), Math.cos(r)],
+    partner: [0, 1],
+  };
+}
+
+/**
+ * How much of the stereo character survives at this pan position:
+ * 1 at center → 0 at the extremes. Scales BOTH the effective detune
+ * (so a hard-panned voice converges on its true orb frequency) and the
+ * partner oscillator's gain (so the pair degenerates to a single clean
+ * oscillator at the extreme — never two identical-frequency oscs
+ * summing with arbitrary phase).
+ */
+export function panWidth(pan) {
+  return 1 - Math.abs(Math.max(-1, Math.min(1, pan || 0)));
+}
+
 class StereoMode {
   constructor({ mode = 'lr', detuneHz = 0, detuneCurve = [] } = {}) {
     this.mode = VALID_MODES.has(mode) ? mode : 'lr';
@@ -90,7 +138,10 @@ class StereoMode {
     const next = Math.max(0, Math.min(1, value));
     if (Math.abs(next - this.detuneCurve[i]) < 1e-4) return;
     this.detuneCurve[i] = next;
-    this._notify({ kind: 'curve' });
+    // index → listeners can tell a single-slot edit (curve-editor drag)
+    // from a whole-curve replace; the orb flash uses it to pick which
+    // voice swaps its number for the Hz readout.
+    this._notify({ kind: 'curve', index: i });
   }
 
   /** Replace the entire curve. Length must match the current drone
@@ -124,7 +175,9 @@ class StereoMode {
   removeCurveAt(index) {
     if (index < 0 || index >= this.detuneCurve.length) return;
     this.detuneCurve.splice(index, 1);
-    this._notify({ kind: 'curve' });
+    // structural: the slot count changed, not the user's detune intent —
+    // audio listeners still retune, but UI flashes should stay quiet.
+    this._notify({ kind: 'curve', structural: true });
   }
 
   /** Resize the curve to N slots. New slots default to 1.0 (full curve
@@ -139,7 +192,7 @@ class StereoMode {
     } else {
       this.detuneCurve.length = target;
     }
-    this._notify({ kind: 'curve' });
+    this._notify({ kind: 'curve', structural: true });
   }
 
   /** Final detune (Hz) for slot i, applying the curve × master scale.

@@ -27,6 +27,121 @@ const DEFAULT_PATCH = {
   },
 };
 
+// === Harmonium Song ===========================================
+// Captured live (2026-07-07). Four slow drone voices tuned by ear —
+// roughly a low fundamental with octave, twelfth, and double octave —
+// long harmonium-style attack/release, glide transitions. The piece
+// lives in the I–V save slots: five scenes over the same held root,
+// recalled in sequence. Frequencies keep full capture precision on
+// purpose; the slow beating between near-harmonics is the sound.
+const HARMONIUM_PATCH = {
+  schema: PATCH_SCHEMA,
+  id: 'builtin_harmonium',
+  name: 'Harmonium Song',
+  author: 'Wavetuner',
+  description: 'Slow harmonium-cello drones over a held root. Play the I–V slots in order.',
+  source: 'builtin',
+  createdAt: BUILTIN_TIMESTAMP,
+  updatedAt: BUILTIN_TIMESTAMP,
+  frequencies: [58.73140903320258, 117.03542755937607, 176.39093327039484, 235.0705136096429],
+  saveSlots: [
+    {
+      id: 'builtin_harmonium_slot_1',
+      name: 'I',
+      createdAt: 1783388169678,
+      snapshot: {
+        frequencies: [58.73140903320258, 117.03951535314154, 176.38433954268, 235.0682634807969],
+        volumes: [0.65, 0.6863023246924959, 0.49, 0.541226406917551],
+        mutes: [false, false, false, false],
+        transpose: 0,
+        slotRatios: [],
+        anchorSlot: 0,
+        tuningSystem: '5-limit',
+        heldNotes: [],
+        notesNominal: true,
+      },
+    },
+    {
+      id: 'builtin_harmonium_slot_2',
+      name: 'II',
+      createdAt: 1783388621337,
+      snapshot: {
+        frequencies: [58.73140903320258, 117.03951535314154, 176.38433954268, 264.56167645460073],
+        volumes: [0.65, 0.6863023246924959, 0.49, 0.5287367431909799],
+        mutes: [false, false, false, false],
+        transpose: 0,
+        slotRatios: [],
+        anchorSlot: 0,
+        tuningSystem: '5-limit',
+        heldNotes: [],
+        notesNominal: true,
+      },
+    },
+    {
+      id: 'builtin_harmonium_slot_3',
+      name: 'III',
+      createdAt: 1783388668669,
+      snapshot: {
+        frequencies: [58.73140903320258, 77.79857962151574, 195.78559967383566, 295.7177084384997],
+        volumes: [0.65, 0.6863023246924959, 0.49, 0.5287367431909799],
+        mutes: [false, false, false, false],
+        transpose: 0,
+        slotRatios: [],
+        anchorSlot: 0,
+        tuningSystem: '5-limit',
+        heldNotes: [],
+        notesNominal: true,
+      },
+    },
+    {
+      id: 'builtin_harmonium_slot_4',
+      name: 'IV',
+      createdAt: 1783388699277,
+      snapshot: {
+        frequencies: [58.73140903320258, 88.17893271594846, 220.57927553592558, 264.05812285856945],
+        volumes: [0.65, 0.6863023246924959, 0.49, 0.5287367431909799],
+        mutes: [false, false, false, false],
+        transpose: 0,
+        slotRatios: [],
+        anchorSlot: 0,
+        tuningSystem: '5-limit',
+        heldNotes: [],
+        notesNominal: true,
+      },
+    },
+    {
+      id: 'builtin_harmonium_slot_5',
+      name: 'V',
+      createdAt: 1783388729614,
+      snapshot: {
+        frequencies: [58.73140903320258, 98.59645711116337, 196.78351614204632, 296.5308524104669],
+        volumes: [0.65, 0.6863023246924959, 0.49, 0.5287367431909799],
+        mutes: [false, false, false, false],
+        transpose: 0,
+        slotRatios: [],
+        anchorSlot: 0,
+        tuningSystem: '5-limit',
+        heldNotes: [],
+        notesNominal: true,
+      },
+    },
+  ],
+  snapshot: {
+    volumes: [0.65, 0.69, 0.49, 0.54],
+    muted:   [false, false, false, false],
+    routing: { 0: [0, 1], 1: [0, 1], 2: [0, 1], 3: [0, 1] },
+    envelope: {
+      drone:    { attack: 1.999, decay: 0.2, sustain: 0.79, release: 2.008 },
+      keyboard: { attack: 0.1,   decay: 1,   sustain: 0.4,  release: 0.3 },
+    },
+    stereo: {
+      drone:    { mode: 'stereo', detuneHz: 1.4, curve: [0.18, 0.31, 1, 1] },
+      keyboard: { mode: 'stereo', detuneHz: 1.5, curve: [0.79, 0.76, 1, 1] },
+    },
+    transitionMode: 'glide',
+  },
+};
+
 // === La Monte Young — Well-Tuned Piano ========================
 // La Monte Young's Well-Tuned Piano. 12 ratios in chromatic order starting
 // from D♯ = 1/1. anchorHz of 297.9894 puts the 1/1 at D♯4 — at this anchor
@@ -96,6 +211,7 @@ const PLUCKS_PATCH = {
 
 export const BUILTIN_PATCHES = [
   DEFAULT_PATCH,
+  HARMONIUM_PATCH,
   PLUCKS_PATCH,
   WTP_PATCH,
 ];

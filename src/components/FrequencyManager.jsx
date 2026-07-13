@@ -32,11 +32,14 @@ const glideSecToPos = (sec) => {
 // Timing readout: milliseconds under 1 s, seconds (2 decimals) at/above 1 s.
 const formatTiming = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`);
 
-// Parameter-lock chips shown in the capture-scope panel.
+// Parameter-lock chips shown in the capture-scope panel. Held keyboard/MIDI
+// notes are always tracked and have no chip — recalls just include the
+// played chord.
 const SCOPE_PARAMS = [
   { key: 'freq', label: 'freq', title: 'Frequency / pitch (and its markers on the spectrum)' },
   { key: 'vol', label: 'vol', title: 'Per-voice volume' },
   { key: 'onoff', label: 'on/off', title: 'Per-voice on/off (mute)' },
+  { key: 'transpose', label: 'transpose', title: 'Global transpose (the master pitch offset) — recalls slide it over the glide timing' },
 ];
 
 function freqToNote(freq) {
@@ -289,6 +292,15 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
   const isMuted = audioEngine.initialized
     ? !!(audioEngine.mutedStates && audioEngine.mutedStates[slot])
     : false;
+  // The staged save would flip this slot's on/off state on GO ('on/off'
+  // tracked). Same direction-aware grammar as the drone-tray cells:
+  // off→on outlines (.unmute-pending), on→off dims (.mute-pending).
+  // Re-renders arrive via useFreqVersion (manager events + the mute poll).
+  const stagedMutes = frequencyManager.getStagedMutes();
+  const willFlip = stagedMutes != null && slot < stagedMutes.length
+    && !!stagedMutes[slot] !== isMuted;
+  const pendingClass = !willFlip ? ''
+    : isMuted ? ' unmute-pending' : ' mute-pending';
   const handleMarkerClick = useCallback(() => {
     if (audioEngine.initialized && audioEngine.toggleMute) {
       audioEngine.toggleMute(slot);
@@ -369,7 +381,7 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
           when this slot is audible, outlined when muted. */}
       <button
         type="button"
-        className={`freq-rail-marker${!isMuted ? ' anchor' : ''}`}
+        className={`freq-rail-marker${!isMuted ? ' anchor' : ''}${pendingClass}`}
         style={{ '--cell-color': color }}
         onClick={handleMarkerClick}
         title={isMuted ? `Unmute slot ${slot + 1}` : `Mute slot ${slot + 1}`}
@@ -535,10 +547,12 @@ function ScopePanel() {
   useFreqVersion();
   const scope = frequencyManager.getRecallScope();
   const recallGlideMs = frequencyManager.recallGlideMs;
+  const stepOverlapMs = frequencyManager.stepOverlapMs;
   const undoGlideMs = frequencyManager.undoGlideMs;
+  const transitionMode = frequencyManager.transitionMode;
 
-  const timingRow = (label, glideMs, onSet) => (
-    <div className="scope-timing" title="Glide/recall timing. 0 = instant snap.">
+  const timingRow = (label, glideMs, onSet, title = 'Glide/recall timing. 0 = instant snap.') => (
+    <div className="scope-timing" title={title}>
       <span className="scope-timing-label">{label}</span>
       <input
         type="range"
@@ -579,7 +593,50 @@ function ScopePanel() {
       </div>
       <div className="scope-sec">
         <span className="scope-title">Parameter timing</span>
-        {timingRow('snapshot', recallGlideMs, (ms) => frequencyManager.setRecallGlideMs(ms))}
+        <div className="scope-timing" title="How launched voices reach their target. Glide bends pitch; the step modes retrigger a fresh note that overlaps the old one. Shift-click a launch dot for the other mode.">
+          <span className="scope-timing-label">transition</span>
+          <div className="settings-toggle-row">
+            <button
+              type="button"
+              className={`settings-toggle-btn ${transitionMode === 'glide' ? 'on' : 'off'}`}
+              onClick={() => frequencyManager.setTransitionMode('glide')}
+              aria-pressed={transitionMode === 'glide'}
+              title="Pitch bends continuously to the target (portamento)"
+            >
+              glide
+            </button>
+            <button
+              type="button"
+              className={`settings-toggle-btn ${transitionMode === 'step' ? 'on' : 'off'}`}
+              onClick={() => frequencyManager.setTransitionMode('step')}
+              aria-pressed={transitionMode === 'step'}
+              title="Retrigger a fresh note at the target (old note overlaps, then releases). GO only re-strikes voices whose pitch changes"
+            >
+              step
+            </button>
+            <button
+              type="button"
+              className={`settings-toggle-btn ${transitionMode === 'step-all' ? 'on' : 'off'}`}
+              onClick={() => frequencyManager.setTransitionMode('step-all')}
+              aria-pressed={transitionMode === 'step-all'}
+              title="Same retrigger, but GO re-strikes every staged voice — a full chord re-attack, unchanged pitches included"
+            >
+              step all
+            </button>
+          </div>
+        </div>
+        {timingRow(
+          'glide',
+          recallGlideMs,
+          (ms) => frequencyManager.setRecallGlideMs(ms),
+          'Glide/recall timing. 0 = instant snap.',
+        )}
+        {timingRow(
+          'step time',
+          stepOverlapMs,
+          (ms) => frequencyManager.setStepOverlapMs(ms),
+          'Step transitions: how long the old and new notes sound together. 0 = instant handoff.',
+        )}
         {timingRow('undo/redo', undoGlideMs, (ms) => frequencyManager.setUndoGlideMs(ms))}
       </div>
     </div>
@@ -588,8 +645,9 @@ function ScopePanel() {
 
 // Global-transpose readout for the tuning menu, sitting to the right of the
 // Align button. The value is set by dragging the frequency-label strip on the
-// spectrum bar (a DAW-BPM-style master offset that lives outside saved states);
-// this shows the current amount, resets it on click, and exposes the
+// spectrum bar (a DAW-BPM-style master offset). Captures always store it;
+// recall/undo move it only when 'transpose' is a tracked parameter. This
+// shows the current amount, resets it on click, and exposes the
 // snap-to-semitones toggle. Subscribes to the engine so it tracks live drags.
 function TransposeControl() {
   const [semi, setSemi] = useState(() => audioEngine.getTransposeSemitones());
@@ -604,7 +662,7 @@ function TransposeControl() {
   return (
     <div
       className="tuning-transpose"
-      title="Global transpose — drag the frequency-label strip on the spectrum bar. Lives outside saved states."
+      title="Global transpose — drag the frequency-label strip on the spectrum bar. Saved with captures; recalled only when 'transpose' is a tracked parameter."
     >
       <span className="tuning-ctl-label">transpose</span>
       <button
@@ -810,10 +868,22 @@ export function TuningPanel({
         </button>
         <TransposeControl />
       </div>
-      <ScopePanel />
+      {/* Parameter lock (ScopePanel) moved to its own PERFORM panel. */}
       {/* Recall easing curve moved to Settings → "Recall curve". */}
       </div>
     </>
+  );
+}
+
+// Perform panel — the parameter lock (tracked parameters + transition
+// timing) in its own chassis, split out of the tuning menu. Toggled by
+// the PERFORM button in the right-side toggle group; renders in the
+// left-stack alongside (or without) the tuning panel.
+export function PerformPanel() {
+  return (
+    <div className="perform-panel" role="region" aria-label="Perform">
+      <ScopePanel />
+    </div>
   );
 }
 

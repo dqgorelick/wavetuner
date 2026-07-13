@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import frequencyManager from '../audio/FrequencyManager';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { keyboardEnvelope } from '../audio/Envelope';
 import { droneStereo, keyboardStereo, midiStereo } from '../audio/StereoMode';
@@ -152,12 +153,16 @@ function startMixerDrag(e) {
 // active position. For drones / partials, fill and ball share the same
 // value. For voices, fill = live envelope amp (animates), ball =
 // steady-state target. Released voices hide the ball.
+// `stagedTarget` (0..1 or null) marks where a selected save slot would take
+// this level on GO — rendered as a small hollow dot on the track (drone rows
+// only, while a save is staged and 'vol' is a tracked param).
 // `disabled` blocks the drag handler; the fader still renders so the
 // fill/ball stay visible. Used during MIDI learn mode so a click can't
 // stealth-write a new volume on the same gesture that arms the binding.
-const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released, disabled }) {
+const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released, disabled, stagedTarget = null }) {
   const fillPct = Math.max(0, Math.min(1, fill)) * 100;
   const ballPct = ball === null ? null : Math.max(0, Math.min(1, ball)) * 100;
+  const targetPct = stagedTarget === null ? null : Math.max(0, Math.min(1, stagedTarget)) * 100;
   return (
     <div
       className={`mixer-fader ${released ? 'released' : ''} ${disabled ? 'disabled' : ''}`}
@@ -167,6 +172,9 @@ const Fader = memo(function Fader({ dataAttrs, fill, ball, color, released, disa
     >
       <div className="mixer-fader-track" />
       <div className="mixer-fader-fill" style={{ width: `${fillPct}%` }} />
+      {targetPct !== null && (
+        <div className="mixer-fader-target" style={{ left: `${targetPct}%` }} />
+      )}
       {ballPct !== null && (
         <div className="mixer-fader-ball" style={{ left: `${ballPct}%` }} />
       )}
@@ -457,9 +465,19 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
       raf = requestAnimationFrame(tick);
       if (!audioEngine.isInitialized) return;
       try {
-        const freqs = audioEngine.getAllFrequencies();
+        // Sounding (post-transpose) freqs: the mixer is the one place that
+        // reads out what's actually playing, so its Hz / note+cents include
+        // the global transpose. Every other freq readout (tuning panel,
+        // spectrum bar, orbs) stays on the nominal pre-transpose values.
+        // Voice rows already match — their freq comes off the live
+        // oscillator, which retunes with transpose.
+        const freqs = audioEngine.getSoundingFrequencies();
         const vols100 = audioEngine.getAllVolumes(); // 0-100
         const muted = audioEngine.getAllMutedStates();
+        // Staged-save volume targets (0..1 per drone, or null): while a save
+        // slot is selected and 'vol' is a tracked param, each drone fader
+        // shows a small dot at the level GO would glide it to.
+        const stagedVols = frequencyManager.getStagedVolumes();
         // Global drone on/off — the "Turn drones off" button in the
         // oscillator controls flips this without touching per-slot
         // mutedStates. When it's off the mixer hides every drone (and
@@ -509,11 +527,12 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
             freq: baseFreq,
             vol: v100 / 100,
             muted: isMuted,
+            stagedVol: stagedVols && Number.isFinite(stagedVols[i]) ? stagedVols[i] : null,
           });
         }
 
         const rowSig = nextRows.map(r => r.type === 'drone'
-          ? `d:${r.slot}:${Math.round(r.freq * 20)}:${Math.round(r.vol * 200)}:${r.muted ? 1 : 0}`
+          ? `d:${r.slot}:${Math.round(r.freq * 20)}:${Math.round(r.vol * 200)}:${r.muted ? 1 : 0}:${r.stagedVol == null ? '-' : Math.round(r.stagedVol * 200)}`
           : `p:${r.id}:${Math.round(r.freq * 20)}:${Math.round(r.vol * 200)}:${r.muted ? 1 : 0}:${r.ratio.toFixed(4)}`
         ).join('|');
         if (rowSig !== lastRowSig) {
@@ -590,7 +609,7 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
       <div className="mixer-stack">
         {rows.map((row) => {
           if (row.type === 'drone') {
-            const { slot, freq, vol, muted } = row;
+            const { slot, freq, vol, muted, stagedVol } = row;
             const color = palette.oscColor(slot, oscillatorCount);
             const note = freqToNote(freq);
             const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;
@@ -618,6 +637,7 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
                   color={color}
                   released={false}
                   disabled={midiLearnOn}
+                  stagedTarget={stagedVol}
                 />
                 <PrimaryButtons slot={slot} />
               </div>

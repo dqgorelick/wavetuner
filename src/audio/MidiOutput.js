@@ -55,7 +55,10 @@ const MEMBER_COUNT = 15;        // full lower zone: channels 2–16
 const MEMBER_CHANNELS = Array.from({ length: MEMBER_COUNT }, (_, i) => i + 1);
 // Voice priority tiers. Played notes outrank drones, so a key press can
 // borrow a drone's channel when all 15 are busy; drones never evict each
-// other (see MpeVoiceAllocator._findVictim).
+// other (see MpeVoiceAllocator._findVictim). Step tails (the fading old
+// note of a step transition) sit at the bottom so anything live can
+// reclaim their channel under pressure.
+const PRIO_TAIL = 0;
 const PRIO_DRONE = 1;
 const PRIO_KBD = 2;
 // Default bend range in semitones (±). Matches Vital's fixed MPE range.
@@ -619,19 +622,71 @@ class MidiOutput {
     // Drones — sustained oscillators read straight from AudioEngine.
     if (!this._droneMuted) {
       const count = audioEngine.getOscillatorCount();
+      const transpose = audioEngine.getTransposeRatio();
       for (let slot = 0; slot < count; slot++) {
         if (audioEngine.isMuted(slot)) continue;
         // Apply the global transpose so external synths track the local drones
         // (keyboard requests below already carry it via v.freq, which comes
         // from Tuning.pitchForSlotAndOctave). Nominal Hz stays untransposed.
-        const freq = audioEngine.getFrequency(slot) * audioEngine.getTransposeRatio();
+        const freq = audioEngine.getFrequency(slot) * transpose;
         if (!(freq > 0)) continue;
+        // The wire id keeps a NOTE's identity, not a slot's: a glide keeps
+        // it stable (frequency motion → pitch bend, as always), a step
+        // transition re-keys it (old id vanishes → noteOff, new id appears
+        // → fresh noteOn), and a slot that adopted a landed travelling
+        // voice answers with the traveller's inherited id so the landing
+        // is seamless (see AudioEngine.getSlotWireId).
         reqs.push({
-          id: `drone:${slot}`,
+          id: audioEngine.getSlotWireId(slot),
           freq,
           level: audioEngine.getVolume(slot),
           velocity: NOTE_VELOCITY,
           priority: PRIO_DRONE,
+        });
+      }
+
+      // Travelling voices — the conductor's voice-led moves (travel /
+      // bloom / merge). A detached traveller carries its origin slot's
+      // wire id and the landing slot inherits it back, so the whole
+      // detach → glide → land arc is ONE note on the wire whose pitch
+      // BENDS through the transition — mirroring the local phase-
+      // continuous gliss instead of note-off-then-note-on around it.
+      // Blooms get a fresh id (they attack locally too); a merge's
+      // traveller simply vanishes from this list when it releases, which
+      // is its note-off.
+      for (const tv of audioEngine.getTravelers()) {
+        const freq = tv.hz * transpose;
+        if (!(freq > 0)) continue;
+        reqs.push({
+          id: tv.wireId,
+          freq,
+          level: tv.level,
+          velocity: NOTE_VELOCITY,
+          priority: PRIO_DRONE,
+        });
+      }
+
+      // Step tails — the OLD note of each in-flight step transition keeps
+      // sounding through its overlap window, alongside the new note. Its id
+      // carries the pre-step generation, so it's the same wire voice that
+      // was already playing (no extra noteOn); when the window closes the
+      // request vanishes and the reconciler releases it. Tails sit BELOW
+      // live drones in priority: with all 12 slots stepping at once there
+      // are up to 24 desired voices against 15 MPE channels, and the
+      // allocator then steals from tails first — overlap degrades (old
+      // notes release early) rather than new notes going missing.
+      for (const tail of audioEngine.getStepTails()) {
+        const freq = tail.freq * transpose;
+        if (!(freq > 0)) continue;
+        reqs.push({
+          // Tails carry the outgoing note's own wire id (which may be an
+          // adopted traveller id) so the fading note is the SAME wire
+          // voice that was sounding, never a fresh noteOn.
+          id: tail.wireId || `drone:${tail.slot}:g${tail.gen}`,
+          freq,
+          level: tail.level,
+          velocity: NOTE_VELOCITY,
+          priority: PRIO_TAIL,
         });
       }
     }

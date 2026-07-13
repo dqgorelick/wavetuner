@@ -4,7 +4,7 @@ import tuning from './audio/Tuning';
 import keyboardVoiceManager from './audio/KeyboardVoiceManager';
 import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
 import { droneWave, keyboardWave } from './audio/Wave';
-import { droneFold, keyboardFold } from './audio/Fold';
+import { droneFold, keyboardFold, FOLD_TYPE_IDS, DEFAULT_FOLD_TYPE } from './audio/Fold';
 import { droneStereo, keyboardStereo } from './audio/StereoMode';
 import frequencyManager from './audio/FrequencyManager';
 import { getSystem } from './audio/jiRatios';
@@ -15,7 +15,8 @@ import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
-import { TuningPanel } from './components/FrequencyManager';
+import { TuningPanel, PerformPanel } from './components/FrequencyManager';
+import GenerativePanel from './components/GenerativePanel';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
@@ -71,6 +72,11 @@ function getInitialStateFromURL() {
   const kWave = parseFloatInRange(params.get('kWave'), 0, 3);
   const dFold = parseFloatInRange(params.get('dFold'), 0, 1);
   const kFold = parseFloatInRange(params.get('kFold'), 0, 1);
+  // Fold algorithm per pool (sine/triangle/buchla); null when absent
+  // or unrecognized so the default (sine) stays.
+  const parseFoldType = (raw) => (raw && FOLD_TYPE_IDS.includes(raw) ? raw : null);
+  const dFoldT = parseFoldType(params.get('dFoldT'));
+  const kFoldT = parseFoldType(params.get('kFoldT'));
   // Per-pool stereo mode + detune. Both pools share the same param
   // shapes: dPan/dDet for drones, kPan/kDet for keyboard.
   const dPanRaw = (params.get('dPan') || '').toLowerCase();
@@ -122,7 +128,7 @@ function getInitialStateFromURL() {
       };
     }
   }
-  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme, vfxScale, vfxBlend };
+  return { ...base, dEnv, kEnv, vizCycles, dWave, kWave, dFold, kFold, dFoldT, kFoldT, droneStereoMode, droneDetuneHz, droneCurve, kbdStereoMode, kbdDetuneHz, kbdCurve, theme, vfxScale, vfxBlend };
 }
 
 // Compute once at module load
@@ -177,6 +183,8 @@ if (INITIAL_URL_STATE.dWave !== null) droneWave.setPosition(INITIAL_URL_STATE.dW
 if (INITIAL_URL_STATE.kWave !== null) keyboardWave.setPosition(INITIAL_URL_STATE.kWave);
 if (INITIAL_URL_STATE.dFold !== null) droneFold.setAmount(INITIAL_URL_STATE.dFold);
 if (INITIAL_URL_STATE.kFold !== null) keyboardFold.setAmount(INITIAL_URL_STATE.kFold);
+if (INITIAL_URL_STATE.dFoldT !== null) droneFold.setType(INITIAL_URL_STATE.dFoldT);
+if (INITIAL_URL_STATE.kFoldT !== null) keyboardFold.setType(INITIAL_URL_STATE.kFoldT);
 // Per-pool stereo mode + detune — pushed pre-init so the first
 // frame of audio uses the saved values rather than snapping from default.
 if (INITIAL_URL_STATE.droneStereoMode !== null) droneStereo.setMode(INITIAL_URL_STATE.droneStereoMode);
@@ -250,10 +258,6 @@ const VIZ_MODES = [
 function App() {
   const [isStarted, setIsStarted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  // Drone-bus on/off — independent of pause. Lets the user disable
-  // drones without surrendering the global play/pause, and survives a
-  // pause/unpause cycle (resume restores whichever state was set).
-  const [droneEnabled, setDroneEnabled] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPatchesOpen, setIsPatchesOpen] = useState(false);
   // Hydra mode: when on, the hydra-synth canvas overlays the
@@ -287,6 +291,21 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('tuningOpen', isTuningOpen ? '1' : '0'); } catch { /* ignore */ }
   }, [isTuningOpen]);
+
+  // Perform panel (parameter lock: tracked params + transition timing) —
+  // split out of the tuning panel so performance controls stand alone.
+  // Persisted. Toggled by the PERFORM button next to TUNING.
+  const [isPerformOpen, setIsPerformOpen] = useState(() => {
+    try { return localStorage.getItem('performOpen') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('performOpen', isPerformOpen ? '1' : '0'); } catch { /* ignore */ }
+  }, [isPerformOpen]);
+
+  // Transition (generative) panel visibility — deliberately NOT persisted
+  // while the feature is in development: every app load starts closed; the
+  // sparkle button next to TUNING opens it for the session.
+  const [isTransitionOpen, setIsTransitionOpen] = useState(false);
 
   // True while an orb is being dragged/grabbed in the spectrum bar. The
   // tuning panel uses this to freeze its inputs into plain text so the
@@ -452,6 +471,17 @@ function App() {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
   const [routingMap, setRoutingMap] = useState({});
+  // Continuous per-voice pans (−1…+1), mirrored from the engine. Kept
+  // fresh by the engine's onPanChange callback below, which fires for
+  // dial drags, patch loads, discrete routing writes and resets alike.
+  const [voicePans, setVoicePans] = useState([]);
+  useEffect(() => {
+    audioEngine.onPanChange = () => {
+      setVoicePans(audioEngine.getVoicePans());
+      setRoutingMap(audioEngine.getRoutingMap());
+    };
+    return () => { audioEngine.onPanChange = null; };
+  }, []);
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   const [activeOscs, setActiveOscs] = useState(() => new Set());
   // Set of oscillator indices currently being fine-tuned via horizontal drag
@@ -889,6 +919,7 @@ function App() {
     // Sync oscillator count and routing from audio engine
     setOscillatorCount(audioEngine.getOscillatorCount());
     setRoutingMap(audioEngine.getRoutingMap());
+    setVoicePans(audioEngine.getVoicePans());
 
     setIsStarted(true);
   };
@@ -934,6 +965,8 @@ function App() {
     if (keyboardWave.position > 0) queryParts.push(`kWave=${keyboardWave.position.toFixed(2)}`);
     if (droneFold.amount > 0)      queryParts.push(`dFold=${droneFold.amount.toFixed(2)}`);
     if (keyboardFold.amount > 0)   queryParts.push(`kFold=${keyboardFold.amount.toFixed(2)}`);
+    if (droneFold.type !== DEFAULT_FOLD_TYPE)    queryParts.push(`dFoldT=${droneFold.type}`);
+    if (keyboardFold.type !== DEFAULT_FOLD_TYPE) queryParts.push(`kFoldT=${keyboardFold.type}`);
     // Per-pool stereo mode + detune — only encode when non-default
     // (mode='lr', detune=0) to keep URLs short.
     if (droneStereo.mode !== 'lr')      queryParts.push(`dPan=${droneStereo.mode}`);
@@ -1097,20 +1130,22 @@ function App() {
     }
   }, []);
 
-  // Per-voice L/R/⊙ pan toggle from the drone tray. The engine reroutes
-  // just that one voice click-free (a ~50 ms dip on that voice only), so
-  // no whole-bus fade here — the rest of the bed keeps sounding. Resync
-  // the routing map so the mixer's patch bay display stays consistent.
-  const handleSetVoiceRouting = useCallback((oscIndex, channels) => {
-    audioEngine.setVoiceRouting(oscIndex, channels);
-    setRoutingMap(audioEngine.getRoutingMap());
+  // Per-voice continuous pan dial in the drone tray. The engine just
+  // ramps tap-gain weights (plus detune width / partner fade in stereo
+  // mode) — click-free at any drag speed, no dip, no fade needed here.
+  // State mirrors (voicePans + routingMap projection) refresh via the
+  // engine's onPanChange callback above.
+  const handleSetVoicePan = useCallback((oscIndex, pan) => {
+    audioEngine.setVoicePan(oscIndex, pan);
   }, []);
 
-  // Reset button in the drone tray — every voice back to its origin L/R.
-  // Engine reroutes only the voices that moved, each click-free.
+  // Reset button in the drone tray — every voice back to its origin
+  // pan/routing. Stereo-pair voices glide home; only multichannel
+  // patch-bay assignments need the click-free dip.
   const handleResetVoiceRouting = useCallback(() => {
     audioEngine.resetRoutingToDefaults();
     setRoutingMap(audioEngine.getRoutingMap());
+    setVoicePans(audioEngine.getVoicePans());
   }, []);
 
   // Toggling the drone stereo mode (Settings or Mixer) resets per-voice
@@ -1121,7 +1156,10 @@ function App() {
   useEffect(() => {
     const off = droneStereo.onChange((_inst, info) => {
       if (info?.kind === 'mode') {
-        queueMicrotask(() => setRoutingMap(audioEngine.getRoutingMap()));
+        queueMicrotask(() => {
+          setRoutingMap(audioEngine.getRoutingMap());
+          setVoicePans(audioEngine.getVoicePans());
+        });
       }
     });
     return off;
@@ -1143,16 +1181,6 @@ function App() {
     setFineTuneEnabled((v) => !v);
   }, []);
 
-  // Drone on/off — moved out of OscillatorControls' bottom row into the
-  // always-visible right-side toggle group. Mirrors the old handler: flips the
-  // engine's drone bus and the React state together.
-  const handleDroneToggle = useCallback(() => {
-    if (!audioEngine.initialized) return;
-    const next = !droneEnabled;
-    audioEngine.setDroneEnabled(next);
-    setDroneEnabled(next);
-  }, [droneEnabled]);
-
   const handleShowHelp = useCallback(() => {
     setIsHelpOpen(true);
   }, []);
@@ -1162,7 +1190,7 @@ function App() {
   }, []);
 
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''}${droneEnabled ? ' drone-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''} drone-tray-open${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -1196,6 +1224,8 @@ function App() {
 
       {isStarted && (
         <>
+          {/* Throw-away debug panel for the generative TRANSITION (GENERATIVE.md §7). */}
+          {isTransitionOpen && <GenerativePanel />}
           <FrequencySpectrumBar
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
@@ -1206,21 +1236,24 @@ function App() {
             maxOscillators={maxOscillators}
             onDragStateChange={setIsOrbDragging}
           />
-          {isTuningOpen && (
+          {(isTuningOpen || isPerformOpen) && (
             <div className="left-stack">
-              <TuningPanel
-                oscillatorCount={oscillatorCount}
-                onOscillatorCountChange={handleOscillatorCountChange}
-                maxOscillators={maxOscillators}
-                onAlign={handleAlign}
-                onLoad={handleLoad}
-                isAligning={isAligning}
-                tuningSystem={tuningSystem}
-                onTuningSystemChange={handleTuningSystemChange}
-                scaleSize={scaleSize}
-                onScaleSizeChange={setScaleSize}
-                frozen={isOrbDragging || isAligning}
-              />
+              {isTuningOpen && (
+                <TuningPanel
+                  oscillatorCount={oscillatorCount}
+                  onOscillatorCountChange={handleOscillatorCountChange}
+                  maxOscillators={maxOscillators}
+                  onAlign={handleAlign}
+                  onLoad={handleLoad}
+                  isAligning={isAligning}
+                  tuningSystem={tuningSystem}
+                  onTuningSystemChange={handleTuningSystemChange}
+                  scaleSize={scaleSize}
+                  onScaleSizeChange={setScaleSize}
+                  frozen={isOrbDragging || isAligning}
+                />
+              )}
+              {isPerformOpen && <PerformPanel />}
             </div>
           )}
           <div className="right-stack">
@@ -1247,16 +1280,6 @@ function App() {
               </button>
               <button
                 type="button"
-                className={`bottom-cell bottom-toggle ${droneEnabled ? 'on' : 'off'}`}
-                onClick={handleDroneToggle}
-                aria-pressed={droneEnabled}
-                title={droneEnabled ? 'Turn drones off' : 'Turn drones on'}
-                aria-label={droneEnabled ? 'Drones on — click to turn off' : 'Drones off — click to turn on'}
-              >
-                <span className="bottom-toggle-label">drone</span>
-              </button>
-              <button
-                type="button"
                 className={`bottom-cell bottom-toggle ${isMixerOpen ? 'on' : 'off'}`}
                 onClick={() => setIsMixerOpen((v) => !v)}
                 aria-pressed={isMixerOpen}
@@ -1275,6 +1298,30 @@ function App() {
               >
                 <span className="bottom-toggle-label">TUNING</span>
               </button>
+              <button
+                type="button"
+                className={`bottom-cell bottom-toggle ${isPerformOpen ? 'on' : 'off'}`}
+                onClick={() => setIsPerformOpen((v) => !v)}
+                aria-pressed={isPerformOpen}
+                title={isPerformOpen ? 'Hide perform controls' : 'Show perform controls — tracked parameters and transition timing'}
+                aria-label={isPerformOpen ? 'Hide perform controls' : 'Show perform controls'}
+              >
+                <span className="bottom-toggle-label">PERFORM</span>
+              </button>
+              <button
+                type="button"
+                className={`bottom-cell bottom-toggle ${isTransitionOpen ? 'on' : 'off'}`}
+                onClick={() => setIsTransitionOpen((v) => !v)}
+                aria-pressed={isTransitionOpen}
+                title={isTransitionOpen ? 'Hide transitions' : 'Show transitions'}
+                aria-label={isTransitionOpen ? 'Hide transitions' : 'Show transitions'}
+              >
+                <span className="bottom-toggle-label">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+                    <path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z" />
+                  </svg>
+                </span>
+              </button>
             </div>
           </div>
 
@@ -1282,9 +1329,8 @@ function App() {
             oscillatorCount={oscillatorCount}
             isPaused={isPaused}
             onPausedChange={setIsPaused}
-            droneEnabled={droneEnabled}
-            routingMap={routingMap}
-            onSetVoiceRouting={handleSetVoiceRouting}
+            voicePans={voicePans}
+            onSetVoicePan={handleSetVoicePan}
             onResetVoiceRouting={handleResetVoiceRouting}
           />
           <button

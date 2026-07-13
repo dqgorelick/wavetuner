@@ -196,6 +196,38 @@ function SaveCurrentForm({ onSave }) {
   );
 }
 
+// Copies all user patches as pretty-printed JSON — the hand-off format for
+// promoting a user patch into builtins.js.
+function ExportPatchesButton({ patches }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef(null);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const copy = useCallback(async () => {
+    const json = JSON.stringify(patches, null, 2);
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      console.warn('[patches] clipboard write failed, dumping to console:', e);
+      console.log(json);
+    }
+  }, [patches]);
+
+  return (
+    <button
+      type="button"
+      className="patches-export-btn"
+      onClick={copy}
+      title="Copy all your patches as JSON"
+    >
+      {copied ? 'Copied ✓' : 'Copy JSON'}
+    </button>
+  );
+}
+
 function PatchesPanel({ isOpen, onClose, onAfterLoad }) {
   const { builtins, userPatches, saveCurrent, remove, rename, storageAvailable } = usePatches();
   const panelRef = useRef(null);
@@ -257,7 +289,10 @@ function PatchesPanel({ isOpen, onClose, onAfterLoad }) {
         <SaveCurrentForm onSave={saveCurrent} />
 
         <section className="patches-section">
-          <h5 className="patches-section-title">Yours</h5>
+          <div className="patches-section-head">
+            <h5 className="patches-section-title">Yours</h5>
+            {userPatches.length > 0 && <ExportPatchesButton patches={userPatches} />}
+          </div>
           {userPatches.length === 0 ? (
             <p className="patches-empty">
               {storageAvailable

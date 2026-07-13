@@ -9,6 +9,30 @@ scoped snapshots (volume + mute), the recall/undo scope state + API, scoped
 recall/undo with skip-no-op; the tunings-menu `ScopePanel`; marker gating on
 `recallScope.freq`; and inert I–IV slots on empty recall scope.
 
+**Extension (2026-07-04): `transpose` param.** The global transpose (semitone
+offset) is now a fourth lockable param. Snapshots always store it
+(`snapshot.transpose`; older saves hold `null` and are left untouched on
+recall). Recall/undo slide it via the new `AudioEngine.glideTranspose()` /
+`cancelTransposeGlide()` (rAF tween through `setTransposeSemitones`, snap
+quantization applies per-frame, persist deferred to landing) over the same
+recall/undo timing as freq/vol. Undo tracking hooks the engine's transpose
+listener into `_scheduleSnapshot`. GO's lit state moved into the manager as
+`stagedIsDirty()`, which now checks **every** in-scope param (freq / vol /
+on-off / transpose) against the staged save — previously it compared
+frequencies only, so a vol/mute/transpose-only drift left GO dark.
+
+**Extension (2026-07-04, later): asymmetric on/off timing + staged previews.**
+On/off recall is no longer symmetric-immediate: notes coming ON attack at the
+START of a transition (with their envelope attack landing directly on the
+saved level when vol is also in scope — re-targeting the gain every
+volume-glide frame mid-attack was an audible tremolo); notes going OFF hold
+through the transition and release at its END (`launchAll` defers them on a
+cancellable timer — `_cancelDeferredMutes` — superseded by any new
+recall/undo/stage-release; `_applySnapshotSmooth` releases them in
+`finish()`). Preview affordances: `getStagedVolumes()`/`getStagedMutes()`
+feed a target dot on each mixer drone fader and a half-way orb fade
+(`.mute-pending`, play/pause-aware) on voices whose mute state GO would flip.
+
 ---
 
 ## 1. Concept

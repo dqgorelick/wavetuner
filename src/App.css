@@ -780,6 +780,22 @@ p {
   transition: box-shadow 0.15s, transform 0.05s;
 }
 
+/* Staged-save volume preview: a small hollow dot on the track at the level
+   GO will glide this drone to. Shown while a save slot is selected and
+   'vol' is a tracked param; hides behind the ball once the level arrives. */
+.mixer-fader-target {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--mixer-color, #fff);
+  background: transparent;
+  opacity: 0.75;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
 .mixer-fader:hover .mixer-fader-fill {
   opacity: 1;
 }
@@ -1715,6 +1731,33 @@ kbd {
   cursor: not-allowed;
 }
 
+/* Fold-algorithm radio group + blurb, under the Fold slider in each
+   WaveControls section. */
+.fold-type-row {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+}
+.fold-type-option {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+.fold-type-option input {
+  accent-color: rgba(240, 244, 255, 0.85);
+  cursor: pointer;
+  margin: 0;
+}
+.fold-type-blurb {
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 6px 0 0;
+}
+
 .curve-editor {
   margin-top: 10px;
 }
@@ -2441,6 +2484,7 @@ kbd {
   box-shadow: none;
 }
 .cap-slot-main {
+  position: relative;
   flex: 1;
   min-width: 0;
   height: 100%;
@@ -2518,7 +2562,8 @@ kbd {
 .bottom-cell .button-icon { width: 22px; height: 22px; fill: currentColor; }
 
 /* Drone tray — small square mute buttons sitting above the bottom row.
-   Open whenever droneEnabled is true; collapses to zero height when off.
+   Always open now (the drone menu toggle is gone); the collapsed state
+   below is kept for the slide-in on mount.
    Off state: transparent fill with a low-opacity osc-color outline. On
    state: filled with the osc color, subtle glow. The whole tray is
    pointer-events: none when closed so collapsed squares aren't
@@ -2585,7 +2630,13 @@ kbd {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  /* Opacity transitions LONGER than the background drain: when the pending
+     flip lands (.mute-pending/.pulsing removed), opacity eases up from
+     whatever the pulse left it at while the solid fill empties first — the
+     cell settles into its next look without flashing back to full
+     brightness. */
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s,
+    opacity 0.4s ease;
 }
 .drone-tray-cell.off {
   background: transparent;
@@ -2752,6 +2803,20 @@ kbd {
   text-decoration-thickness: 1.5px;
 }
 
+/* Continuous pan dial: cells drag on both axes (right/up → R,
+   left/down → L). touch-action none so a touch drag pans the voice
+   instead of scrolling the page. Pointer cursor — the cell reads as a
+   button (click bounces side ↔ center); the drag is a bonus gesture. */
+.pan-tray-cell {
+  touch-action: none;
+  cursor: pointer;
+}
+/* Between detents the cell keeps the coarse side letter, italicized —
+   the precise position shows on the orb's status flash instead. */
+.pan-tray-cell.partial {
+  font-style: italic;
+}
+
 /* ↵ reset — sits in the right slot above the drone-tray's × so the two
    stack vertically. Kept to the cell height so it never grows the row.
    Same faint-to-bright treatment as the pan cells. */
@@ -2819,17 +2884,13 @@ kbd {
 }
 .bottom-toggle-label {
   line-height: 1;
-  padding-bottom: 2px;
-  border-bottom: 2px solid transparent;
-  transition: border-color 0.15s, box-shadow 0.15s, color 0.15s;
-}
-.bottom-toggle.on .bottom-toggle-label {
-  border-bottom-color: rgba(74, 158, 255, 0.95);
-  box-shadow: 0 2px 6px -2px rgba(74, 158, 255, 0.65);
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
 }
 .bottom-toggle.on {
-  color: rgba(74, 158, 255, 0.95);
-  background: rgba(74, 158, 255, 0.16);
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.26);
 }
 .bottom-toggle.off {
   opacity: 0.78;
@@ -3962,6 +4023,23 @@ kbd {
 .fsb-dot.muted:hover {
   opacity: 0.6;
 }
+/* NOTE: the orbs deliberately carry NO staged on/off preview — no ring for
+   an arrival, no dim for a departure (user 2026-07-06). That preview lives
+   on the drone-tray cells / rail markers (.unmute-pending / .mute-pending)
+   so the orb row stays calm; the only orb motion during a transition is the
+   release pulse below. */
+/* Note-off in progress: the slot is muted but its envelope release is
+   still audible — the orb pulses through the tail and only settles into
+   the plain muted look once the envelope completes (the rAF loop drops
+   the class when isSlotReleasing turns false). */
+@keyframes fsb-orb-release {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.22; }
+}
+.fsb-dot.muted.releasing {
+  animation: fsb-orb-release 0.9s ease-in-out infinite;
+  box-shadow: 0 0 6px var(--dot-color);
+}
 .fsb-dot-label.muted {
   opacity: 0.5;
 }
@@ -4008,6 +4086,21 @@ kbd {
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
 }
+/* Pending note marks (same grammar as the drone-tray cells): HOLLOW
+   outline dot = a saved note will attack at this orb's own octave on
+   GO/transition; a lit dot whose note will release DIMS — no outline. */
+.fsb-kbd-dot.pending-on {
+  opacity: 0.9;
+  transform: translate(-50%, -50%) scale(1);
+  background: transparent;
+  border: 1px solid var(--dot-color);
+  box-shadow: none;
+  box-sizing: border-box;
+}
+.fsb-kbd-dot.pending-off.active {
+  opacity: 0.35;
+  box-shadow: none;
+}
 
 /* Octave columns flanking the number — a vertical stack of up to 5
    bubbles per side, each representing one octave's distance from the
@@ -4048,6 +4141,22 @@ kbd {
 }
 .fsb-octave-bubble[data-state='dim'] { opacity: 0.25; }
 .fsb-octave-bubble[data-state='on']  { opacity: 0.95; }
+/* Pending note marks (same grammar as the drone-tray cells): a HOLLOW
+   bubble = a saved note will attack at this octave on GO/transition (the
+   bubble materializes as an outline); a lit bubble whose note will release
+   DIMS — no outline. Composes with data-state so the live indication is
+   never falsified. */
+.fsb-octave-bubble[data-pending='on'] {
+  height: 5px;
+  margin: 1px 0;
+  background: transparent;
+  border: 1px solid currentColor;
+  opacity: 0.9;
+  box-sizing: border-box;
+}
+.fsb-octave-bubble[data-pending='off'][data-state='on'] {
+  opacity: 0.3;
+}
 /* While dragging an orb the label morphs into a freq readout — hide
    the bubble columns in that state so the readout reads cleanly. */
 .fsb-dot-label.active-freq .fsb-octave-col {
@@ -4078,6 +4187,110 @@ kbd {
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
 }
 .fsb-label-text { /* the number itself sits in the flex row's center */ }
+
+/* While a status flash is up, the voice-number label yields its spot to
+   the flash's title/side block. !important outranks the equal-specificity
+   muted/kbd-active opacity rules for the flash's short lifetime. */
+.fsb-dot-label.status-hidden {
+  opacity: 0 !important;
+  transition: opacity 0.15s ease;
+}
+
+/* ── Orb status flash — the parameter-display design language ──────────
+   One .fsb-status per orb, anchored (0×0) at the orb's CENTER via inline
+   left/top. Children position off that anchor:
+     .fsb-status-head   one-line readout ("L 100%" / ⊙ / "R 45%") in the
+                        voice number's exact spot, color and type
+     .fsb-status-arc    0×0 rotator; its child dot's center rides the
+                        orb's circumference (top half) at the value
+   Fade-in on mount; .leaving drives the fade back to the normal orb.
+   PAN uses it first — future per-voice params reuse the same skeleton. */
+.fsb-status {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 6;
+  animation: fsb-status-in 0.15s ease-out;
+  transition: opacity 0.35s ease;
+}
+.fsb-status.muted { opacity: 0.45; }
+/* Muted voice's indicator dot: dimmer still and no glow — a silent slot
+   shouldn't sparkle like a sounding one. */
+.fsb-status.muted .fsb-status-arc-dot {
+  opacity: 0.55;
+  box-shadow: none;
+}
+.fsb-status.leaving { opacity: 0; }
+@keyframes fsb-status-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Type matches .fsb-dot-label exactly — the readout stands in for the
+   voice number, so it must feel like the same text swapping content.
+   Color comes inline (the orb color), like the label's inline color. */
+.fsb-status-head {
+  position: absolute;
+  left: 0;
+  transform: translate(-50%, -100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 28px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  white-space: nowrap;
+  opacity: 0.9;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
+  transition: opacity 0.2s ease;
+}
+/* Centered voice: no readout — the text fades away (and back in as the
+   dial leaves center); the 12-o'clock indicator dot alone marks center. */
+.fsb-status-head.centered {
+  opacity: 0;
+}
+/* Rotator: rotate() swings the child dot along the orb's INNER radius.
+   −90° = left horizon, 0° = top, +90° = right horizon — mirroring the
+   pan dial. Pure transform, so dragging the dial stays compositor-cheap
+   (the earlier mask-notch version repainted the orb every frame). */
+.fsb-status-arc {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  transition: transform 0.08s linear;
+}
+/* Indicator dot INSIDE the orb, brighter than the orb color — the orb
+   color mixed toward white so it always reads as a lit point on the
+   body regardless of which voice color it sits on. --status-arc-r is
+   the orb's edge radius; the +3px (this dot's own radius) pulls the
+   center in so the dot sits flush against the inside of the rim. */
+.fsb-status-arc-dot {
+  position: absolute;
+  left: 0;
+  top: calc(3px - var(--status-arc-r, 17.5px));
+  width: 6px;
+  height: 6px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dot-color) 40%, #fff);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--dot-color) 30%, #fff);
+}
+/* Detune indicator: the same rim dot, smaller — its own 2px radius pulls
+   it in, keeping it flush like the pan dot. Two of these ride mirrored
+   rotators (±spread) — at zero detune they coincide into one dot at the
+   top; at max detune they reach the 9/3 horizons. */
+.fsb-status-arc-dot-sm {
+  top: calc(2px - var(--status-arc-r, 17.5px));
+  width: 4px;
+  height: 4px;
+  box-shadow: 0 0 4px color-mix(in srgb, var(--dot-color) 30%, #fff);
+}
 
 .fsb-active-freq {
   position: absolute;
@@ -5158,6 +5371,31 @@ kbd {
   letter-spacing: 0.6px;
   color: rgba(255, 255, 255, 0.45);
 }
+.patches-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.patches-export-btn {
+  margin: 4px 4px 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.45);
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.patches-export-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
 .patches-empty {
   margin: 4px 4px;
   font-size: 12px;
@@ -5497,7 +5735,10 @@ kbd {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  /* Opacity eases slower than the fill drain — same no-flash-on-flip
+     treatment as .drone-tray-cell above. */
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s,
+    opacity 0.4s ease;
 }
 .freq-rail-marker:not(.anchor) {
   background: transparent;
@@ -5516,6 +5757,63 @@ kbd {
 }
 .freq-rail-marker.anchor:hover {
   background: color-mix(in srgb, var(--cell-color), white 15%);
+}
+
+/* Pending on/off flip — a selected save slot will TOGGLE this drone on GO
+   ('on/off' is a tracked param). This preview lives HERE, on the mute
+   squares (drone tray + tuning rail marker) — the orbs above deliberately
+   show nothing (user 2026-07-06). Direction-aware:
+     .unmute-pending — muted now, comes ON on GO  → bright outline ring
+     .mute-pending   — sounding now, goes OFF on GO → dimmed, no outline
+   Both keep their TRUE current fill (solid = on, hollow = off) underneath
+   so the live state is never falsified. */
+.drone-tray-cell.unmute-pending,
+.drone-tray-cell.unmute-pending:hover,
+.freq-rail-marker.unmute-pending,
+.freq-rail-marker.unmute-pending:hover {
+  /* Flush against the cell edge (no offset gap). */
+  outline: 1.5px solid var(--cell-color);
+  outline-offset: 0;
+}
+.drone-tray-cell.mute-pending,
+.drone-tray-cell.mute-pending:hover,
+.freq-rail-marker.mute-pending,
+.freq-rail-marker.mute-pending:hover {
+  opacity: 0.45;
+  outline: none;
+}
+/* Transition animation (deliberate): while a transition/recall is in
+   flight, pending drone cells PULSE — anticipation until the flip lands;
+   staged-but-idle previews stay static. Each direction pulses around its
+   own resting look: the outlined arrival breathes its outline, the dimmed
+   departure sinks further. */
+@keyframes drone-cell-unmute-pulse {
+  0%, 100% { outline-color: var(--cell-color); }
+  50%      { outline-color: color-mix(in srgb, var(--cell-color), transparent 75%); }
+}
+.drone-tray-cell.unmute-pending.pulsing {
+  animation: drone-cell-unmute-pulse 1s ease-in-out infinite;
+}
+@keyframes drone-cell-mute-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.18; }
+}
+.drone-tray-cell.mute-pending.pulsing {
+  animation: drone-cell-mute-pulse 1s ease-in-out infinite;
+}
+/* Leaving the dimmed pending-off look (mute landed, or the save was
+   deselected mid-flight): ease up from the dim over one pulse period. A
+   transition can't do this — the pulse keyframes held opacity, and removing
+   an animation snaps to base (the flash-to-full-brightness the user flagged
+   2026-07-06) — so the exit is its own one-shot animation starting at the
+   pulse's midpoint. Ends at opacity 1 (the base value), so the class
+   lingering past the animation is invisible. */
+@keyframes drone-cell-pulse-exit {
+  from { opacity: 0.3; }
+  to   { opacity: 1; }
+}
+.drone-tray-cell.pulse-exit {
+  animation: drone-cell-pulse-exit 1s ease both;
 }
 
 .freq-rail-input {
@@ -5874,6 +6172,16 @@ kbd {
 .freq-rail-glide-curve:hover { background: rgba(255, 255, 255, 0.2); }
 
 /* ── Parameter-lock (capture scope) panel ─────────────────────────── */
+/* PERFORM panel chassis — same look/width as the tuning panel so the two
+   stack cleanly in the left-stack when both are open. */
+.perform-panel {
+  width: 280px;
+  padding: 9px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+}
+.perform-panel .scope-panel { margin-top: 0; }
 .scope-panel {
   display: flex;
   flex-direction: column;

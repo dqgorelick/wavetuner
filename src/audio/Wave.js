@@ -1,10 +1,15 @@
 /**
- * Wave - per-pool waveform morph (sine → triangle → saw → square).
+ * Wave - per-pool waveform morph (sine → triangle → square → saw).
  *
  * Replaces the default sine OscillatorNode with one driven by
  * setPeriodicWave. Position p ∈ [0, 3] interpolates linearly between
  * four anchor shapes' Fourier coefficients:
- *   p=0 sine, p=1 triangle, p=2 sawtooth, p=3 square.
+ *   p=0 sine, p=1 triangle, p=2 square, p=3 sawtooth.
+ *
+ * Anchor order groups the odd-harmonics-only shapes (sine, triangle,
+ * square) so segment 1→2 is a pure rebalance of the same partials;
+ * saw — the only anchor with even harmonics — sits at the bright end,
+ * so even harmonics fade in exactly once across the range.
  *
  * The user's originally-proposed reverse-saw segment was dropped: the
  * lerp between saw and reverse-saw passes through silence at the
@@ -17,7 +22,11 @@
  * so a slider sweep doesn't allocate on every pixel of motion.
  */
 
-const HARMONICS = 64;       // Web Audio band-limits per-pitch above this
+// 256 harmonics sharpen the square/saw edges considerably over the old
+// 64. Cost is init/slider-time only: the browser band-limits each
+// PeriodicWave per-pitch internally, waves are cached per quantized
+// slot, and nothing in the render path scales with this number.
+const HARMONICS = 256;
 const POSITION_SLOTS = 60;  // 0.05 quantization across [0, 3]
 const POSITION_MAX = 3;
 
@@ -53,7 +62,7 @@ const ANCHOR_COEFFS = (() => {
     sqr[n] = sqrK / n;
   }
 
-  return [sine, tri, saw, sqr];
+  return [sine, tri, sqr, saw];
 })();
 
 // Interpolate the four anchors at position p ∈ [0, 3]. Returns a fresh
@@ -131,7 +140,7 @@ export const droneWave = new Wave({ position: 0 });
 export const keyboardWave = new Wave({ position: 0 });
 
 // Anchor names for UI labels — index matches the 0..3 position range.
-export const WAVE_ANCHOR_NAMES = ['sine', 'triangle', 'saw', 'square'];
+export const WAVE_ANCHOR_NAMES = ['sine', 'triangle', 'square', 'saw'];
 
 /**
  * Sample one period of the morphed waveform at `position` into N
@@ -147,6 +156,7 @@ export function sampleWaveform(position, N) {
     const t = i / N;
     let s = 0;
     for (let n = 1; n <= HARMONICS; n++) {
+      if (coeffs[n] === 0) continue; // even harmonics of sine/tri/square
       s += coeffs[n] * Math.sin(2 * Math.PI * n * t);
     }
     out[i] = s;

@@ -101,6 +101,12 @@ export async function applyPatch(patch) {
       applyStereo(droneStereo, snap.stereo.drone, freqs.length);
       applyStereo(keyboardStereo, snap.stereo.keyboard, freqs.length);
     }
+    // Transition mode (glide vs step). Older patches don't carry it —
+    // setTransitionMode ignores unknown values, so absent just leaves the
+    // user's current mode alone.
+    if (typeof snap.transitionMode === 'string') {
+      frequencyManager.setTransitionMode(snap.transitionMode);
+    }
     if (Array.isArray(snap.volumes)) {
       // Clamp at PATCH_LOAD_VOL_CAP so a hot snapshot can't drop the
       // user into clipping the moment they pick a patch.
@@ -122,6 +128,8 @@ export async function applyPatch(patch) {
         for (const ch of next) audioEngine.addRouting(idx, ch);
       }
     }
+    // Continuous pans ride on top of the discrete routing restore.
+    applyPanSnapshot(snap);
   } else if (audioEngine.isInitialized) {
     // No snapshot — tuning-only patch. Generate a random small voicing so
     // loading e.g. WTP doesn't blast all 12 oscillators at once. Voicing
@@ -280,6 +288,10 @@ export function capturePatch({ id, name, source = 'user', description } = {}) {
       volumes,
       muted,
       routing,
+      // Continuous per-voice pan (−1…+1). `routing` above keeps the
+      // discrete L/R/⊙ projection for old-app compatibility; this is
+      // the authoritative dial position.
+      pan: audioEngine.getVoicePans(),
       envelope: {
         drone: snapshotEnvelope(droneEnvelope),
         keyboard: snapshotEnvelope(keyboardEnvelope),
@@ -288,6 +300,9 @@ export function capturePatch({ id, name, source = 'user', description } = {}) {
         drone: snapshotStereo(droneStereo),
         keyboard: snapshotStereo(keyboardStereo),
       },
+      // How launched voices travel ('glide' | 'step') — part of the
+      // patch's performance character, so it rides along.
+      transitionMode: frequencyManager.transitionMode,
     },
   };
 }
@@ -313,6 +328,12 @@ export function preInitApplyPatch(patch) {
       // having an entry per oscillator.
       audioEngine.preMuteVolumes = audioEngine.volumeValues.slice();
     }
+    if (Array.isArray(snap.pan)) {
+      // Seed pans before initialize() so _createSingleOscillator wires
+      // each voice's taps at its saved image from frame zero.
+      audioEngine.panValues = snap.pan.slice(0, freqs.length)
+        .map((p) => (Number.isFinite(p) ? Math.max(-1, Math.min(1, p)) : undefined));
+    }
     // Envelope + stereo restore at boot. The singletons accept writes
     // before audio context exists (no audio params touched yet); when
     // initialize() runs later, oscillators come up reading these values
@@ -324,6 +345,11 @@ export function preInitApplyPatch(patch) {
     if (snap.stereo) {
       applyStereo(droneStereo, snap.stereo.drone, freqs.length);
       applyStereo(keyboardStereo, snap.stereo.keyboard, freqs.length);
+    }
+    // Transition mode restores at boot too — the manager singleton exists
+    // pre-init and the setter only touches localStorage + listeners.
+    if (typeof snap.transitionMode === 'string') {
+      frequencyManager.setTransitionMode(snap.transitionMode);
     }
   }
   // Restore the patch's capture (snapshot) slots at boot too.
@@ -337,13 +363,27 @@ export function preInitApplyPatch(patch) {
 // after handleStart() has built the graph.
 export function applyPatchRoutingPostInit(patch) {
   const snap = patch?.snapshot;
-  if (!snap?.routing || typeof snap.routing !== 'object') return;
-  for (const [k, channels] of Object.entries(snap.routing)) {
-    const idx = parseInt(k, 10);
-    if (!Number.isFinite(idx) || idx >= audioEngine.getOscillatorCount()) continue;
-    const cur = audioEngine.routingMap[idx] ? [...audioEngine.routingMap[idx]] : [];
-    for (const ch of cur) audioEngine.removeRouting(idx, ch);
-    const next = Array.isArray(channels) ? channels : [channels];
-    for (const ch of next) audioEngine.addRouting(idx, ch);
+  if (!snap) return;
+  if (snap.routing && typeof snap.routing === 'object') {
+    for (const [k, channels] of Object.entries(snap.routing)) {
+      const idx = parseInt(k, 10);
+      if (!Number.isFinite(idx) || idx >= audioEngine.getOscillatorCount()) continue;
+      const cur = audioEngine.routingMap[idx] ? [...audioEngine.routingMap[idx]] : [];
+      for (const ch of cur) audioEngine.removeRouting(idx, ch);
+      const next = Array.isArray(channels) ? channels : [channels];
+      for (const ch of next) audioEngine.addRouting(idx, ch);
+    }
   }
+  // Continuous per-voice pan refines the discrete routing restored above.
+  // Old patches lack it — routing's L/R/⊙ projection already set the pan.
+  applyPanSnapshot(snap);
+}
+
+// Apply a snapshot's continuous per-voice pans, if present.
+function applyPanSnapshot(snap) {
+  if (!Array.isArray(snap?.pan)) return;
+  const count = audioEngine.getOscillatorCount();
+  snap.pan.slice(0, count).forEach((p, i) => {
+    if (Number.isFinite(p)) audioEngine.setVoicePan(i, p);
+  });
 }

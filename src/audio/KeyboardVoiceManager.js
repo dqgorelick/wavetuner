@@ -516,24 +516,37 @@ class KeyboardVoiceManager {
     // Detune from this source's stereo curve — deterministic per slot.
     // In stereo mode this becomes the L↑/R↓ spread (each side ±detune/2).
     // In lr mode the curve returns 0, so the voice plays clean tuning.
+    // Velocity → envelope peak. For kbd source, peak always starts at
+    // 1.0 — the user "dials in" their dynamic by how long they hold the
+    // key; freezeNote on keyup captures the reached level and overwrites
+    // peak.
+    return this._spawnVoice({
+      midiNote, degree, octave, slot, freq, source,
+      peakRaw: source === 'kbd' ? 1 : this._applyVelocityCurve(velocity),
+      latched: holdOn,
+    });
+  }
+
+  // The spawn core shared by noteOn (live playing) and spawnVoiceAt (save
+  // recall): builds the oscillator/gain/pan topology for one voice at an
+  // absolute frequency and registers it in the pool. peakRaw is the
+  // pre-stereo-compensation envelope peak.
+  _spawnVoice({ midiNote, degree, octave, slot, freq, source, peakRaw, latched }) {
+    const { audioContext: ctx, masterGainNode: dest } = audioEngine.getAudioBus({ source });
+    if (!ctx || !dest) return null;
+
     // kbd and midi sources have their own StereoMode instances so the
     // mixer can flip their pan modes independently.
     const stereo = stereoForSource(source);
     const detuneHz = stereo.detuneHzAt(slot);
     const isStereo = stereo.mode === 'stereo';
 
-    // Velocity → envelope peak. Captured on the voice so a later
-    // sustain change can retarget held notes to peak·newSustain.
-    // For kbd source, peak always starts at 1.0 — the user "dials in"
-    // their dynamic by how long they hold the key; freezeNote on keyup
-    // captures the reached level and overwrites peak.
     // Equal-loudness compensation for stereo mode. With both L and R
     // channels running at peak the perceived loudness is ~√2× louder
     // than lr mode (which only fires one channel). Scaling per-side
     // peak by 1/√2 brings stereo back into line with lr. Bake into
     // voice.peak so retargetSustain and freezeToCurrent automatically
     // see the corrected value.
-    const peakRaw = source === 'kbd' ? 1 : this._applyVelocityCurve(velocity);
     const peak = isStereo ? peakRaw / Math.sqrt(2) : peakRaw;
     // kbd voices run AR-only against their own envelope: ramp 0 → peak,
     // then hold at peak (no decay slump). MIDI keeps full ADSR off the
@@ -580,7 +593,7 @@ class KeyboardVoiceManager {
       voice = {
         id: this._nextVoiceId++,
         midiNote, degree, slot, octave, peak,
-        startTime: t0, released: false, _latched: holdOn,
+        startTime: t0, released: false, _latched: latched,
         _source: source,
         detuneHz,
         _isStereo: true,
@@ -617,7 +630,7 @@ class KeyboardVoiceManager {
       voice = {
         id: this._nextVoiceId++,
         midiNote, degree, slot, octave, peak,
-        startTime: t0, released: false, _latched: holdOn,
+        startTime: t0, released: false, _latched: latched,
         _source: source,
         detuneHz,
         _isStereo: false,
@@ -859,19 +872,18 @@ class KeyboardVoiceManager {
   }
 
   /**
-   * Hard-pan inherited from the drone's L/R routing for the slot that
-   * supplies this scale degree. L-only → −1, R-only → +1, both or
-   * neither → 0. Used in 'lr' pan mode.
+   * Pan inherited from the drone slot that supplies this scale degree —
+   * now the slot's CONTINUOUS pan dial value (−1…+1), so a kbd voice
+   * lands wherever its drone sits in the field, not just hard L/R/center.
+   * Slots the patch bay routed to channels ≥ 2 fall back to center.
+   * Used in 'lr' pan mode.
    */
   _panForDegree(degree) {
     const slot = tuning.droneSlotForDegree(degree);
     if (slot < 0) return 0;
     const channels = audioEngine.routingMap[slot] || [];
-    const onLeft = channels.includes(0);
-    const onRight = channels.includes(1);
-    if (onLeft && !onRight) return -1;
-    if (onRight && !onLeft) return 1;
-    return 0;
+    if (channels.some((ch) => ch >= 2)) return 0;
+    return audioEngine.getVoicePan ? audioEngine.getVoicePan(slot) : 0;
   }
 
   /**
@@ -904,6 +916,224 @@ class KeyboardVoiceManager {
       // (L) freq is exposed; the partner (R) sits at -detune/2 from this.
       freq: v.targetFreq,
     }));
+  }
+
+  /**
+   * Save-state capture of the HELD chord (HELD_NOTES.md §2): every voice
+   * still held — physically, latched, or pedal-sustained — as an
+   * input-agnostic note. Released tails are excluded; pedal state itself
+   * is not captured. `level` is the steady-state 0..1 the voice sits (or
+   * will settle) at — the same scale setVoiceLevel accepts, so recall can
+   * reproduce it: AR (kbd) voices hold at peak, ADSR voices land at
+   * peak·sustain. `source` is kept only so recall plays the note through
+   * the same envelope/wave pool; `slot`/`octave` are retune-tracking
+   * hints. Plain JSON-safe objects.
+   */
+  getHeldNotesSnapshot() {
+    const out = [];
+    for (const v of this.voices) {
+      if (v.released) continue;
+      if (!(v.targetFreq > 0)) continue;
+      const level = v._source === 'kbd'
+        ? v.peak
+        : v.peak * envForSource(v._source).sustain;
+      out.push({
+        // NOMINAL pitch (detune AND transpose removed — see _nominalFreq).
+        // A recall re-applies the live detune curve and transpose on spawn,
+        // so storing the sounding pitch would double the detune and pin the
+        // note to the capture-time transpose.
+        hz: KeyboardVoiceManager._nominalFreq(v),
+        level: Math.max(0, Math.min(1, level)),
+        source: v._source,
+        slot: Number.isFinite(v.slot) ? v.slot : null,
+        octave: Number.isFinite(v.octave) ? v.octave : null,
+      });
+    }
+    return out;
+  }
+
+  // A voice's NOMINAL pitch: detune removed (inverse of the +detune applied
+  // at spawn) AND the global transpose divided back out — the same
+  // transpose-free space the drones' frequencyValues live in. Saves store
+  // this; spawnVoiceAt/setVoiceFrequency re-apply the LIVE detune and
+  // transpose. Storing the sounding pitch instead would double the detune
+  // and freeze the capture-time transpose into the note, so recalled notes
+  // would ignore the current transpose until the next retune event.
+  static _nominalFreq(v) {
+    const d = v.detuneHz || 0;
+    const detuneFree = Math.max(0.001, v.targetFreq - (v._isStereo ? d / 2 : d));
+    return detuneFree / (audioEngine.getTransposeRatio() || 1);
+  }
+
+  /**
+   * The live held chord in save-comparable form: every un-released voice as
+   * { id, hz } with hz NOMINAL — detune- and transpose-free, matching
+   * getHeldNotesSnapshot — so the recall diff and the conductor's held-pool
+   * matching are transpose-invariant (the same played chord matches its
+   * save no matter where the master offset currently sits).
+   */
+  getHeldNotesLive() {
+    const out = [];
+    for (const v of this.voices) {
+      if (v.released || !(v.targetFreq > 0)) continue;
+      out.push({
+        id: v.id,
+        hz: KeyboardVoiceManager._nominalFreq(v),
+        // Slot/octave binding rides along for UI that maps notes onto the
+        // spectrum bar's octave indicators (pending on/off previews).
+        slot: Number.isFinite(v.slot) ? v.slot : null,
+        octave: Number.isFinite(v.octave) ? v.octave : null,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Recall-path note-on (HELD_NOTES.md §4): spawn a LATCHED voice at a
+   * NOMINAL (transpose-free) frequency, bypassing the midi-note → scale
+   * mapping — the live transpose is applied here, so a recalled note sounds
+   * at the current master offset like a freshly played one would. `level`
+   * is the steady-state 0..1 the note should land at (the scale
+   * getHeldNotesSnapshot captures): AR (kbd) voices ramp to peak = level,
+   * ADSR voices attack to level/sustain so they settle at level. The
+   * slot/octave hints re-bind the voice for retune-tracking; an invalid
+   * hint falls back to the nearest current drone slot by pitch.
+   */
+  spawnVoiceAt(hz, { level = 0.5, source = 'midi', slot = null, octave = null } = {}) {
+    if (!audioEngine.isInitialized) return null;
+    if (audioEngine.getKeyboardEnabled && !audioEngine.getKeyboardEnabled()) return null;
+    // `freq` stays NOMINAL through the slot/octave binding below (drone
+    // frequencyValues are nominal too); the transpose multiplies in only at
+    // the oscillator, mirroring noteOn's pitchForSlotAndOctave.
+    const freq = Math.max(0.001, Math.min(20000, hz));
+    if (!(freq > 0)) return null;
+
+    this._ensureTuningSubscribed();
+    this._ensureEnvelopeSubscribed();
+    this._ensureWaveSubscribed();
+    this._ensureWidthSubscribed();
+    this._releaseOldestOfSource(source);
+    if (this.voices.length >= MAX_VOICES) this._stealVoice();
+
+    // Invert the capture-side level mapping (mirrors setVoiceLevel).
+    const lv = Math.max(0, Math.min(1, level));
+    const env = envForSource(source);
+    const peakRaw = source === 'kbd'
+      ? lv
+      : (env.sustain > 0.001 ? Math.min(1, lv / env.sustain) : 1);
+
+    // Slot binding: saved hint when it's still a valid slot, else the
+    // nearest current drone pitch — keeps the recalled voice retuning with
+    // orb drags like a played one would.
+    const count = audioEngine.getOscillatorCount();
+    let useSlot = Number.isFinite(slot) && slot >= 0 && slot < count ? slot : -1;
+    if (useSlot < 0) {
+      let bestD = Infinity;
+      for (let i = 0; i < count; i++) {
+        const f = audioEngine.getFrequency(i);
+        if (!(f > 0)) continue;
+        const d = Math.abs(Math.log2(freq / f));
+        if (d < bestD) { bestD = d; useSlot = i; }
+      }
+      if (useSlot < 0) useSlot = 0;
+    }
+    const slotHz = audioEngine.getFrequency(useSlot);
+    const useOct = Number.isFinite(octave)
+      ? octave
+      : (slotHz > 0 ? Math.round(Math.log2(freq / slotHz)) : 0);
+
+    return this._spawnVoice({
+      midiNote: null,             // synthetic — never matched by a noteOff
+      degree: useSlot,
+      octave: useOct,
+      slot: useSlot,
+      freq: Math.max(0.001, Math.min(20000, freq * (audioEngine.getTransposeRatio() || 1))),
+      source,
+      peakRaw,
+      latched: true,              // nothing is physically holding it
+    });
+  }
+
+  /** Release one voice by id (envelope tail) — the recall diff's note-off. */
+  releaseVoiceById(id) {
+    const v = this.voices.find((x) => x.id === id && !x.released);
+    if (v) this._releaseVoice(v);
+  }
+
+  /**
+   * Retune one live voice to a NOMINAL (transpose-free) pitch — the
+   * per-frame write for voice-led transition glides (a held note glissing
+   * to the next chord's note). The live transpose multiplies in here, so a
+   * transpose glide running concurrently with a note glide composes
+   * correctly frame by frame. Applies the voice's frozen detune the same
+   * way spawn/_retuneAllVoices do; extras ride along at their snapshotted
+   * ratios. Safe to call every frame (setTargetAtTime, RETUNE_TAU).
+   * Returns false when the voice is gone/released (glide should stop).
+   */
+  setVoiceFrequency(voiceId, hz) {
+    const ctx = audioEngine.audioContext;
+    if (!ctx) return false;
+    const voice = this.voices.find((v) => v.id === voiceId && !v.released);
+    if (!voice) return false;
+    const raw = Math.max(0.001, Math.min(20000, hz * (audioEngine.getTransposeRatio() || 1)));
+    const now = ctx.currentTime;
+    const detune = voice.detuneHz || 0;
+    if (voice._isStereo) {
+      const half = detune / 2;
+      const fL = Math.max(0.001, Math.min(20000, raw + half));
+      const fR = Math.max(0.001, Math.min(20000, raw - half));
+      voice.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
+      voice.targetFreq = fL;
+      if (voice.oscR) {
+        voice.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
+        voice.targetFreqR = fR;
+      }
+    } else {
+      const f = Math.max(0.001, Math.min(20000, raw + detune));
+      voice.osc.frequency.setTargetAtTime(f, now, RETUNE_TAU);
+      voice.targetFreq = f;
+    }
+    if (voice._extras) {
+      for (const e of voice._extras) {
+        const nominal = raw * e.ratio;
+        if (voice._isStereo) {
+          const half = detune / 2;
+          if (e.osc) e.osc.frequency.setTargetAtTime(Math.max(0.001, Math.min(20000, nominal + half)), now, RETUNE_TAU);
+          if (e.oscR) e.oscR.frequency.setTargetAtTime(Math.max(0.001, Math.min(20000, nominal - half)), now, RETUNE_TAU);
+        } else if (e.osc) {
+          e.osc.frequency.setTargetAtTime(Math.max(0.001, Math.min(20000, nominal + detune)), now, RETUNE_TAU);
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Re-bind a voice's slot/octave to whatever drone pitch is now nearest
+   * its own — called after a transition glide lands a voice on a new
+   * chord note, so subsequent tuning changes (_retuneAllVoices, orb
+   * drags) track the RIGHT slot instead of snapping the voice back to
+   * the degree it was originally played on.
+   */
+  rebindVoiceToPitch(voiceId) {
+    const voice = this.voices.find((v) => v.id === voiceId && !v.released);
+    if (!voice) return;
+    const nominal = KeyboardVoiceManager._nominalFreq(voice);
+    const count = audioEngine.getOscillatorCount();
+    let bestSlot = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < count; i++) {
+      const f = audioEngine.getFrequency(i);
+      if (!(f > 0)) continue;
+      const d = Math.abs(Math.log2(nominal / f));
+      const wrapped = Math.abs(d - Math.round(d)); // octave-agnostic distance
+      if (wrapped < bestD) { bestD = wrapped; bestSlot = i; }
+    }
+    if (bestSlot < 0) return;
+    const slotHz = audioEngine.getFrequency(bestSlot);
+    voice.slot = bestSlot;
+    voice.degree = bestSlot;
+    voice.octave = Math.round(Math.log2(nominal / slotHz));
   }
 
   /**

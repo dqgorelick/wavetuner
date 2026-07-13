@@ -8,6 +8,27 @@ See `ios-port-plan.md` (same dir) for the full rationale on the rollout order.
 
 ## 🧪 Just landed — please test
 
+### 13. Mic spectrogram behind the pianoroll (2026-07-08)
+
+Scrolling heat map of the mic input rendered behind the pianoroll traces (design + file map in `wavetuner-native/ios/SPEC-spectrogram.md`). Sim-verified with synthetic columns on all three render paths; needs a real mic + room.
+
+- [ ] Mic toggle works **without headphones** now (input-only role — no passthrough audio, no feedback); with headphones the passthrough behaves as before
+- [ ] **Mic-only mode**: pause the synth with the mic on → spectrogram keeps scrolling (and passthrough keeps sounding in headphones); enable the mic while paused → same; play again → drones fade back in seamlessly; mic off while paused → engine fully stops
+- [ ] Mic-only survives an app-switch round trip (background kills the input, foreground brings it back) and a phone-call interruption
+- [ ] Vertical detail: two close tones (e.g. 100 & 110 Hz) resolve as separate bands (8192-pt FFT / 512 log bins now)
+- [ ] Settings → oscilloscope → "noise mod" slider (metal renderer): 0 = chromatic feedback holds still, higher = more grain wobble; 0.024 is the old fixed look
+- [ ] Pianoroll mode + mic on → spectrogram waterfall appears behind the traces, colored with the cycling hue, quiet room ≈ invisible, voice/music paints clearly (calibration knobs are `SpectrogramAnalyzer.dbFloor/dbCeil` if the floor is off for real rooms)
+- [ ] Waterfall scrolls RIGHT→LEFT (new sound enters at the right edge, same as the notes) — was mirrored on chromatic before 2026-07-08 fix
+- [ ] Default time window is 5 s on a fresh install (Settings → oscilloscope still winds it 2–120 s); band spans nearly the full field width (slim left margin, right margin reserved for the playhead Hz labels)
+- [ ] Loud moments (clap, sing close to the mic) flash WHITE in the heat map, not just brighter color
+- [ ] Play a note into the room that matches a drone → its heat band lines up exactly with the drone's trace on the same Y
+- [ ] **mic in** dial (±30 dB, 0dB at center) changes spectrogram brightness (down = dimmer, up = hotter); **mic out** dial only affects the passthrough level in headphones
+- [ ] Chromatic style: the heat map glows/warps through the shader with the traces; plain style: crisp heat map under clean traces
+- [ ] Camera + spectrogram + traces stack correctly (feed visible through quiet regions) — chromatic AND plain styles, plus the CG renderer
+- [ ] Bottom-right "drone"/"spect" pill (only when mic on + pianoroll): "spect" mode re-frames the Y range around what the mic hears; drones never scroll out of frame
+- [ ] Mic on with nothing playing: waterfall keeps scrolling at full rate (no idle stutter), Y range settles to the manual window
+- [ ] Thermal spot-check: pianoroll + mic on for ~10 min — does the spectrogram measurably add heat vs mic off? (expected: no)
+
 ### 12. Listener main page + panel menu system (UI overhaul phases 3–8, 2026-07-06)
 
 The new app face (`ContentView.swift` rebuilt): full-bleed visual field, pinned spectrum bar, mute dots, transport, and all panels broken out of Settings into a menu row. Granular merged in as a menu entry. All landed in commits `3ec3af6..8f908f9`.

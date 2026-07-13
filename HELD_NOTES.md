@@ -78,6 +78,13 @@ heldNotes: [{
 `PARAM_KEYS = ['freq', 'vol', 'onoff', 'transpose', 'notes']` — label
 **"held notes"** in the Parameters-tracked strip (PARAMETER_LOCK.md).
 
+> **REVISED 2026-07-06:** the `notes` chip is gone. Held notes — keyboard
+> and MIDI alike — are ALWAYS tracked (`_loadScope` force-adds `'notes'`;
+> `toggleParam('notes')` is a no-op; persisted scopes migrate forward).
+> There is no per-source toggle: a brief "midi ♪" opt-out chip was built and
+> removed the same day (user: MIDI notes just group in with notes). The
+> paragraphs below predate this.
+
 - **Apply-time only** — capture is always full (§2). Untracked (default
   **off** for one release, then revisit — low stakes since nothing is lost
   at capture): recall/undo/transitions ignore held notes and the staged
@@ -220,7 +227,15 @@ resolves without new architecture:
 1. **KVM capture/spawn API** — ✅ BUILT 2026-07-05, live-verified:
    `getHeldNotesSnapshot()` (NOMINAL detune-free hz — spawning re-applies
    the live detune curve, so storing detuned pitch would double it and make
-   the diff read every voice as off-save), `getHeldNotesLive()`,
+   the diff read every voice as off-save. **REVISED 2026-07-06: nominal is
+   also TRANSPOSE-free** — the capture-time transpose baked into hz meant
+   recalled notes ignored the current master offset until the next retune
+   event requantized them ("MIDI not listening to transpose, nudge fixes
+   it"). Now `_nominalFreq` divides the ratio out; `spawnVoiceAt` /
+   `setVoiceFrequency` multiply the LIVE ratio back in at the oscillator;
+   the recall diff and conductor matching are transpose-invariant; snapshots
+   carry `notesNominal: true` and `_normalizeSlots` migrates older saves by
+   dividing out their stored `transpose`), `getHeldNotesLive()`,
    `spawnVoiceAt(hz, {level, source, slot, octave})` (latched, synthetic
    null midiNote, slot hint or nearest-pitch re-bind; peak inverts the
    capture mapping), `releaseVoiceById(id)`. `noteOn`'s spawn body was
@@ -265,9 +280,9 @@ resolves without new architecture:
 
 ## 10. Open decisions
 
-1. `notes` scope default off (recommended — no behavior change on ship) or
-   on? Low stakes either way: capture is unconditional (§2), so the toggle
-   never costs data.
+1. ~~`notes` scope default off or on?~~ **DECIDED 2026-07-06: always on, no
+   chip, no per-source toggle** (see the §3 revision note). Capture is
+   unconditional (§2), so nothing is ever lost.
 2. Recalled-voice slot re-binding: nearest-slot (recommended) vs always
    fixed-hz?
 3. v1 held-note save cap at 15 for wire fidelity (recommended) vs uncapped?

@@ -1,21 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import { sampleWaveform } from '../audio/Wave';
+import { buildFoldCurve, sampleFoldCurve } from '../audio/Fold';
 
-const SAMPLES = 160;
+const SAMPLES = 320;
 const VB_W = 320;
 const VB_H = 56;
 const PAD_Y = 3;
 
-// Mirror AudioEngine: fold uses sin(drive·π·x) with drive in 1..4, and
-// the dry/wet gains cross-fade around the shaper. amount=0 ⇒ pure dry.
-function buildPath(position, foldAmount) {
+// Mirror AudioEngine: the fold curve is baked per (type, amount) by the
+// shared builder, and the dry/wet gains cross-fade around the shaper.
+// amount=0 ⇒ pure dry.
+function buildPath(position, foldType, foldAmount) {
   const samples = sampleWaveform(position, SAMPLES);
-  const drive = 1 + foldAmount * 3;
+  const foldCurve = buildFoldCurve(foldType, foldAmount);
   const mixed = new Float32Array(SAMPLES);
   let peak = 0;
   for (let i = 0; i < SAMPLES; i++) {
     const dry = samples[i];
-    const wet = Math.sin(drive * Math.PI * dry);
+    const wet = sampleFoldCurve(foldCurve, dry);
     const m = dry * (1 - foldAmount) + wet * foldAmount;
     mixed[i] = m;
     const a = Math.abs(m);
@@ -44,8 +46,8 @@ export default function WaveShapePreview({ wave, fold }) {
   }, [wave, fold]);
 
   const d = useMemo(
-    () => buildPath(wave.position, fold.amount),
-    [wave.position, fold.amount]
+    () => buildPath(wave.position, fold.type, fold.amount),
+    [wave.position, fold.type, fold.amount]
   );
 
   return (

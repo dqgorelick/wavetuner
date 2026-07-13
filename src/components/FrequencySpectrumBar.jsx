@@ -3,6 +3,7 @@ import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
+import { droneStereo, panWidth, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { activeProfile } from '../audio/timbreProfiles';
 import { getMovingImpact } from '../audio/dissonanceSettings';
 import palette, { useTheme } from '../theme/palette';
@@ -212,8 +213,28 @@ const KBD_DOT_SIZE = 5;
 // Gap from the orb's top edge up to the dot's center. Large enough to clear
 // the voice-number / freq label that sits above the orb (translate -100%), so
 // the dot floats above the text rather than overlapping it.
-const KBD_DOT_GAP = 22;
+const KBD_DOT_GAP = 18;
 const KBD_DOT_CENTER_Y = DOT_CENTER_Y - DOT_SIZE / 2 - KBD_DOT_GAP - KBD_DOT_SIZE / 2;
+
+// ── Orb status flash (parameter display design language) ────────────────
+// When a per-voice parameter is adjusted, every orb briefly overlays its
+// value for that parameter: a one-line readout above the orb in the voice
+// number's exact spot, color and type (the number hides for the duration
+// — e.g. "L 100%", "R 45%", or the ⊙ center icon for pan), plus an
+// orb-colored indicator riding the orb's circumference on the top half at
+// the value's position. Holds STATUS_FLASH_HOLD_MS after the last change,
+// then fades out over STATUS_FLASH_FADE_MS. Pan (one dot) and detune (a
+// mirrored pair of tick lines) use it; future per-voice params (level…)
+// should reuse the same .fsb-status structure with their own readout.
+const STATUS_FLASH_HOLD_MS = 1500;
+const STATUS_FLASH_FADE_MS = 350;
+// Orbit radius for the indicator dots — the orb's EDGE; each dot class
+// pulls its center in by its own radius (see the CSS `top` calc) so
+// every dot size sits flush against the inside of the rim.
+// (A negative-space mask notch was tried here and reverted: animating a
+// mask repaints the orb every frame and lagged the dial; a transform-
+// rotated dot is compositor-cheap.)
+const STATUS_ARC_RADIUS = DOT_SIZE / 2;
 
 // ── Staged-patch target markers ──────────────────────────────────────────
 // A staged slot previews each voice's target two ways: a floating dot
@@ -238,6 +259,33 @@ const DOT_LINE_FADE_RANGE_PX = 12; // dot+line ramp in as the dot clears the orb
 const STAGED_DESCENT_RANGE_PX = 55;  // orb-to-target px over which the dot lowers/lifts
 const STAGED_DESCENT_EASE = 11;      // >1 makes the dot rush to full lift (less mid-travel)
 const STAGE_FADE_MS = 300;  // markers ease in over this long when a slot is staged
+// Step hop: the orb doesn't teleport to the landed dot — it glides over
+// smoothly. Always 300 ms, floored there regardless of the step time, so
+// even a 0 ms handoff gets the little slide. The landing time is known in
+// advance (tail.until), so the hop PRE-EMPTS it by STEP_HOP_LEAD_MS: the
+// orb is already moving while the dot makes its final approach and the two
+// meet as it lands, instead of the orb reacting after the fact.
+const STEP_HOP_MS = 300;
+const STEP_HOP_LEAD_MS = 100;
+// When the hop begins for a tail: lead ahead of the landing, but never
+// before the step itself fired (tiny windows just slide immediately).
+const stepHopStart = (tail) => Math.max(tail.startMs, tail.until - STEP_HOP_LEAD_MS);
+// Smooth ease-in-out cubic (the engine's historical glide shape): gentle
+// acceleration, gentle landing — no windup, no bounce.
+const easeHop = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+// Display-space frequency for a step tail at wall-clock nowMs: the old pitch
+// held through the overlap window, then easing to `liveHz` along the hop
+// curve. Returns null once the hop is done (the slot is simply live). Shared
+// by the orb display and the auto-zoom so the frame moves WITH the orb.
+function stepTailDisplayHz(tail, liveHz, nowMs) {
+  const hopStart = stepHopStart(tail);
+  if (nowMs < hopStart) return tail.freq;
+  const hp = (nowMs - hopStart) / STEP_HOP_MS;
+  if (hp >= 1) return null;
+  const logFrom = Math.log2(Math.max(0.001, tail.freq));
+  const logTo = Math.log2(Math.max(0.001, liveHz));
+  return Math.pow(2, logFrom + (logTo - logFrom) * easeHop(Math.min(1, hp)));
+}
 // Reused per-column level buffer (avoids per-frame allocation now that the
 // curve draws continuously). _dissLevels holds the freshly computed target;
 // _dissDisplay is the on-screen value that eases toward it each frame so
@@ -397,6 +445,20 @@ function _buildBackground(count, movingSet, impact, profile) {
     } else {
       src.push({ f0, amp: vol, weight: 1 });
     }
+  }
+
+  // Step tails — during a step transition's overlap window the OLD note is
+  // still ringing alongside the new one (AudioEngine.stepToFrequency). It's
+  // a real sounding voice while it lasts, so it joins the field at its held
+  // level: the curve then reflects both notes at once, matching the audio
+  // and the visualizers. getStepTails() is already filtered to the audible
+  // window, so tails drop out of the field the moment they release. (No
+  // mute check: muting a slot mid-window targets the NEW voice's gain — the
+  // tail keeps ringing.)
+  for (const tail of audioEngine.getStepTails()) {
+    if (tail.slot >= count) continue;
+    if (!(tail.freq > 0) || !(tail.level > 0)) continue;
+    src.push({ f0: tail.freq, amp: tail.level, weight: 1 });
   }
 
   // Amplitude-normalize: scale every voice so the loudest is treated as
@@ -932,6 +994,85 @@ function FrequencySpectrumBar({
   // reflection driving the tick relabel. Subscribed below.
   const [transpose, setTranspose] = useState(() => audioEngine.getTransposeSemitones());
   const transposeDragRef = useRef(null);
+  // ── Orb status flash (pan / detune) ──
+  // Adjusting a per-voice parameter shows its status on ALL orbs, holds
+  // 1.5 s past the last change, then fades back to the normal orb look.
+  // One flash at a time — a new param takes over the display. `values`
+  // snapshots per-voice on every event so the display tracks a live drag;
+  // `active` is the voice being edited ('all' for global edits like the
+  // master detune slider) — only edited voices swap their number for the
+  // text readout, the others keep their numbers and just show the
+  // indicator; `leaving` drives the fade-out class.
+  //   pan     values[i] ∈ [−1, 1]; indicator dot at pan×90° (0 = top).
+  //   detune  values[i] = effective Hz (curve × master × panWidth); TWO
+  //           radial tick lines at ±(d/max)×90° — coincident at 12
+  //           o'clock when clean, spread to the 9/3 horizons at full.
+  const [statusFlash, setStatusFlash] = useState(null); // { param, values, active, leaving }
+  const statusFlashTimersRef = useRef({ hold: 0, leave: 0 });
+  useEffect(() => {
+    const timers = statusFlashTimersRef.current;
+    const show = (param, values, active) => {
+      clearTimeout(timers.hold);
+      clearTimeout(timers.leave);
+      setStatusFlash({ param, values, active, leaving: false });
+      timers.hold = setTimeout(() => {
+        setStatusFlash((prev) => (prev ? { ...prev, leaving: true } : prev));
+        timers.leave = setTimeout(() => setStatusFlash(null), STATUS_FLASH_FADE_MS);
+      }, STATUS_FLASH_HOLD_MS);
+    };
+    // Pan events arrive once PER VOICE. A dial drag is a lone event, but
+    // global actions (the mixer/settings stereo-mode toggle, the tray
+    // reset) loop over every voice synchronously — taking the last event's
+    // index would crown one arbitrary orb as "edited" and only IT would
+    // get the text readout. Coalesce each synchronous burst in a
+    // microtask: multiple distinct voices → a global edit (active 'all',
+    // every orb shows its readout), a single voice → that dial's drag.
+    const pendingPan = { indices: new Set(), queued: false, disposed: false };
+    const offPan = audioEngine.addPanListener((index) => {
+      pendingPan.indices.add(index);
+      if (pendingPan.queued) return;
+      pendingPan.queued = true;
+      queueMicrotask(() => {
+        pendingPan.queued = false;
+        const [first] = pendingPan.indices;
+        const active = pendingPan.indices.size > 1 ? 'all' : first;
+        pendingPan.indices.clear();
+        if (pendingPan.disposed) return;
+        show('pan', audioEngine.getVoicePans(), active);
+      });
+    });
+    // Detune flash: master slider drags ('detune') and curve-node edits
+    // ('curve', with the slot index when a single node is dragged).
+    // Structural curve events (slot add/remove) stay silent, and lr mode
+    // shows nothing — the curve is inert there, so flashing an all-zero
+    // spread would read as broken rather than informative.
+    const offDetune = droneStereo.onChange((sm, info) => {
+      if (!info || info.structural || sm.mode !== 'stereo') return;
+      if (info.kind !== 'detune' && info.kind !== 'curve') return;
+      const values = audioEngine.getVoicePans()
+        .map((pan, i) => sm.detuneHzAt(i) * panWidth(pan));
+      show('detune', values, info.index ?? 'all');
+    });
+    return () => {
+      pendingPan.disposed = true;
+      offPan();
+      offDetune();
+      clearTimeout(timers.hold);
+      clearTimeout(timers.leave);
+    };
+  }, []);
+  // Whether voice i's readout text is actually visible during the current
+  // flash: it must be an edited voice AND its value must be off-rest (a
+  // centered pan / zero detune suppresses the text — the indicator alone
+  // tells the story). The voice number only hides when this is true, so a
+  // suppressed readout never leaves a blank above the orb (mode-toggle pan
+  // resets land on center; RANDOM curves can roll near-zero slots).
+  const statusReadoutShown = (i) => {
+    if (!statusFlash) return false;
+    if (statusFlash.active !== i && statusFlash.active !== 'all') return false;
+    const v = statusFlash.values[i] ?? 0;
+    return statusFlash.param === 'pan' ? Math.abs(v) >= 0.005 : v >= 0.05;
+  };
   // Launch state for a *staged* save slot (targets + which voices are
   // mid-glide + which have fired), or null when nothing is staged. Driven by
   // the frequencyManager singleton but re-read only when its stageVersion
@@ -975,6 +1116,59 @@ function FrequencySpectrumBar({
     sync();
     const off = frequencyManager.onChange(sync);
     return () => { off(); if (stageFadeRef.current.raf) cancelAnimationFrame(stageFadeRef.current.raf); };
+  }, []);
+  // Step-transition ceremony: while a step tail is live the ORB holds its
+  // old pitch on screen (the engine is already sounding the target
+  // underneath) and the staged dot descends at the target on the step-time
+  // clock; when it lands the orb relocates to it — the dot IS the incoming
+  // note. When the window closes the orb doesn't teleport — it HOPS over to
+  // the landed dot with a smooth 200 ms ease-in-out slide (STEP_HOP_MS).
+  // stepAnims maps slot → { gen, freq: heldHz, p: 0..1 descent } during the
+  // window (with `hp` joining STEP_HOP_LEAD_MS before the dot lands so the
+  // orb meets it on arrival), then hop-only until the slide completes.
+  // Driven by its own rAF loop because nothing else re-renders during the
+  // window (frequencies jumped once at step time and then sit still). Both
+  // phases derive statelessly from the engine's viz tails, which linger a
+  // grace period past their audible window — so even a 0 ms handoff (whose
+  // audible window never spans a frame) still gets its hop.
+  const [stepAnims, setStepAnims] = useState({});
+  const draggingDotsRef = useRef(draggingDots);
+  useEffect(() => { draggingDotsRef.current = draggingDots; }, [draggingDots]);
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      raf = 0;
+      const tails = audioEngine.getStepTailsViz();
+      // A slot being dragged follows the live engine pitch immediately —
+      // holding or hopping the display would make the drag feel stuck.
+      const dragged = draggingDotsRef.current;
+      const now = performance.now();
+      const next = {};
+      for (const tail of tails) {
+        if (dragged.has(tail.slot)) continue;
+        const cur = next[tail.slot];
+        if (cur && cur.gen > tail.gen) continue; // newest re-step wins
+        // Descent progress (the falling dot) and hop progress (the sliding
+        // orb) OVERLAP during the lead-in: the hop starts STEP_HOP_LEAD_MS
+        // before the dot lands so the orb meets it on arrival.
+        const dur = Math.max(1, tail.until - tail.startMs);
+        const p = Math.min(1, (now - tail.startMs) / dur);
+        const hopStart = stepHopStart(tail);
+        const hp = now >= hopStart ? (now - hopStart) / STEP_HOP_MS : null;
+        if (hp != null && hp >= 1) continue; // ceremony fully played out
+        next[tail.slot] = { gen: tail.gen, freq: tail.freq, p, hp };
+      }
+      if (!Object.keys(next).length) {
+        setStepAnims((prev) => (Object.keys(prev).length ? {} : prev));
+        return;
+      }
+      setStepAnims(next);
+      raf = requestAnimationFrame(tick);
+    };
+    const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+    kick();
+    const off = frequencyManager.onChange(kick);
+    return () => { off(); if (raf) cancelAnimationFrame(raf); };
   }, []);
   const [activeOrder, setActiveOrder] = useState([]); // indices sorted by first-activation
 
@@ -1020,15 +1214,17 @@ function FrequencySpectrumBar({
     e.preventDefault();
     const el = containerRef.current;
     if (el) el.style.cursor = 'grabbing';
-    const start = { x: e.clientX, semi: audioEngine.getTransposeSemitones() };
-    transposeDragRef.current = start;
+    // Accumulate per-move deltas (not total-from-start) so toggling Shift
+    // mid-drag only changes the rate going forward — no jump.
+    transposeDragRef.current = { x: e.clientX, semi: audioEngine.getTransposeSemitones() };
     const move = (ev) => {
       const s = transposeDragRef.current;
       if (!s) return;
       const dx = ev.clientX - s.x;
+      s.x = ev.clientX;
       const fine = (shiftRef.current || fineTuneRef.current) ? TRANSPOSE_FINE_SCALE : 1;
-      const next = s.semi + dx * TRANSPOSE_SEMI_PER_PX * fine * TRANSPOSE_DRAG_SIGN;
-      audioEngine.setTransposeSemitones(next, { persist: false });
+      s.semi += dx * TRANSPOSE_SEMI_PER_PX * fine * TRANSPOSE_DRAG_SIGN;
+      audioEngine.setTransposeSemitones(s.semi, { persist: false });
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
@@ -1133,6 +1329,24 @@ function FrequencySpectrumBar({
     let raf = null;
     const tick = () => {
       const voices = keyboardVoiceManager.getActiveVoices();
+      // Pending note marks from the staged save's held-note diff — the
+      // outline language: a HOLLOW dot/bubble marks an octave where a saved
+      // note will attack on GO/transition, a RING around a lit one marks a
+      // sounding note that will release. slot → Map(octave → 'on'|'off').
+      const marks = frequencyManager.getStagedNoteMarks();
+      const pendBySlot = new Map();
+      if (marks) {
+        const put = (arr, dir) => {
+          for (const m of arr) {
+            let om = pendBySlot.get(m.slot);
+            if (!om) { om = new Map(); pendBySlot.set(m.slot, om); }
+            // A swap (release + attack at the same octave) reads as arrival.
+            if (!(dir === 'off' && om.get(m.octave) === 'on')) om.set(m.octave, dir);
+          }
+        };
+        put(marks.off, 'off');
+        put(marks.on, 'on');
+      }
       // slot → Map(octave → maxAmpAtThatOctave)
       const slotOctAmps = new Map();
       for (const v of voices) {
@@ -1148,6 +1362,7 @@ function FrequencySpectrumBar({
       const kbdDots = kbdDotElsRef.current;
       const totalSlots = Math.max(dots.length, labels.length);
       const MAX_OCT = 5;
+
       for (let i = 0; i < totalSlots; i++) {
         const octs = slotOctAmps.get(i);
 
@@ -1176,11 +1391,23 @@ function FrequencySpectrumBar({
           : false;
         // Orb glow: OTHER-octave notes only now (the same-octave case is the
         // dot-above below, so a played drone isn't confused with a played key).
-        if (dot) dot.classList.toggle('kbd-active', !interacting && nonZeroActive);
+        if (dot) {
+          dot.classList.toggle('kbd-active', !interacting && nonZeroActive);
+          // Note-off in progress: the slot is muted but its envelope release
+          // is still sounding — pulse until the tail completes, THEN read as
+          // off. (isSlotReleasing is false once the release window passes.)
+          dot.classList.toggle('releasing', audioEngine.isSlotReleasing(i));
+        }
 
         // Same-octave dot floating above the orb. Hidden during interaction.
         const kbdDot = kbdDots[i];
-        if (kbdDot) kbdDot.classList.toggle('active', !interacting && zeroActive);
+        const pend = pendBySlot.get(i);
+        if (kbdDot) {
+          kbdDot.classList.toggle('active', !interacting && zeroActive);
+          const p0 = pend ? pend.get(0) : undefined;
+          kbdDot.classList.toggle('pending-on', p0 === 'on');
+          kbdDot.classList.toggle('pending-off', p0 === 'off');
+        }
 
         const label = labels[i];
         if (!label) continue;
@@ -1212,6 +1439,11 @@ function FrequencySpectrumBar({
             if (active[n])       el.dataset.state = 'on';
             else if (n < maxActive) el.dataset.state = 'dim';
             else                 el.dataset.state = '';
+            // Pending on/off preview rides an independent attribute so it
+            // composes with (never falsifies) the live state.
+            const p = pend ? pend.get(oct) : undefined;
+            if (p) el.dataset.pending = p;
+            else if (el.dataset.pending) el.dataset.pending = '';
           }
         };
         updateSide(-1);
@@ -1338,9 +1570,28 @@ function FrequencySpectrumBar({
             // count are hidden (Heuristic 1), so they mustn't pull the zoom.
             const staged = frequencyManager.getStagedFrequencies();
             const stagedActive = staged ? staged.slice(0, newFreqs.length) : null;
-            const target = computeTargetRange(
-              stagedActive && stagedActive.length ? newFreqs.concat(stagedActive) : newFreqs
-            );
+            // A step ceremony keeps the ORB at its old pitch, then hops it
+            // over — frame the orb's DISPLAY pitch (held, then sliding along
+            // the hop curve) so the zoom moves in lockstep with the orb
+            // instead of waiting for the ceremony to finish.
+            const nowP = performance.now();
+            const tailFreqs = [];
+            for (const tail of audioEngine.getStepTailsViz()) {
+              if (tail.slot >= newFreqs.length) continue;
+              const hz = stepTailDisplayHz(tail, newFreqs[tail.slot], nowP);
+              if (hz != null) tailFreqs.push(hz);
+            }
+            let framed = newFreqs;
+            if (stagedActive && stagedActive.length) framed = framed.concat(stagedActive);
+            if (tailFreqs.length) framed = framed.concat(tailFreqs);
+            const target = computeTargetRange(framed);
+            // Tails expire silently (no engine event) — keep re-evaluating
+            // while a ceremony is playing so the zoom-in starts on its own
+            // the moment the hop completes.
+            if (tailFreqs.length) {
+              dirty = true;
+              keepRunning = true;
+            }
             const cur = rangeRef.current;
             // Frame-rate-independent ease: dt clamped so an idle gap (or the
             // first step of a fresh zoom) can't produce a big jump.
@@ -1384,9 +1635,33 @@ function FrequencySpectrumBar({
     };
   }, [oscillatorCount]);
 
+  // Orb positions read DISPLAY frequencies: a slot mid-step-transition holds
+  // its old pitch on screen until the descending dot lands (stepAnims above),
+  // then slides to the live engine value with a smooth ease-in-out — the
+  // interpolation runs in log2 (pitch) space, so the motion tracks the
+  // bar's own axis.
+  const displayFrequencies = useMemo(() => {
+    const keys = Object.keys(stepAnims);
+    if (!keys.length) return frequencies;
+    const out = frequencies.slice();
+    for (const k of keys) {
+      const i = +k;
+      if (i >= out.length) continue;
+      const a = stepAnims[k];
+      if (a.hp != null) {
+        // Hop in progress (may start while the dot is still falling).
+        const logFrom = Math.log2(Math.max(0.001, a.freq));
+        const logTo = Math.log2(Math.max(0.001, out[i]));
+        out[i] = Math.pow(2, logFrom + (logTo - logFrom) * easeHop(Math.min(1, a.hp)));
+      } else {
+        out[i] = a.freq; // held at the old pitch
+      }
+    }
+    return out;
+  }, [frequencies, stepAnims]);
   const freqXs = useMemo(
-    () => frequencies.map((f) => BAR_H_PADDING + freqToFraction(f, range.logMin, range.logMax) * barWidth),
-    [frequencies, barWidth, range.logMin, range.logMax]
+    () => displayFrequencies.map((f) => BAR_H_PADDING + freqToFraction(f, range.logMin, range.logMax) * barWidth),
+    [displayFrequencies, barWidth, range.logMin, range.logMax]
   );
   const dotXs = useMemo(
     () => resolveCollisions(freqXs, DOT_SIZE),
@@ -1932,6 +2207,9 @@ function FrequencySpectrumBar({
               const color = palette.oscColor(i, oscillatorCount);
               const isActive = draggingDots.has(i) || grabbedOscs.has(i);
               const isMuted = muted[i];
+              // The line always shows the TRUE current state — the pending
+              // on/off preview lives on the drone-tray cells below, so the
+              // orb row stays free of staging chrome.
               return (
                 <polyline
                   key={`posline-${i}`}
@@ -1981,39 +2259,70 @@ function FrequencySpectrumBar({
               // snap when a launch is aborted mid-flight. Cubing the linear falloff
               // makes the dot rise FAST as the orb first moves off target (so it
               // clears the orb top and fades in sooner), then eases toward full lift.
-              const descent = Math.pow(
-                Math.max(0, Math.min(1, 1 - gap / STAGED_DESCENT_RANGE_PX)),
-                STAGED_DESCENT_EASE
-              );
+              //
+              // EXCEPT during a step transition: there the descent runs on the
+              // step-time CLOCK — the orb is holding its old spot while the
+              // incoming note (this dot) sinks to the orb row; the orb relocates
+              // to it on landing. Smoothstepped so it eases in and out but still
+              // lands exactly when the overlap window closes.
+              const stepAnim = stepAnims[i];
+              // Dot landed: the marker's job is done — hide it while the orb
+              // finishes its slide. (During the pre-landing lead the dot is
+              // still falling while the orb is already moving, so the marker
+              // stays up until the dot actually touches down.)
+              if (stepAnim && stepAnim.p >= 1) return null;
+              const descent = stepAnim
+                ? stepAnim.p * stepAnim.p * (3 - 2 * stepAnim.p)
+                : Math.pow(
+                  Math.max(0, Math.min(1, 1 - gap / STAGED_DESCENT_RANGE_PX)),
+                  STAGED_DESCENT_EASE
+                );
               const dotY = STAGED_DOT_Y + (homeY - STAGED_DOT_Y) * descent;
               // The dot + tether fade continuously with the dot's height: full
               // opacity once it's a fade-range clear of the orb top, then tapering
               // to 0 as it sinks all the way to the orb's center (homeY) — so it
               // dissolves INTO the orb instead of blinking out at the top edge.
+              //
+              // During a step transition the dot does NOT fade: it rides at full
+              // opacity all the way to the orb row, and the whole marker simply
+              // unmounts at the instant it lands (p=1 → the orb jumps over and
+              // the on-target gap hides the marker). The tether is hidden for
+              // the ride — just the incoming note descending, no leash.
+              const stepping = !!stepAnim;
               const orbTop = homeY - DOT_SIZE / 2;
-              const dotLineOpacity = Math.min(1, Math.max(0,
+              const dotLineOpacity = stepping ? 1 : Math.min(1, Math.max(0,
                 (homeY - dotY) / (DOT_LINE_FADE_RANGE_PX + (homeY - orbTop))));
               const showDot = !isLaunching && dotLineOpacity > 0.1;
               // Dotted tether: dot → orb edge (trimmed both ends, like the ghosts).
               const seg = offsetLine(tx, dotY, dotXs[i], homeY, STAGED_DOT_R, DOT_SIZE / 2);
+              // The transition mode decides how a launch travels (glide tween
+              // vs step retrigger — both step flavors count as step for a
+              // single-dot gesture); holding shift inverts it for this
+              // gesture — desktop's quick way to borrow the other mode.
+              const launchWith = (invert) => {
+                const stepMode = frequencyManager.transitionMode !== 'glide';
+                const useStep = invert ? !stepMode : stepMode;
+                if (useStep) frequencyManager.stepVoice(i);
+                else frequencyManager.launchVoice(i);
+              };
               const launch = (e) => {
                 e.stopPropagation();
                 // Touch implicitly captures the pointer to this element on down;
                 // release it so pointerenter still fires on sibling lines as the
                 // finger swipes across them.
                 try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* none held */ }
-                frequencyManager.launchVoice(i);
+                launchWith(e.shiftKey);
               };
               // Swipe: crossing a pending line/dot with the button/finger held
               // launches that voice — drag across several for a cascade.
-              const swipeOver = (e) => { if (e.buttons & 1) frequencyManager.launchVoice(i); };
+              const swipeOver = (e) => { if (e.buttons & 1) launchWith(e.shiftKey); };
               const pts = `${tx - TRIANGLE_TOP_W / 2},${TRIANGLE_APEX_Y} `
                 + `${tx + TRIANGLE_TOP_W / 2},${TRIANGLE_APEX_Y} `
                 + `${tx + TRIANGLE_W / 2},${TRIANGLE_BASE_Y} `
                 + `${tx - TRIANGLE_W / 2},${TRIANGLE_BASE_Y}`;
               return (
                 <g key={`staged-${i}`} opacity={stageFade}>
-                  {seg && (
+                  {!stepping && seg && (
                     <line
                       x1={seg.x1}
                       y1={seg.y1}
@@ -2030,8 +2339,9 @@ function FrequencySpectrumBar({
                   )}
                   {/* Fat invisible hit line along the tether for click/swipe (only
                       once the dot has cleared the orb — otherwise it'd swallow
-                      clicks near the orb while invisible). */}
-                  {showDot && seg && (
+                      clicks near the orb while invisible; hidden during a step
+                      ride along with the visible tether). */}
+                  {!stepping && showDot && seg && (
                     <line
                       x1={seg.x1}
                       y1={seg.y1}
@@ -2227,7 +2537,7 @@ function FrequencySpectrumBar({
           <div
             key={`label-${i}`}
             ref={(el) => { labelElsRef.current[i] = el; }}
-            className={`fsb-dot-label ${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''}`}
+            className={`fsb-dot-label ${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''} ${statusReadoutShown(i) ? 'status-hidden' : ''}`}
             style={{ left: dotXs[i], top: DOT_CENTER_Y - DOT_SIZE / 2 - 2, color }}
           >
             {/* Octave columns flanking the number. Vertical stacks of
@@ -2253,6 +2563,71 @@ function FrequencySpectrumBar({
               <span className="fsb-octave-bubble" data-octave="+2" />
               <span className="fsb-octave-bubble" data-octave="+1" />
             </span>
+          </div>
+        );
+      })}
+
+      {/* Orb status flash — the orb parameter-display language. Every orb
+          gets a brightened indicator on its INNER radius, but only voices
+          BEING EDITED swap their number for the text readout — the rest
+          keep their numbers so the bar stays legible.
+            pan     one dot at the pan position (−1 → left horizon,
+                    0 → top, +1 → right); readout "L 100%" / "R 45%".
+                    Centered shows no text — the 12-o'clock dot alone
+                    says "center".
+            detune  two SMALLER dots spreading symmetrically from
+                    12 o'clock (clean, coincident — reads as one dot)
+                    out to the 9/3 horizons at the max master detune;
+                    readout is the voice's effective spread in Hz. Zero
+                    shows no text — the single top dot says "clean".
+          When the readout is suppressed (at-rest value) the voice number
+          stays visible instead — see statusReadoutShown. */}
+      {statusFlash && frequencies.map((_, i) => {
+        const color = palette.oscColor(i, oscillatorCount);
+        const isPan = statusFlash.param === 'pan';
+        const pan = isPan ? Math.max(-1, Math.min(1, statusFlash.values[i] ?? 0)) : 0;
+        const det = isPan ? 0 : Math.max(0, statusFlash.values[i] ?? 0);
+        const spreadDeg = Math.min(1, det / MAX_DETUNE_HZ) * 90;
+        const atRest = isPan ? Math.abs(pan) < 0.005 : det < 0.05;
+        const isEdited = statusFlash.active === i || statusFlash.active === 'all';
+        return (
+          <div
+            key={`status-${i}`}
+            className={`fsb-status${statusFlash.leaving ? ' leaving' : ''}${muted[i] ? ' muted' : ''}`}
+            style={{
+              left: dotXs[i],
+              top: DOT_CENTER_Y,
+              '--dot-color': color,
+              '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
+            }}
+          >
+            {/* Same offset as .fsb-dot-label so the readout lands exactly
+                where the voice number sits. Kept mounted while at rest so
+                the opacity fade can animate both ways during a drag. */}
+            {isEdited && (
+              <div
+                className={`fsb-status-head${atRest ? ' centered' : ''}`}
+                style={{ top: -(DOT_SIZE / 2 + 2), color }}
+              >
+                {isPan
+                  ? `${pan < 0 ? 'L' : 'R'} ${Math.round(Math.abs(pan) * 100)}%`
+                  : `${det.toFixed(1)}Hz`}
+              </div>
+            )}
+            {isPan ? (
+              <div className="fsb-status-arc" style={{ transform: `rotate(${pan * 90}deg)` }}>
+                <span className="fsb-status-arc-dot" />
+              </div>
+            ) : (
+              <>
+                <div className="fsb-status-arc" style={{ transform: `rotate(${-spreadDeg}deg)` }}>
+                  <span className="fsb-status-arc-dot fsb-status-arc-dot-sm" />
+                </div>
+                <div className="fsb-status-arc" style={{ transform: `rotate(${spreadDeg}deg)` }}>
+                  <span className="fsb-status-arc-dot fsb-status-arc-dot-sm" />
+                </div>
+              </>
+            )}
           </div>
         );
       })}

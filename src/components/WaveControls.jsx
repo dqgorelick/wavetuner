@@ -1,16 +1,20 @@
 import { useEffect, useState } from 'react';
 import { WAVE_ANCHOR_NAMES } from '../audio/Wave';
+import { FOLD_TYPE_IDS, FOLD_TYPES } from '../audio/Fold';
 import WaveShapePreview from './WaveShapePreview';
 
 /**
  * WaveControls - per-pool waveform shape + wavefolder controls.
  *
- * Two sliders:
- *   - Shape: 0..3, lerps through sine/triangle/saw/square via the
+ * Two sliders + a fold-algorithm radio group:
+ *   - Shape: 0..3, lerps through sine/triangle/square/saw via the
  *     pool's Wave singleton (drives setPeriodicWave on every running
  *     oscillator in the pool).
  *   - Fold: 0..1, drives the pool's WaveShaperNode curve from
- *     identity (bypass) to a heavy sine fold.
+ *     identity (bypass) to a heavy fold.
+ *   - Fold type: sine / triangle / buchla — picks which curve the
+ *     shared builder bakes (see FOLD_TYPES). A one-line blurb for the
+ *     selected algorithm renders under the group.
  *
  * Subscribes to both modules' onChange so external mutations (URL
  * restore, programmatic) keep the readouts in sync.
@@ -68,6 +72,22 @@ export default function WaveControls({ title, wave, fold }) {
           {fold.amount === 0 ? 'off' : `${Math.round(fold.amount * 100)} %`}
         </span>
       </div>
+
+      <div className="fold-type-row" role="radiogroup" aria-label={`${title} fold algorithm`}>
+        {FOLD_TYPE_IDS.map((id) => (
+          <label key={id} className="fold-type-option">
+            <input
+              type="radio"
+              name={`${title}-fold-type`}
+              value={id}
+              checked={fold.type === id}
+              onChange={() => fold.setType(id)}
+            />
+            <span>{FOLD_TYPES[id].label}</span>
+          </label>
+        ))}
+      </div>
+      <p className="fold-type-blurb">{FOLD_TYPES[fold.type].blurb}</p>
     </div>
   );
 }

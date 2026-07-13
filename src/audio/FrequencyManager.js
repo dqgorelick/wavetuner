@@ -27,6 +27,7 @@
  */
 
 import audioEngine from './AudioEngine';
+import keyboardVoiceManager from './KeyboardVoiceManager';
 import {
   SUPPORTED_SYSTEMS,
   DEFAULT_SYSTEM,
@@ -64,6 +65,11 @@ const MAX_RECALL_GLIDE_MS = 10000;
 // recall — undo is a "take that back" gesture, not a musical transition.
 const DEFAULT_UNDO_GLIDE_MS = 750;
 
+// Default overlap window (ms) for step transitions — how long the old and
+// new notes sound together when a voice retriggers. Independent of the
+// glide time so glide length and step overlap can be dialed separately.
+const DEFAULT_STEP_OVERLAP_MS = 2750;
+
 // Easing curves for the recall glide, cycled via the "curve:" button
 // beside the glide slider. `id` is persisted; `fn` maps normalized time
 // t∈[0,1] → eased progress. ease-in-out (smooth at both ends) matches the
@@ -80,17 +86,39 @@ const RECALL_CURVES = [
 ];
 const DEFAULT_RECALL_CURVE = 'ease-in-out';
 
+// How a launched voice travels to its staged target.
+// 'glide'    — the classic portamento tween (pitch bends continuously).
+// 'step'     — a retrigger: a fresh note starts at the target while the old
+//              note holds through an overlap window and releases (both sound
+//              at once). The recall-timing slider doubles as the overlap
+//              length. A batch launch (GO) only retriggers voices whose
+//              pitch actually changes — voices already at their target keep
+//              ringing untouched.
+// 'step-all' — same retrigger, but a batch launch re-strikes EVERY staged
+//              voice, unchanged pitches included (a full chord re-attack).
+const TRANSITION_MODES = ['glide', 'step', 'step-all'];
+const DEFAULT_TRANSITION_MODE = 'glide';
+
 // ─── Parameter lock (capture scope) ──────────────────────────────────
 // The lockable parameters. Capture always stores all of them; a scope is
 // a live mask deciding which get APPLIED on recall (recallScope) and which
 // are tracked/restored by undo/redo (undoScope). See PARAMETER_LOCK.md.
-//   freq  → frequencies + locked ratios + anchor + tuning system (pitch context)
-//   vol   → per-voice volume (0..1)
-//   onoff → per-voice mute state
-const PARAM_KEYS = ['freq', 'vol', 'onoff'];
-// Default scope = frequency only. Reproduces the pre-parameter-lock behavior
-// (recall/undo move pitch, nothing else) until the user opts into more.
-const DEFAULT_SCOPE = ['freq'];
+//   freq      → frequencies + locked ratios + anchor + tuning system (pitch context)
+//   vol       → per-voice volume (0..1)
+//   onoff     → per-voice mute state
+//   transpose → the global transpose offset (semitones, ±24)
+//   notes     → held keyboard/MIDI notes. Always in scope — not a chip in
+//               the params UI; recalls simply include the played chord.
+const PARAM_KEYS = ['freq', 'vol', 'onoff', 'transpose', 'notes'];
+
+// Pitch tolerance (log2) for matching a live held voice to a saved held
+// note in the recall diff — comfortably above float/tuning drift,
+// comfortably below any real scale step. Both sides compare NOMINAL
+// (detune-free) pitch.
+const NOTE_MATCH_EPS = 5e-3; // ≈ 8.6 cents
+// Default scope = frequency + held notes. Notes are always tracked (the chip
+// is gone — _loadScope force-adds the key); the other params stay opt-in.
+const DEFAULT_SCOPE = ['freq', 'notes'];
 
 class FrequencyManager {
   constructor() {
@@ -135,8 +163,17 @@ class FrequencyManager {
     this._launching = new Map();
     this._stageVersion = 0;
     this._launchRaf = null;      // rAF handle for the in-flight launch tween
+    // Pending deferred note-offs from a GO transition: on/off recall is
+    // asymmetric (ONs attack immediately, OFFs release at the END of the
+    // transition), so the offs ride a timer that must be cancellable when a
+    // new recall/undo supersedes the transition. Held-note releases follow
+    // the same asymmetry on their own timer.
+    this._deferredMuteTimer = null;
+    this._deferredNoteTimer = null;
     this._recallGlideMs = FrequencyManager._loadRecallGlideMs();
+    this._stepOverlapMs = FrequencyManager._loadStepOverlapMs();
     this._recallCurve = FrequencyManager._loadRecallCurve();
+    this._transitionMode = FrequencyManager._loadTransitionMode();
 
     // Parameter lock. The UI presents ONE parameter set ("Parameters tracked")
     // shared by capture-recall and undo/redo, so `_recallScope` and `_undoScope`
@@ -148,6 +185,14 @@ class FrequencyManager {
     this._undoGlideMs = FrequencyManager._loadUndoGlideMs(DEFAULT_UNDO_GLIDE_MS);
 
     audioEngine.addFrequencyListener(() => this._onEngineFreqChange());
+    // Transpose edits bypass the frequency listeners by design (they never
+    // write frequencyValues), so hook the undo debounce here separately: with
+    // 'transpose' in the undo scope a label-strip drag becomes an undoable
+    // step; out-of-scope changes still refresh the stored baseline.
+    audioEngine.addTransposeListener(() => {
+      if (this._inPropagation || this._inUndoRestore) return;
+      this._scheduleSnapshot();
+    });
 
     FrequencyManager.instance = this;
   }
@@ -198,16 +243,51 @@ class FrequencyManager {
         createdAt: Number(s.createdAt) || Date.now(),
         snapshot: {
           frequencies: snap.frequencies.slice(),
-          // volumes/mutes are newer fields — tolerate older saves without them.
+          // volumes/mutes/transpose are newer fields — tolerate older saves
+          // without them.
           volumes: Array.isArray(snap.volumes) ? snap.volumes.slice() : null,
           mutes: Array.isArray(snap.mutes) ? snap.mutes.slice() : null,
+          transpose: Number.isFinite(snap.transpose) ? snap.transpose : null,
           slotRatios: new Map(Array.isArray(snap.slotRatios) ? snap.slotRatios : []),
           anchorSlot: Number.isInteger(snap.anchorSlot) ? snap.anchorSlot : 0,
           tuningSystem: snap.tuningSystem || DEFAULT_SYSTEM,
+          // heldNotes hz is NOMINAL (transpose-free) as of the notesNominal
+          // flag. Earlier saves baked the capture-time transpose into the
+          // pitch — divide it back out once here so old saves recall at the
+          // right offset-relative pitch.
+          heldNotes: FrequencyManager._normalizeHeldNotes(
+            snap.heldNotes,
+            snap.notesNominal === true || !Number.isFinite(snap.transpose)
+              ? 1
+              : Math.pow(2, snap.transpose / 12),
+          ),
+          notesNominal: true,
         },
       });
     }
     return out.slice(-SAVE_LIMIT);
+  }
+
+  // Sanitize a snapshot's held-notes array (HELD_NOTES.md §2). Null when the
+  // save predates the field; entries with a bad pitch are dropped, the rest
+  // clamped into range so a corrupt localStorage/patch value can't inject
+  // NaNs into a future recall. `divisor` handles the pre-notesNominal
+  // format: the capture-time transpose ratio divides back out so hz lands
+  // in nominal (transpose-free) space.
+  static _normalizeHeldNotes(arr, divisor = 1) {
+    if (!Array.isArray(arr)) return null;
+    const out = [];
+    for (const n of arr) {
+      if (!n || !Number.isFinite(n.hz) || !(n.hz > 0)) continue;
+      out.push({
+        hz: Math.min(20000, n.hz / (divisor || 1)),
+        level: Number.isFinite(n.level) ? Math.max(0, Math.min(1, n.level)) : 0.5,
+        source: n.source === 'kbd' ? 'kbd' : 'midi',
+        slot: Number.isFinite(n.slot) ? n.slot : null,
+        octave: Number.isFinite(n.octave) ? n.octave : null,
+      });
+    }
+    return out;
   }
 
   // Serialize internal slot objects into a plain JSON-safe array (Maps → entry
@@ -221,9 +301,14 @@ class FrequencyManager {
         frequencies: Array.from(s.snapshot.frequencies),
         volumes: s.snapshot.volumes ? Array.from(s.snapshot.volumes) : null,
         mutes: s.snapshot.mutes ? Array.from(s.snapshot.mutes) : null,
+        transpose: Number.isFinite(s.snapshot.transpose) ? s.snapshot.transpose : null,
         slotRatios: Array.from(s.snapshot.slotRatios.entries()),
         anchorSlot: s.snapshot.anchorSlot,
         tuningSystem: s.snapshot.tuningSystem,
+        heldNotes: Array.isArray(s.snapshot.heldNotes)
+          ? s.snapshot.heldNotes.map((n) => ({ ...n }))
+          : null,
+        notesNominal: true,
       },
     }));
   }
@@ -279,6 +364,18 @@ class FrequencyManager {
     try { localStorage.setItem('tuningRecallGlideMs', String(this._recallGlideMs)); } catch { /* ignore */ }
   }
 
+  // Step-overlap persistence. Falls back to the default when unset.
+  static _loadStepOverlapMs() {
+    try {
+      const v = parseFloat(localStorage.getItem('tuningStepOverlapMs'));
+      if (Number.isFinite(v)) return Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, v));
+    } catch { /* ignore */ }
+    return DEFAULT_STEP_OVERLAP_MS;
+  }
+  _persistStepOverlapMs() {
+    try { localStorage.setItem('tuningStepOverlapMs', String(this._stepOverlapMs)); } catch { /* ignore */ }
+  }
+
   // Recall-curve persistence. Falls back to the default for unknown ids.
   static _loadRecallCurve() {
     try {
@@ -291,6 +388,18 @@ class FrequencyManager {
     try { localStorage.setItem('tuningRecallCurve', this._recallCurve); } catch { /* ignore */ }
   }
 
+  // Transition-mode persistence. Falls back to glide for unknown values.
+  static _loadTransitionMode() {
+    try {
+      const v = localStorage.getItem('tuningTransitionMode');
+      if (TRANSITION_MODES.includes(v)) return v;
+    } catch { /* ignore */ }
+    return DEFAULT_TRANSITION_MODE;
+  }
+  _persistTransitionMode() {
+    try { localStorage.setItem('tuningTransitionMode', this._transitionMode); } catch { /* ignore */ }
+  }
+
   // Scope persistence — a scope is stored as a comma-joined key list. Unknown
   // keys are dropped; a missing/corrupt value falls back to the default.
   static _loadScope(storageKey) {
@@ -298,7 +407,11 @@ class FrequencyManager {
       const raw = localStorage.getItem(storageKey);
       if (raw != null) {
         const keys = raw.split(',').filter((k) => PARAM_KEYS.includes(k));
-        return new Set(keys);
+        const scope = new Set(keys);
+        // 'notes' is no longer a user-toggleable chip — held notes are always
+        // tracked. Scopes persisted before that change migrate forward here.
+        scope.add('notes');
+        return scope;
       }
     } catch { /* ignore */ }
     return new Set(DEFAULT_SCOPE);
@@ -561,9 +674,56 @@ class FrequencyManager {
   _abortLaunchForRestore() {
     this._cancelLaunchGlide();
     if (this._launching.size) {
+      this._releaseTravelEntries();
       this._launching.clear();
       this._stageVersion += 1;   // markers re-read as pending
     }
+  }
+
+  // Dropping launch entries wholesale would orphan any in-flight travellers
+  // — free-floating nodes nobody would ever land or stop. Release them
+  // (envelope tail) whenever the map is cleared rather than finished.
+  _releaseTravelEntries() {
+    for (const e of this._launching.values()) {
+      if (e.travelerId != null) audioEngine.releaseTravelVoice(e.travelerId);
+    }
+  }
+
+  // Drop any note-offs still waiting on a transition's end — a superseding
+  // recall/undo/stage-release owns the mute state from here. Held-note
+  // releases ride the same lifecycle.
+  _cancelDeferredMutes() {
+    if (this._deferredMuteTimer != null) {
+      clearTimeout(this._deferredMuteTimer);
+      this._deferredMuteTimer = null;
+    }
+    if (this._deferredNoteTimer != null) {
+      clearTimeout(this._deferredNoteTimer);
+      this._deferredNoteTimer = null;
+    }
+  }
+
+  // Recall diff for held notes (HELD_NOTES.md §4): match the live held
+  // chord to a save's heldNotes by nominal pitch (greedy nearest within
+  // NOTE_MATCH_EPS). Matched voices are KEPT untouched; unmatched saved
+  // notes spawn; unmatched live voices release.
+  _diffHeldNotes(saved) {
+    const live = keyboardVoiceManager.getHeldNotesLive();
+    const usedLive = new Set();
+    const toSpawn = [];
+    for (const n of saved) {
+      let best = null;
+      let bestD = Infinity;
+      for (const v of live) {
+        if (usedLive.has(v.id)) continue;
+        const d = Math.abs(Math.log2(n.hz / v.hz));
+        if (d < bestD) { bestD = d; best = v; }
+      }
+      if (best && bestD <= NOTE_MATCH_EPS) usedLive.add(best.id);
+      else toSpawn.push(n);
+    }
+    const toRelease = live.filter((v) => !usedLive.has(v.id));
+    return { toSpawn, toRelease };
   }
 
   // ─── Save slots ────────────────────────────────────────────────────
@@ -638,6 +798,25 @@ class FrequencyManager {
     this._fire();
   }
 
+  get stepOverlapMs() {
+    return this._stepOverlapMs;
+  }
+
+  /**
+   * Set the overlap window (ms) for step transitions — how long the old
+   * and new notes sound together on a retrigger. Same clamp range as the
+   * glide timing; 0 = instant handoff.
+   */
+  setStepOverlapMs(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, n));
+    if (clamped === this._stepOverlapMs) return;
+    this._stepOverlapMs = clamped;
+    this._persistStepOverlapMs();
+    this._fire();
+  }
+
   // ─── Parameter-lock scope API (consumed by the tunings-menu UI) ──────
   getRecallScope() { return [...this._recallScope]; }
   getUndoScope() { return [...this._undoScope]; }
@@ -657,6 +836,7 @@ class FrequencyManager {
   // parameters ("Parameters tracked"), so flip both scopes together.
   toggleParam(key) {
     if (!PARAM_KEYS.includes(key)) return;
+    if (key === 'notes') return; // always tracked — no chip
     if (this._recallScope.has(key)) {
       this._recallScope.delete(key);
       this._undoScope.delete(key);
@@ -707,6 +887,21 @@ class FrequencyManager {
     this._fire();
   }
 
+  // ─── Transition mode (glide vs step) ─────────────────────────────────
+  // 'glide' bends pitch to the target; 'step' retriggers a fresh note at
+  // the target while the old note overlaps and releases. Drives which
+  // primitive the launch UI calls (launchVoice vs stepVoice) and how
+  // launchAll moves the batch.
+  get transitionMode() { return this._transitionMode; }
+
+  setTransitionMode(mode) {
+    if (mode === this._transitionMode) return;
+    if (!TRANSITION_MODES.includes(mode)) return;
+    this._transitionMode = mode;
+    this._persistTransitionMode();
+    this._fire();
+  }
+
   deleteSlot(id) {
     const before = this._saveSlots.length;
     this._saveSlots = this._saveSlots.filter((s) => s.id !== id);
@@ -730,6 +925,13 @@ class FrequencyManager {
   // inputs on every tween frame (the recall lag).
   get isLaunching() { return this._launching.size > 0; }
 
+  // True while a GO/recall still has deferred note-offs waiting on the end
+  // of its glide — with isLaunching and the conductor's `running`, the UI's
+  // "a transition is in flight" signal (the pending-on rings pulse then).
+  get recallOffsPending() {
+    return this._deferredMuteTimer != null || this._deferredNoteTimer != null;
+  }
+
   stageSlot(id) {
     const slot = this._saveSlots.find((s) => s.id === id);
     if (!slot?.snapshot || !Array.isArray(slot.snapshot.frequencies)) return false;
@@ -747,12 +949,25 @@ class FrequencyManager {
     return true;
   }
 
-  clearStaged() {
+  // finishGlides: let in-flight launch tweens complete to their captured
+  // targets (each entry carries its own targetHz — the loop doesn't need the
+  // staging) instead of freezing voices mid-glide off every save. Used by the
+  // capture bar's deselect; the default freeze remains for wholesale state
+  // replacement (patch load, slot delete) where a new motion takes over.
+  clearStaged({ finishGlides = false } = {}) {
     if (this._stagedSlotId == null) return;
-    this._cancelLaunchGlide();
+    if (finishGlides) {
+      for (const e of this._launching.values()) e.finishing = true;
+    } else {
+      this._cancelLaunchGlide();
+      this._releaseTravelEntries();
+      this._launching.clear();
+      // Wholesale replacement also drops a transition's pending note-offs;
+      // a finishing deselect lets them play out with the glides.
+      this._cancelDeferredMutes();
+    }
     this._stagedSlotId = null;
     this._stagedTargets = null;
-    this._launching.clear();
     this._stageVersion += 1;
     this._fire();
   }
@@ -760,6 +975,103 @@ class FrequencyManager {
   // Per-oscillator target Hz for the staged slot, or null if none staged.
   getStagedFrequencies() {
     return this._stagedTargets ? this._stagedTargets.slice() : null;
+  }
+
+  // Staged non-frequency targets — what GO would apply to volume / on-off.
+  // Null when nothing is staged, the param isn't tracked, or the save
+  // predates the field. The UI previews these: the mixer draws a target dot
+  // at each staged volume; the spectrum orbs half-fade on a pending mute
+  // flip.
+  getStagedVolumes() {
+    if (this._stagedSlotId == null || !this._recallScope.has('vol')) return null;
+    const snap = this._saveSlots.find((s) => s.id === this._stagedSlotId)?.snapshot;
+    return snap && Array.isArray(snap.volumes) ? snap.volumes.slice() : null;
+  }
+
+  getStagedMutes() {
+    if (this._stagedSlotId == null || !this._recallScope.has('onoff')) return null;
+    const snap = this._saveSlots.find((s) => s.id === this._stagedSlotId)?.snapshot;
+    return snap && Array.isArray(snap.mutes) ? snap.mutes.slice() : null;
+  }
+
+  // Staged held-note targets — the played chord GO would restore. Null when
+  // nothing is staged or the save predates capture.
+  getStagedNotes() {
+    if (this._stagedSlotId == null || !this._recallScope.has('notes')) return null;
+    const snap = this._saveSlots.find((s) => s.id === this._stagedSlotId)?.snapshot;
+    return snap && Array.isArray(snap.heldNotes)
+      ? snap.heldNotes.map((n) => ({ ...n }))
+      : null;
+  }
+
+  // A slot's saved frequencies without staging it — how the conductor asks
+  // "which save are the voices sitting on?" before auto-selecting the next
+  // one. Null for an unknown id.
+  getSlotFrequencies(id) {
+    const slot = this._saveSlots.find((s) => s.id === id);
+    return slot?.snapshot?.frequencies ? slot.snapshot.frequencies.slice() : null;
+  }
+
+  // A slot's saved mute mask without staging it — the conductor's "which
+  // save are the voices on?" check compares chords, not just tunings, once
+  // saves can differ by mutes alone. Null for unknown ids / pre-mutes saves.
+  getSlotMutes(id) {
+    const snap = this._saveSlots.find((s) => s.id === id)?.snapshot;
+    return snap && Array.isArray(snap.mutes) ? snap.mutes.slice() : null;
+  }
+
+  // Pending held-note preview for the spectrum bar's octave indicators:
+  // the staged save's note diff mapped to (slot, octave) marks. 'on' =
+  // a note will attack there on GO/transition, 'off' = the note sounding
+  // there will release. Null when nothing is staged / notes untracked /
+  // the save predates capture. Cheap enough to poll per frame.
+  getStagedNoteMarks() {
+    const notes = this.getStagedNotes();
+    if (!notes) return null;
+    const { toSpawn, toRelease } = this._diffHeldNotes(notes);
+    if (toSpawn.length === 0 && toRelease.length === 0) return null;
+    const count = audioEngine.getOscillatorCount();
+    // Resolve a note without slot/octave hints the same way spawnVoiceAt
+    // will: nearest current drone pitch, octave from the ratio.
+    const resolve = (hz, slot, octave) => {
+      let s = Number.isFinite(slot) && slot >= 0 && slot < count ? slot : -1;
+      if (s < 0) {
+        let bestD = Infinity;
+        for (let i = 0; i < count; i++) {
+          const f = audioEngine.getFrequency(i);
+          if (!(f > 0)) continue;
+          const d = Math.abs(Math.log2(hz / f));
+          if (d < bestD) { bestD = d; s = i; }
+        }
+        if (s < 0) return null;
+      }
+      const slotHz = audioEngine.getFrequency(s);
+      const o = Number.isFinite(octave)
+        ? octave
+        : (slotHz > 0 ? Math.round(Math.log2(hz / slotHz)) : 0);
+      return { slot: s, octave: o };
+    };
+    const on = [];
+    const off = [];
+    for (const n of toSpawn) {
+      const m = resolve(n.hz, n.slot, n.octave);
+      if (m) on.push(m);
+    }
+    for (const v of toRelease) {
+      const m = resolve(v.hz, v.slot, v.octave);
+      if (m) off.push(m);
+    }
+    return { on, off };
+  }
+
+  // A slot's captured held kbd/MIDI chord (HELD_NOTES.md §2) — read-only
+  // feed for the "what's in this save" UI (badge/preview) and, later, the
+  // 'notes' recall path. Null for unknown ids / saves predating the field.
+  getSlotHeldNotes(id) {
+    const snap = this._saveSlots.find((s) => s.id === id)?.snapshot;
+    return snap && Array.isArray(snap.heldNotes)
+      ? snap.heldNotes.map((n) => ({ ...n }))
+      : null;
   }
 
   // Snapshot of the launch state for the spectrum bar: the per-voice targets
@@ -771,12 +1083,68 @@ class FrequencyManager {
     const launching = {};
     for (const [i, v] of this._launching) {
       if (v.finishing) continue;   // finishing an old glide — its dot renders as pending
+      // Cross-slot travels + held-voice glides have their own viz (later).
+      if (v.travelerId != null || v.heldVoiceId != null) continue;
       launching[i] = { startHz: v.startHz, targetHz: v.targetHz };
     }
     return {
       targets: this._stagedTargets.slice(),
       launching,
     };
+  }
+
+  // True when launching the staged slot would actually change something the
+  // recall scope covers: a voice off its staged frequency, or — with vol /
+  // on-off / transpose tracked — any of those params off the slot's saved
+  // values. Drives the GO button's lit state; a freq-only check would leave
+  // GO dark when only the mix, mutes or transpose had drifted off the save.
+  stagedIsDirty() {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    const scope = this._recallScope;
+    if (scope.size === 0) return false;
+    if (scope.has('freq')) {
+      for (let i = 0; i < this._stagedTargets.length; i++) {
+        const t = this._stagedTargets[i];
+        if (!Number.isFinite(t)) continue;
+        const cur = audioEngine.getFrequency(i);
+        if (!Number.isFinite(cur)) continue;
+        // Relative tolerance so tiny float noise doesn't count as a move.
+        if (Math.abs(cur - t) > Math.max(0.02, t * 1e-4)) return true;
+      }
+    }
+    const slot = this._saveSlots.find((s) => s.id === this._stagedSlotId);
+    const snap = slot?.snapshot;
+    if (!snap) return false;
+    const count = audioEngine.getOscillatorCount();
+    if (scope.has('vol') && Array.isArray(snap.volumes)) {
+      for (let i = 0; i < count && i < snap.volumes.length; i++) {
+        if (Math.abs(audioEngine.getVolume(i) - snap.volumes[i]) > 1e-3) return true;
+      }
+    }
+    if (scope.has('onoff') && Array.isArray(snap.mutes)) {
+      for (let i = 0; i < count && i < snap.mutes.length; i++) {
+        if (audioEngine.isMuted(i) !== !!snap.mutes[i]) return true;
+      }
+    }
+    if (scope.has('transpose') && Number.isFinite(snap.transpose)) {
+      if (Math.abs(audioEngine.getTransposeSemitones() - snap.transpose) > 1e-3) return true;
+    }
+    if (scope.has('notes') && Array.isArray(snap.heldNotes)) {
+      const { toSpawn, toRelease } = this._diffHeldNotes(snap.heldNotes);
+      if (toSpawn.length > 0 || toRelease.length > 0) return true;
+    }
+    return false;
+  }
+
+  // One explicit undo point for a compound gesture. The generative transition
+  // pushes this ONCE before its staggered launches/steps (which all run
+  // noUndo), so undo backs the WHOLE transition out to the pre-transition
+  // state instead of stepping through mixed mid-transition chords.
+  pushUndoPoint() {
+    if (!this._lastStable) return;
+    this._undoStack.push(this._lastStable);
+    if (this._undoStack.length > UNDO_LIMIT) this._undoStack.shift();
+    this._redoStack = [];
   }
 
   // Capture a single undo point when a launch batch starts (nothing in flight)
@@ -792,9 +1160,10 @@ class FrequencyManager {
   }
 
   // Glide one staged voice to its target (frequency only — the tuning context
-  // is left as-is). Other in-flight voices keep gliding: a single unified
-  // glide always covers every currently-launching voice.
-  launchVoice(index) {
+  // is left as-is). Other in-flight voices keep gliding: each carries its own
+  // clock, and optionally its own duration (opts.durMs — used by the generative
+  // transition so far notes travel longer; default = the shared recall glide).
+  launchVoice(index, { durMs = null, noUndo = false } = {}) {
     if (!this._stagedTargets || !audioEngine.initialized) return false;
     // Single-dot launch is a frequency gesture; only meaningful when freq is in
     // the recall scope (its markers are hidden otherwise).
@@ -802,20 +1171,304 @@ class FrequencyManager {
     const target = this._stagedTargets[index];
     if (!Number.isFinite(target)) return false;
     const existing = this._launching.get(index);
-    if (existing && !existing.finishing) return true;   // already gliding to this target
-    this._beginLaunch();
-    this._addLaunch(index, target);
+    // Already gliding to this SAME target → no-op. A different target (e.g. a
+    // new generative transition superseding a halted one's tail glide) must
+    // RETARGET — silently ignoring it would strand the voice on the old save.
+    if (existing && !existing.finishing
+        && Math.abs(existing.targetHz - target) < 1e-9) return true;
+    if (!noUndo) this._beginLaunch();
+    this._addLaunch(index, target, durMs);
     this._stageVersion += 1;
     this._ensureLaunchLoop();
     this._fire();
     return true;
   }
 
+  // Step one staged voice to its target: a retrigger (fresh oscillator +
+  // envelope attack, old note overlaps then releases) instead of the glide
+  // tween. The overlap window is its own timing (stepOverlapMs — "how long
+  // both notes sound together"), independent of the glide time; opts.overlapMs
+  // overrides it per call (the generative transition rolls one per move).
+  // Counterpart to launchVoice; also the primitive the conductor's steps use.
+  stepVoice(index, { overlapMs = null, noUndo = false } = {}) {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    if (!this._recallScope.has('freq')) return false;
+    const target = this._stagedTargets[index];
+    if (!Number.isFinite(target)) return false;
+    if (!noUndo) this._beginLaunch();
+    // A step supersedes any in-flight glide on this voice; a re-step of a
+    // landed voice is a deliberate re-attack, so no "already there" guard.
+    this._launching.delete(index);
+    if (audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
+    const overlap = Number.isFinite(overlapMs)
+      ? Math.max(0, Math.min(MAX_RECALL_GLIDE_MS, overlapMs))
+      : this._stepOverlapMs;
+    this._inPropagation = true;
+    let did = false;
+    try {
+      did = audioEngine.stepToFrequency(index, target, overlap);
+    } finally {
+      this._inPropagation = false;
+    }
+    if (!did) return false;
+    const hz = audioEngine.getFrequency(this._anchorSlot);
+    if (Number.isFinite(hz) && hz > 0) this._lastAnchorHz = hz;
+    // Steps settle instantly — the post-step state is the new undo baseline.
+    this._lastStable = this._takeSnapshot();
+    this._stageVersion += 1;
+    this._fire();
+    return true;
+  }
+
+  // ─── Voice-leading primitives (GENERATIVE.md §6.6) ───────────────────
+  // Save states with different mute masks transition as VOICE LEADING: the
+  // sounding notes are the voices, and a voice may travel ACROSS slot
+  // indices (slot = scale degree). The conductor's matcher decides who goes
+  // where; these primitives perform one move each. All of them leave every
+  // slot exactly on the staged save's frequencies — the journey is
+  // cross-index, the landing never is.
+
+  /**
+   * Glide the sounding note on slot `fromIndex` to slot `toIndex`'s staged
+   * pitch, then hand the audio nodes over — the destination slot ADOPTS the
+   * travelling oscillator pair (phase-continuous, no retrigger) and unmutes.
+   * The vacated slot goes silent at DEPARTURE and immediately settles on its
+   * own staged pitch, so chained travels (0→1 while 1→2) can't collide and a
+   * later unmute never surfaces a stray pitch.
+   */
+  travelVoice(fromIndex, toIndex, { durMs = null, noUndo = false } = {}) {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    if (!this._recallScope.has('freq')) return false;
+    const toHz = this._stagedTargets[toIndex];
+    if (!Number.isFinite(toHz)) return false;
+    if (!noUndo) this._beginLaunch();
+    // A travel supersedes any in-flight glide on the source slot.
+    this._launching.delete(fromIndex);
+    const startHz = audioEngine.getFrequency(fromIndex);
+    const id = audioEngine.detachTravelVoice(fromIndex);
+    if (id == null) return false;
+    this._settleSlotSilently(fromIndex);
+    this._launching.set(`t${id}`, {
+      travelerId: id,
+      startHz,
+      targetHz: toHz,
+      startMs: performance.now(),
+      durMs: Number.isFinite(durMs) && durMs >= 0 ? durMs : null,
+      logStart: Math.log2(Math.max(0.001, startHz)),
+      logTarget: Math.log2(Math.max(0.001, toHz)),
+      onArrive: () => {
+        // A stale (finishing) glide on the destination would keep retuning
+        // the slot after adoption, dragging the landed note off-save.
+        this._launching.delete(toIndex);
+        audioEngine.landTravelVoice(id, toIndex);
+      },
+    });
+    this._stageVersion += 1;
+    this._ensureLaunchLoop();
+    this._fire();
+    return true;
+  }
+
+  /**
+   * A note the target chord doesn't have: detach it and glide it INTO
+   * `intoHz` (its nearest surviving neighbour), releasing on arrival — two
+   * voices audibly converging into one. The slot itself settles silently on
+   * its staged pitch at departure, exactly like a travel.
+   */
+  mergeVoice(fromIndex, intoHz, { durMs = null, noUndo = false } = {}) {
+    if (!audioEngine.initialized || !Number.isFinite(intoHz)) return false;
+    if (!this._recallScope.has('freq')) return false;
+    if (!noUndo) this._beginLaunch();
+    this._launching.delete(fromIndex);
+    const startHz = audioEngine.getFrequency(fromIndex);
+    const id = audioEngine.detachTravelVoice(fromIndex);
+    if (id == null) return false;
+    this._settleSlotSilently(fromIndex);
+    this._launching.set(`t${id}`, {
+      travelerId: id,
+      startHz,
+      targetHz: intoHz,
+      startMs: performance.now(),
+      durMs: Number.isFinite(durMs) && durMs >= 0 ? durMs : null,
+      logStart: Math.log2(Math.max(0.001, startHz)),
+      logTarget: Math.log2(Math.max(0.001, intoHz)),
+      onArrive: () => { audioEngine.releaseTravelVoice(id); },
+    });
+    this._stageVersion += 1;
+    this._ensureLaunchLoop();
+    this._fire();
+    return true;
+  }
+
+  /**
+   * The plain exit: note-off. When the slot already sits on its staged pitch
+   * this is a classic mute (oscillator keeps running, phase-correlated for a
+   * later unmute); when it's off-save the note detaches, releases in place,
+   * and the slot silently settles home underneath the tail.
+   */
+  fadeOutVoice(index, { noUndo = false } = {}) {
+    if (!audioEngine.initialized || audioEngine.isMuted(index)) return false;
+    if (!noUndo) this._beginLaunch();
+    const homeHz = this._stagedTargets ? this._stagedTargets[index] : null;
+    const cur = audioEngine.getFrequency(index);
+    const offSave = Number.isFinite(homeHz) && cur > 0
+      && Math.abs(Math.log2(homeHz / cur)) > 1e-3;
+    if (offSave) {
+      this._launching.delete(index);
+      const id = audioEngine.detachTravelVoice(index);
+      if (id == null) return false;
+      audioEngine.releaseTravelVoice(id);
+      this._settleSlotSilently(index);
+      // The slot flipped muted but the detached note is still fading —
+      // mark it so the UI shows the note as GOING, not gone.
+      audioEngine.markSlotReleasing(index);
+    } else {
+      audioEngine.muteOscillator(index);
+    }
+    this._lastStable = this._takeSnapshot();
+    this._stageVersion += 1;
+    this._fire();
+    return true;
+  }
+
+  /**
+   * The plain entrance: silently place the slot on its staged pitch, then
+   * note-on (drone envelope attack).
+   */
+  fadeInVoice(index, { noUndo = false } = {}) {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    const target = this._stagedTargets[index];
+    if (!Number.isFinite(target) || !audioEngine.isMuted(index)) return false;
+    if (!noUndo) this._beginLaunch();
+    // A stale (finishing) glide would keep retuning the slot once audible.
+    this._launching.delete(index);
+    this._inPropagation = true;
+    try { audioEngine.setFrequency(index, target); } finally { this._inPropagation = false; }
+    audioEngine.unmuteOscillator(index);
+    this._lastStable = this._takeSnapshot();
+    this._stageVersion += 1;
+    this._fire();
+    return true;
+  }
+
+  /**
+   * The voice-led entrance: the new note BLOOMS out of an existing one — a
+   * SPAWNED traveller attacks at `fromHz` (the anchor voice's pitch) and
+   * glides home to the slot's staged pitch, where the slot adopts its nodes
+   * and unmutes. One note audibly splits into two. The slot itself stays
+   * muted and parked on its staged pitch throughout, so nothing slot-bound
+   * (the spectrum orb) self-animates — the audible bend is traveller-only,
+   * same as a travel, and the piano-roll draws it. Falls back to a plain
+   * launch when the slot is already sounding.
+   */
+  bloomVoice(index, fromHz, { durMs = null, noUndo = false } = {}) {
+    if (!this._stagedTargets || !audioEngine.initialized) return false;
+    if (!this._recallScope.has('freq')) return false;
+    const target = this._stagedTargets[index];
+    if (!Number.isFinite(target) || !Number.isFinite(fromHz)) return false;
+    if (!audioEngine.isMuted(index)) return this.launchVoice(index, { durMs, noUndo });
+    if (!noUndo) this._beginLaunch();
+    this._settleSlotSilently(index);
+    const id = audioEngine.spawnTravelVoice(fromHz, index);
+    if (id == null) return false;
+    this._launching.set(`t${id}`, {
+      travelerId: id,
+      startHz: fromHz,
+      targetHz: target,
+      startMs: performance.now(),
+      durMs: Number.isFinite(durMs) && durMs >= 0 ? durMs : null,
+      logStart: Math.log2(Math.max(0.001, fromHz)),
+      logTarget: Math.log2(Math.max(0.001, target)),
+      onArrive: () => {
+        // A stale (finishing) glide on the slot would drag the landed note.
+        this._launching.delete(index);
+        audioEngine.landTravelVoice(id, index);
+      },
+    });
+    this._stageVersion += 1;
+    this._ensureLaunchLoop();
+    this._fire();
+    return true;
+  }
+
+  // ─── Held-note transition primitives (HELD_NOTES.md §5) ─────────────
+  // The conductor's voice-leading moves for the keyboard/MIDI pool. Held
+  // voices are free agents (no slot to vacate, no node adoption): a travel
+  // IS a glide, blooms are spawn-at-anchor-then-glide, fades are plain
+  // note-on/off. All rendered by the same launch loop / ease / clock as
+  // drone moves, so both pools phrase identically.
+
+  /**
+   * Glide one live held voice to an absolute nominal pitch. On arrival the
+   * voice re-binds to its nearest slot (so orb drags keep tracking it) —
+   * or, with releaseOnArrive (the MERGE ending), it releases into the note
+   * it converged on.
+   */
+  glideHeldVoice(voiceId, toHz, { durMs = null, releaseOnArrive = false } = {}) {
+    if (!audioEngine.initialized || !Number.isFinite(toHz)) return false;
+    const live = keyboardVoiceManager.getHeldNotesLive();
+    const v = live.find((x) => x.id === voiceId);
+    if (!v) return false;
+    this._launching.set(`v${voiceId}`, {
+      heldVoiceId: voiceId,
+      startHz: v.hz,
+      targetHz: toHz,
+      startMs: performance.now(),
+      durMs: Number.isFinite(durMs) && durMs >= 0 ? durMs : null,
+      logStart: Math.log2(Math.max(0.001, v.hz)),
+      logTarget: Math.log2(Math.max(0.001, toHz)),
+      onArrive: () => {
+        if (releaseOnArrive) keyboardVoiceManager.releaseVoiceById(voiceId);
+        else keyboardVoiceManager.rebindVoiceToPitch(voiceId);
+      },
+    });
+    this._ensureLaunchLoop();
+    return true;
+  }
+
+  /**
+   * The held-pool bloom: a NEW voice attacks at the anchor pitch (the note
+   * the ear is tracking) and glides home to its saved pitch/level.
+   */
+  bloomHeldNote(note, fromHz, { durMs = null } = {}) {
+    if (!audioEngine.initialized || !note || !Number.isFinite(note.hz)) return false;
+    if (!Number.isFinite(fromHz)) return this.spawnHeldNote(note);
+    const id = keyboardVoiceManager.spawnVoiceAt(fromHz, {
+      level: note.level, source: note.source, slot: note.slot, octave: note.octave,
+    });
+    if (id == null) return false;
+    return this.glideHeldVoice(id, note.hz, { durMs });
+  }
+
+  /** Plain held-note entrance — note-on at the saved pitch/level. */
+  spawnHeldNote(note) {
+    if (!audioEngine.initialized || !note || !Number.isFinite(note.hz)) return false;
+    return keyboardVoiceManager.spawnVoiceAt(note.hz, {
+      level: note.level, source: note.source, slot: note.slot, octave: note.octave,
+    }) != null;
+  }
+
+  /** Plain held-note exit — envelope release. */
+  releaseHeldVoice(voiceId) {
+    keyboardVoiceManager.releaseVoiceById(voiceId);
+    return true;
+  }
+
+  // After a detach, park the vacated (now silent) slot on its staged pitch —
+  // instant and inaudible; the fresh pair has gain 0.
+  _settleSlotSilently(index) {
+    const homeHz = this._stagedTargets ? this._stagedTargets[index] : null;
+    if (!Number.isFinite(homeHz)) return;
+    this._inPropagation = true;
+    try { audioEngine.setFrequency(index, homeHz); } finally { this._inPropagation = false; }
+  }
+
   // Launch/return every not-in-flight staged voice at once (the chip's second
   // click). Restores the slot's tuning context (anchor / ratios / system)
-  // immediately, like a full recall, then glides all those frequencies. Works
-  // as a "return all" once voices have landed and drifted.
-  launchAll() {
+  // immediately, like a full recall, then glides all those frequencies — or
+  // steps them all when the transition mode (or the `mode` override) says so.
+  // Works as a "return all" once voices have landed and drifted.
+  launchAll({ mode = null } = {}) {
     if (!this._stagedTargets || !audioEngine.initialized) return false;
     const scope = this._recallScope;
     if (scope.size === 0) return false;   // empty recall scope → applies nothing
@@ -823,57 +1476,151 @@ class FrequencyManager {
     const snap = slot?.snapshot;
     const count = audioEngine.getOscillatorCount();
     this._beginLaunch();
+    // A superseded transition's pending note-offs must not fire into this one.
+    this._cancelDeferredMutes();
     let did = false;
     let didFreqLaunch = false;
 
-    // Frequency — the marker-driven glide (restores tuning context too).
+    // Frequency — the marker-driven glide (restores tuning context too), or
+    // a batch retrigger when the transition mode is a step flavor.
+    const effMode = TRANSITION_MODES.includes(mode) ? mode : this._transitionMode;
     if (scope.has('freq')) {
       let added = false;
-      for (let i = 0; i < this._stagedTargets.length; i++) {
-        const t = this._stagedTargets[i];
-        const existing = this._launching.get(i);
-        if (!Number.isFinite(t) || (existing && !existing.finishing)) continue;
-        this._addLaunch(i, t);
-        added = true;
-      }
-      if (added) {
-        if (snap) this._restoreManagerFields(snap);
-        this._ensureLaunchLoop();
-        didFreqLaunch = true;
-        did = true;
-      }
-    }
-
-    // Volume — glides silently over the recall timing. When there's no freq
-    // launch loop to settle `_lastStable` on arrival, do it in the glide's
-    // completion so the post-recall state becomes the new baseline for undo.
-    if (scope.has('vol') && snap && Array.isArray(snap.volumes)) {
-      if (audioEngine.cancelVolumeGlide) audioEngine.cancelVolumeGlide();
-      const onDone = didFreqLaunch ? null : () => {
-        this._lastStable = this._takeSnapshot();
-        this._fire();
-      };
-      audioEngine.glideVolumes(snap.volumes.slice(0, count), this._recallGlideMs, onDone);
-      did = true;
-    }
-
-    // On/off — applied immediately (click-free envelope fade); the drone/mute
-    // buttons reflect it.
-    if (scope.has('onoff') && snap && Array.isArray(snap.mutes)) {
-      for (let i = 0; i < count; i++) {
-        const target = !!snap.mutes[i];
-        if (audioEngine.isMuted(i) !== target) {
-          if (target) audioEngine.muteOscillator(i);
-          else audioEngine.unmuteOscillator(i);
+      if (effMode !== 'glide') {
+        if (audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
+        this._inPropagation = true;
+        try {
+          for (let i = 0; i < this._stagedTargets.length; i++) {
+            const t = this._stagedTargets[i];
+            if (!Number.isFinite(t)) continue;
+            // 'step' leaves voices already at their target alone — no
+            // re-attack on a pitch that isn't changing. 'step-all'
+            // re-strikes the whole chord, unchanged pitches included.
+            if (effMode === 'step' && Math.abs(audioEngine.getFrequency(i) - t) < 0.01) continue;
+            this._launching.delete(i);
+            if (audioEngine.stepToFrequency(i, t, this._stepOverlapMs)) added = true;
+          }
+        } finally {
+          this._inPropagation = false;
+        }
+        if (added) {
+          if (snap) this._restoreManagerFields(snap);
+          const hz = audioEngine.getFrequency(this._anchorSlot);
+          if (Number.isFinite(hz) && hz > 0) this._lastAnchorHz = hz;
+          // Steps settle instantly — didFreqLaunch stays false so the
+          // re-baseline below (or the vol glide's onDone) captures the
+          // landed state as the new undo baseline.
+          did = true;
+        }
+      } else {
+        for (let i = 0; i < this._stagedTargets.length; i++) {
+          const t = this._stagedTargets[i];
+          const existing = this._launching.get(i);
+          if (!Number.isFinite(t) || (existing && !existing.finishing)) continue;
+          this._addLaunch(i, t);
+          added = true;
+        }
+        if (added) {
+          if (snap) this._restoreManagerFields(snap);
+          this._ensureLaunchLoop();
+          didFreqLaunch = true;
+          did = true;
         }
       }
+    }
+
+    // Timed movers (vol / transpose glides, deferred note-offs). When there's
+    // no freq launch loop to settle `_lastStable` on arrival, the LAST of
+    // these to land re-baselines undo at the post-recall state.
+    let glidesPending = 0;
+    const settle = () => {
+      glidesPending -= 1;
+      if (glidesPending > 0 || didFreqLaunch) return;
+      this._lastStable = this._takeSnapshot();
+      this._fire();
+    };
+
+    // On/off — asymmetric timing: notes coming ON attack immediately; notes
+    // going OFF hold through the transition and release at its end. Handled
+    // BEFORE the volume glide so an unmuting voice lands its envelope attack
+    // directly on the saved level — the glide then sees no delta for that
+    // voice and leaves its gain alone. (Re-targeting the gain every glide
+    // frame while the attack ramp played is what caused the recall
+    // "tremolo".)
+    if (scope.has('onoff') && snap && Array.isArray(snap.mutes)) {
+      const toMute = [];
+      for (let i = 0; i < count; i++) {
+        const target = !!snap.mutes[i];
+        if (audioEngine.isMuted(i) === target) continue;
+        if (target) { toMute.push(i); continue; }
+        if (scope.has('vol') && Array.isArray(snap.volumes) && Number.isFinite(snap.volumes[i])) {
+          audioEngine.setVolume(i, snap.volumes[i]);
+        }
+        audioEngine.unmuteOscillator(i);
+        did = true;
+      }
+      if (toMute.length) {
+        did = true;
+        glidesPending += 1;
+        const fire = () => {
+          this._deferredMuteTimer = null;
+          for (const i of toMute) audioEngine.muteOscillator(i);
+          glidesPending -= 1;
+          // The note-offs close the transition — re-baseline so undo captures
+          // the settled (muted) state, not the held one.
+          this._lastStable = this._takeSnapshot();
+          this._fire();
+        };
+        if (this._recallGlideMs <= 0) fire();
+        else this._deferredMuteTimer = setTimeout(fire, this._recallGlideMs);
+      }
+    }
+
+    // Held notes (HELD_NOTES.md §4) — same asymmetry as on/off: missing
+    // notes SPAWN at recall start (their source's normal note-on envelope),
+    // matching live voices are kept untouched, and surplus voices hold
+    // through the transition and release at its end.
+    if (scope.has('notes') && snap && Array.isArray(snap.heldNotes)) {
+      const { toSpawn, toRelease } = this._diffHeldNotes(snap.heldNotes);
+      for (const n of toSpawn) {
+        keyboardVoiceManager.spawnVoiceAt(n.hz, {
+          level: n.level, source: n.source, slot: n.slot, octave: n.octave,
+        });
+        did = true;
+      }
+      if (toRelease.length) {
+        did = true;
+        glidesPending += 1;
+        const fireNotes = () => {
+          this._deferredNoteTimer = null;
+          for (const v of toRelease) keyboardVoiceManager.releaseVoiceById(v.id);
+          glidesPending -= 1;
+          this._lastStable = this._takeSnapshot();
+          this._fire();
+        };
+        if (this._recallGlideMs <= 0) fireNotes();
+        else this._deferredNoteTimer = setTimeout(fireNotes, this._recallGlideMs);
+      }
+    }
+
+    // Volume / transpose — glide silently over the recall timing.
+    if (scope.has('vol') && snap && Array.isArray(snap.volumes)) {
+      if (audioEngine.cancelVolumeGlide) audioEngine.cancelVolumeGlide();
+      glidesPending += 1;
+      audioEngine.glideVolumes(snap.volumes.slice(0, count), this._recallGlideMs, settle);
+      did = true;
+    }
+    if (scope.has('transpose') && snap && Number.isFinite(snap.transpose)) {
+      if (audioEngine.cancelTransposeGlide) audioEngine.cancelTransposeGlide();
+      glidesPending += 1;
+      audioEngine.glideTranspose(snap.transpose, this._recallGlideMs, settle, this._recallCurveFn());
       did = true;
     }
 
     if (!did) return false;   // nothing new to apply
-    // On/off-only recall (no freq loop, no vol glide) settles immediately —
-    // mutes + volumes are already at rest, so re-baseline now.
-    if (!didFreqLaunch && !scope.has('vol')) this._lastStable = this._takeSnapshot();
+    // A recall with no freq loop and no timed glide in flight (on/off only,
+    // or a step-mode batch) settles immediately — re-baseline now.
+    if (!didFreqLaunch && glidesPending === 0) this._lastStable = this._takeSnapshot();
     this._stageVersion += 1;
     this._fire();
     return true;
@@ -894,12 +1641,14 @@ class FrequencyManager {
   // glides on an INDEPENDENT clock — clicking a second dot never resets the
   // first (this is what makes a staggered cascade look right). Eased from the
   // voice's current frequency to its target, in log2 space.
-  _addLaunch(index, target) {
+  _addLaunch(index, target, durMs = null) {
     const startHz = audioEngine.getFrequency(index);
     this._launching.set(index, {
       startHz,
       targetHz: target,
       startMs: performance.now(),
+      // Per-voice duration override; null = the shared recall glide time.
+      durMs: Number.isFinite(durMs) && durMs >= 0 ? durMs : null,
       logStart: Math.log2(Math.max(0.001, startHz)),
       logTarget: Math.log2(Math.max(0.001, target)),
     });
@@ -916,17 +1665,30 @@ class FrequencyManager {
       this._launchRaf = null;
       if (this._launching.size === 0) return;
       const now = performance.now();
-      const dur = this._recallGlideMs;
+      const sharedDur = this._recallGlideMs;
       const ease = this._recallCurveFn();
       const arrived = [];
       // All engine writes for the frame are wrapped in the propagation guard
       // so they don't trigger follow-root transpose / lock reconciliation.
       this._inPropagation = true;
       try {
-        for (const [index, e] of this._launching) {
+        for (const [key, e] of this._launching) {
+          const dur = e.durMs != null ? e.durMs : sharedDur;
           const t = dur > 0 ? Math.min(1, (now - e.startMs) / dur) : 1;
-          audioEngine.setFrequency(index, Math.pow(2, e.logStart + (e.logTarget - e.logStart) * ease(t)));
-          if (t >= 1) arrived.push(index);
+          const hz = Math.pow(2, e.logStart + (e.logTarget - e.logStart) * ease(t));
+          // Three kinds of entry share the loop: slot launches (key = osc
+          // index), cross-slot TRAVELS (key = `t${id}`, writing a detached
+          // traveller) and HELD-VOICE glides (key = `v${id}`, retuning a
+          // keyboard/MIDI voice) — same clock, same ease.
+          if (e.travelerId != null) audioEngine.setTravelerFrequency(e.travelerId, hz);
+          else if (e.heldVoiceId != null) {
+            // Voice released/stolen mid-glide → nothing left to move.
+            if (!keyboardVoiceManager.setVoiceFrequency(e.heldVoiceId, hz)) {
+              arrived.push(key);
+              continue;
+            }
+          } else audioEngine.setFrequency(key, hz);
+          if (t >= 1) arrived.push(key);
         }
       } finally {
         this._inPropagation = false;
@@ -936,7 +1698,16 @@ class FrequencyManager {
       if (Number.isFinite(hz) && hz > 0) this._lastAnchorHz = hz;
 
       if (arrived.length) {
-        for (const index of arrived) this._launching.delete(index);
+        for (const key of arrived) {
+          const e = this._launching.get(key);
+          this._launching.delete(key);
+          // Travels resolve at arrival: land on the destination slot (or
+          // release, for a merge). Runs before the snapshot below so the
+          // landed mute/freq state is what undo captures.
+          if (e?.onArrive) {
+            try { e.onArrive(); } catch (err) { console.error('FrequencyManager onArrive error', err); }
+          }
+        }
         this._lastStable = this._takeSnapshot();
         this._stageVersion += 1;
         // Staging PERSISTS after landing: the targets stay as "return here"
@@ -977,17 +1748,26 @@ class FrequencyManager {
       frequencies: audioEngine.getAllFrequencies(),
       volumes,
       mutes: audioEngine.getAllMutedStates(),
+      transpose: audioEngine.getTransposeSemitones(),
       slotRatios: new Map(this._slotRatios),
       anchorSlot: this._anchorSlot,
       tuningSystem: this._tuningSystem,
+      // The held kbd/MIDI chord rides EVERY snapshot (HELD_NOTES.md §2 —
+      // lossless capture; the future 'notes' scope gates apply, never
+      // capture). Recall/undo currently ignore the field.
+      heldNotes: keyboardVoiceManager.getHeldNotesSnapshot(),
+      // Marks heldNotes hz as NOMINAL (transpose-free) — _normalizeSlots
+      // uses its absence to migrate older saves that baked the transpose in.
+      notesNominal: true,
     };
   }
 
   /**
    * Apply a snapshot through a scope mask, gliding over `durationMs`. Only
    * params in `scope` are written: freq glides in pitch space (and restores
-   * the tuning context), vol glides in level space, onoff toggles the mute
-   * state (click-free envelope fade — the timing slider governs freq/vol, not
+   * the tuning context), vol glides in level space, transpose slides in
+   * semitone space, onoff toggles the mute state (click-free envelope fade —
+   * the timing slider governs freq/vol/transpose, not
    * the mute fade, which is fixed by the drone envelope). The undo-restore
    * guard stays raised until every started glide finishes so the per-frame
    * engine listener doesn't treat the motion as user drift.
@@ -996,10 +1776,17 @@ class FrequencyManager {
     const wantFreq = scope.has('freq');
     const wantVol = scope.has('vol');
     const wantOnoff = scope.has('onoff');
+    // Transpose only applies when the snapshot actually carries it (older
+    // saves persisted before the field existed hold null — leave it alone).
+    const wantTranspose = scope.has('transpose') && Number.isFinite(snap.transpose);
 
-    // Cancel any in-flight glides so back-to-back recalls behave.
+    // Cancel any in-flight glides so back-to-back recalls behave. A pending
+    // GO transition's deferred note-offs die too — this restore owns the
+    // mute state now.
     if (wantFreq && audioEngine.cancelFrequencyGlide) audioEngine.cancelFrequencyGlide();
     if (wantVol && audioEngine.cancelVolumeGlide) audioEngine.cancelVolumeGlide();
+    if (wantTranspose && audioEngine.cancelTransposeGlide) audioEngine.cancelTransposeGlide();
+    this._cancelDeferredMutes();
 
     this._inUndoRestore = true;
 
@@ -1015,18 +1802,53 @@ class FrequencyManager {
 
     const count = audioEngine.getOscillatorCount();
 
-    // On/off is applied up front (its fade is the engine's, not timed).
+    // On/off — asymmetric timing: notes coming ON attack up front (landing
+    // the envelope attack directly on the snapshot's level when vol is also
+    // in scope, so the volume glide sees no delta for that voice and leaves
+    // its gain alone — re-targeting the gain mid-attack every frame is what
+    // caused the recall tremolo); notes going OFF hold through the glide and
+    // release when it lands (inside finish()).
+    let deferredMutes = null;
     if (wantOnoff && Array.isArray(snap.mutes)) {
       for (let i = 0; i < count; i++) {
         const target = !!snap.mutes[i];
-        if (audioEngine.isMuted(i) !== target) {
-          if (target) audioEngine.muteOscillator(i);
-          else audioEngine.unmuteOscillator(i);
+        if (audioEngine.isMuted(i) === target) continue;
+        if (target) {
+          (deferredMutes ??= []).push(i);
+          continue;
         }
+        if (wantVol && Array.isArray(snap.volumes) && Number.isFinite(snap.volumes[i])) {
+          audioEngine.setVolume(i, snap.volumes[i]);
+        }
+        audioEngine.unmuteOscillator(i);
       }
     }
 
+    // Held notes (HELD_NOTES.md §4): spawn the snapshot's missing notes now
+    // (attack up front, like unmutes), keep matching live voices, release
+    // the surplus at the end of the glide (inside finish(), like mutes).
+    let deferredNoteReleases = null;
+    if (scope.has('notes') && Array.isArray(snap.heldNotes)) {
+      const { toSpawn, toRelease } = this._diffHeldNotes(snap.heldNotes);
+      for (const n of toSpawn) {
+        keyboardVoiceManager.spawnVoiceAt(n.hz, {
+          level: n.level, source: n.source, slot: n.slot, octave: n.octave,
+        });
+      }
+      if (toRelease.length) deferredNoteReleases = toRelease;
+    }
+
     const finish = () => {
+      // The transition is over — release the notes going away (their fade is
+      // the drone envelope's own note-off, starting now).
+      if (deferredMutes) {
+        for (const i of deferredMutes) audioEngine.muteOscillator(i);
+        deferredMutes = null;
+      }
+      if (deferredNoteReleases) {
+        for (const v of deferredNoteReleases) keyboardVoiceManager.releaseVoiceById(v.id);
+        deferredNoteReleases = null;
+      }
       this._inUndoRestore = false;
       this._lastAnchorHz = audioEngine.getFrequency(this._anchorSlot);
       this._lastStable = this._takeSnapshot();
@@ -1042,11 +1864,13 @@ class FrequencyManager {
       // Instant: batch-write then settle synchronously.
       if (wantFreq) audioEngine.setAllFrequenciesBatch(snap.frequencies.slice(0, count));
       if (wantVol && Array.isArray(snap.volumes)) audioEngine.setAllVolumesBatch(snap.volumes.slice(0, count));
+      if (wantTranspose) audioEngine.setTransposeSemitones(snap.transpose);
       finish();
       return;
     }
 
-    // Timed: run the freq + vol glides concurrently; finish once both land.
+    // Timed: run the freq / vol / transpose glides concurrently; finish once
+    // all of them land.
     let pending = 0;
     const done = () => { pending -= 1; if (pending <= 0) finish(); };
     if (wantFreq) {
@@ -1057,15 +1881,20 @@ class FrequencyManager {
       pending += 1;
       audioEngine.glideVolumes(snap.volumes.slice(0, count), dur, done);
     }
+    if (wantTranspose) {
+      pending += 1;
+      audioEngine.glideTranspose(snap.transpose, dur, done, this._recallCurveFn());
+    }
     if (pending === 0) finish();   // onoff-only (or empty): nothing to glide
   }
 
   // Equality restricted to a scope's parameters. Used to decide whether an
   // edit is worth an undo entry (compared against `_undoScope`) and to skip
   // no-op undo/redo steps. Param → fields:
-  //   freq  → anchor + tuning system + frequencies + locked ratios
-  //   vol   → volumes
-  //   onoff → mutes
+  //   freq      → anchor + tuning system + frequencies + locked ratios
+  //   vol       → volumes
+  //   onoff     → mutes
+  //   transpose → the global semitone offset
   _scopedEqual(a, b, scope) {
     if (scope.has('freq')) {
       if (a.anchorSlot !== b.anchorSlot) return false;
@@ -1085,6 +1914,33 @@ class FrequencyManager {
     }
     if (scope.has('onoff')) {
       if (!FrequencyManager._boolArraysEqual(a.mutes, b.mutes)) return false;
+    }
+    if (scope.has('notes')) {
+      // Held chords equal when they pair off by nominal pitch (greedy,
+      // NOTE_MATCH_EPS) — levels drift constantly (expressive ramps), so
+      // pitch set + count is the undo-worthy identity.
+      const an = a.heldNotes || [];
+      const bn = b.heldNotes || [];
+      if (an.length !== bn.length) return false;
+      const used = new Set();
+      for (const n of an) {
+        let found = false;
+        for (let i = 0; i < bn.length; i++) {
+          if (used.has(i)) continue;
+          if (Math.abs(Math.log2(n.hz / bn[i].hz)) <= NOTE_MATCH_EPS) {
+            used.add(i);
+            found = true;
+            break;
+          }
+        }
+        if (!found) return false;
+      }
+    }
+    if (scope.has('transpose')) {
+      // A snapshot missing the field (pre-transpose save) can't be restored,
+      // so treat it as equal — otherwise undo would offer dead steps.
+      if (Number.isFinite(a.transpose) && Number.isFinite(b.transpose)
+          && Math.abs(a.transpose - b.transpose) > 1e-3) return false;
     }
     return true;
   }

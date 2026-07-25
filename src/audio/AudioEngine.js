@@ -75,6 +75,7 @@ class AudioEngine {
     this.preMasterTap = null;
     this.analyserNode1 = null;   // Left channel visualization
     this.analyserNode2 = null;   // Right channel visualization
+    this.analyserNodeMono = null; // Whole-mix (downmixed) analysis for AudioFeatures
     this.isInitialized = false;
     this.isPaused = false;
     // Drone bus on/off — independent of pause. Effective drone audio
@@ -486,6 +487,14 @@ class AudioEngine {
     // 32 KB per channel analyzer buffer.
     this.analyserNode1.fftSize = 8192;
     this.analyserNode2.fftSize = 8192;
+    // Mono analyser for AudioFeatures (dissonance/centroid/etc.). The L/R
+    // analysers above each see only ONE channel post-splitter, so in L/R
+    // pan mode a two-voice chord never appears in either one — cross-voice
+    // roughness was invisible to the meter. AnalyserNode downmixes its
+    // input to mono per the Web Audio spec, so feeding it preMasterTap
+    // directly analyzes the summed mix, channel-blind.
+    this.analyserNodeMono = this.audioContext.createAnalyser();
+    this.analyserNodeMono.fftSize = 8192;
     
     // Pre-allocate Float32Arrays for visualization
     this.timeData1 = new Float32Array(this.analyserNode1.fftSize);
@@ -632,6 +641,8 @@ class AudioEngine {
     this.preMasterTap.connect(splitter);
     splitter.connect(this.analyserNode1, 0);
     splitter.connect(this.analyserNode2, 1);
+    // Mono side branch — the analyser downmixes the stereo tap itself.
+    this.preMasterTap.connect(this.analyserNodeMono);
 
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;

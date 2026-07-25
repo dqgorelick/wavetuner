@@ -8,6 +8,21 @@ See `ios-port-plan.md` (same dir) for the full rationale on the rollout order.
 
 ## 🧪 Just landed — please test
 
+### 14. Standing-wave visualizer + corner cycle button (2026-07-16)
+
+Web vizMode 1 (`drawStatic`) ported as `ScopeMode.standing` — model-driven standing wave re-synthesized from oscillator state (each drone as its REAL detuned pair from `phases`/`phasesR`, so the summation beats in real time; plus pads/MIDI voices), both renderers. Defaults match web: `beating` style (summation only), 20 cycles, line width 2.0 + colored outline 2.5. Top-left corner is now two circle buttons (mode-pill styling): a dropdown visualizer picker + the scope↔pianoroll toggle. Sim-verified on all three render paths incl. the dropdown; needs real audio.
+
+- [ ] Top-left circle button shows the current mode's icon (circle / waves / hurricane); tap opens a vertical fan of the other two, picking one switches; the pianoroll toggle to its right still round-trips and remembers the audio mode
+- [ ] Standing wave = ONE white composite with a colored neon outline by default (beating); it visibly BREATHES at each drone's detune beat rate — compare against the audible beating, they should line up
+- [ ] Style "wave" (Settings → oscilloscope) adds per-osc palette-colored lines under the composite; each slot's line beats at its own detune rate; square-ish morph draws square-ish
+- [ ] Playing a pad adds its contribution (wave style: a line in the slot's color) and thickens the composite; it fades with the release tail
+- [ ] Muting a drone fades its contribution out smoothly (no pop); muting everything sinks the composite into the axis
+- [ ] "cycles" slider 2–60 reshapes the window with a glide (default 20 = web); lower = fewer, fatter humps
+- [ ] Pause: the wave slows with the tape crawl and sinks away under the fade; resume brings it back (no frozen frame, no flash)
+- [ ] Chromatic style: wave glows/warps through the shader with a motion trail; plain + CG: crisp lines; transpose swipe shifts the wave density smoothly
+- [ ] Hilbert from the new dropdown still works on device (sim shows a blank/dot — it's analysis-ring-driven, no CoreAudio in sim)
+- [ ] Perf spot-check: standing mode at 120 Hz ProMotion — render meter comparable to lissajous (~40–80k table lookups/frame CPU-side with pairs)
+
 ### 13. Mic spectrogram behind the pianoroll (2026-07-08)
 
 Scrolling heat map of the mic input rendered behind the pianoroll traces (design + file map in `wavetuner-native/ios/SPEC-spectrogram.md`). Sim-verified with synthetic columns on all three render paths; needs a real mic + room.

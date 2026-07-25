@@ -3786,6 +3786,21 @@ kbd {
   height: 21px;
   margin-bottom: 4px;
 }
+.fsb-side-left {
+  position: relative;
+}
+/* DEBUG: consonance readout floating above the "move all" orb. */
+.fsb-cons-debug {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: rgba(240, 244, 255, 0.7);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
 .fsb-side-right {
   flex-direction: column;
   gap: 6px;
@@ -3918,6 +3933,13 @@ kbd {
   width: 100%;
   pointer-events: none;
   overflow: visible;
+}
+/* Release handle under each played-note line. The parent svg opts out of
+   pointer events wholesale, so this opts back in — it's the one thing in
+   there meant to be pressed. */
+.fsb-note-dot {
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* Dotted boundary lines for the edge-pan auto-scroll zone. Span the full
@@ -4980,6 +5002,39 @@ kbd {
   border-left: 6px solid var(--arrow-color, #fff);
 }
 
+/* Per-key frequency readout (textContent written by OnScreenKeyboard's
+   refresh). Sits at the TOP of the key, opposite the letter overlay down at
+   the bottom, so both can be on at once. Tracks --own-center like the dot and
+   the letter — a chromatic white key's box extends into the neighboring black
+   columns, but its top strip (where this sits) is only its own column wide.
+   Deliberately quiet: it's a reference readout you consult, not a play
+   target, so it stays under the key's activation glow. */
+.key-freq {
+  position: absolute;
+  left: var(--own-center, 50%);
+  top: 4px;
+  transform: translateX(-50%);
+  font-size: 8px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+}
+.osk-white .key-freq {
+  color: rgba(255, 255, 255, 0.5);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+}
+.osk-black .key-freq {
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+}
+/* Silent keys sound nothing — refresh() blanks the text, this hides the box. */
+.osk-key.silent .key-freq {
+  opacity: 0;
+}
+
 /* Computer-keyboard letter overlay — visible only when the labels
    toggle is on. Positioned just above the color dot so both can coexist
    on the same slim key. White-key text reads dark; black-key text reads
@@ -5065,7 +5120,10 @@ kbd {
   backdrop-filter: blur(10px);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* Scroll the panel as a whole when its content is taller than the
+     viewport (e.g. the smiling-face slider section + editor + sketch
+     lists). Horizontal stays clipped so the rounded corners hold. */
+  overflow: hidden auto;
   z-index: 1100;
   transform: translateX(calc(-100% - 24px));
   opacity: 0;
@@ -5171,7 +5229,10 @@ kbd {
 .hydra-section {
   padding: 12px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  overflow-y: auto;
+  /* Keep natural height and let the whole panel scroll — without this
+     flex-shrink compresses sections below their content and the rows
+     of adjacent sections overlap. */
+  flex-shrink: 0;
 }
 .hydra-section:last-child {
   border-bottom: none;

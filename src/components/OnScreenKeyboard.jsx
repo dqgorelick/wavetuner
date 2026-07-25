@@ -17,6 +17,18 @@ function midiToDegreeOctave(midi) {
   return tuning.degreeAndOctaveForMidi(midi);
 }
 
+// Frequency readout printed on each key. A key column is only ~1/25th of the
+// tray wide, so this holds ~3 significant figures — enough to tell two keys
+// apart and to read a just ratio off the tray, without wrapping. The spectrum
+// bar's tick labels are the place to read exact pitch.
+function formatKeyFreq(hz) {
+  if (!(hz > 0)) return '';
+  if (hz >= 1000) return `${(hz / 1000).toFixed(1)}k`;
+  if (hz >= 100) return hz.toFixed(0);
+  if (hz >= 10) return hz.toFixed(1);
+  return hz.toFixed(2);
+}
+
 /**
  * On-screen piano keyboard. Two octaves wide, starting at the supplied
  * kbdRoot (the MIDI note the lowest computer-key letter triggers — e.g.
@@ -162,10 +174,15 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
         const el = keyRefs.current.get(midi);
         if (!el) return;
         const dot = el.querySelector('.key-dot');
+        // The pitch this key sounds, transpose included. Written here rather
+        // than in JSX because it moves with every orb drag and transpose nudge
+        // — and this refresh already runs on exactly those changes.
+        const freqEl = el.querySelector('.key-freq');
         const dao = midiToDegreeOctave(midi); // null if mapping silences this key
         const slot = dao ? tuning.droneSlotForDegree(dao.degree) : -1;
         if (!dao || slot < 0) {
           if (dot) dot.classList.remove('is-drone');
+          if (freqEl) freqEl.textContent = ''; // silent key plays no pitch to show
           el.style.removeProperty('--key-color');
           el.classList.add('silent');
           return;
@@ -177,6 +194,7 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
           dot.style.background = color;
           dot.classList.toggle('is-drone', dao.octave === 0);
         }
+        if (freqEl) freqEl.textContent = formatKeyFreq(tuning.pitchForMidiNote(midi));
       };
       for (const k of keys) updateOne(k.midi);
     };
@@ -407,6 +425,7 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
             onPointerEnter={(e) => handlePointerEnter(e, k.midi)}
           >
             <div className="osk-key-shape" style={shapeStyle} />
+            <span className="key-freq" />
             {letter && <span className="key-letter">{letter}</span>}
             <span className="key-dot" />
           </div>

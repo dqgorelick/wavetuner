@@ -9,9 +9,9 @@ import { pairDissonance as _pairwiseDissonance } from './dissonanceModel';
  *   1. Engine state (frequencyValues, volumeValues, etc.) — used to
  *      PREDICT amplitudes that hit the saturator. Knows about voices
  *      before any nonlinear stages.
- *   2. Post-everything FFT (analyserNode1) — measures what listener
- *      hears: wave shape + folder + saturation all baked in. Used for
- *      dissonance, centroid, flux, loudness, beating.
+ *   2. Post-mix FFT (analyserNodeMono — the whole mix downmixed to
+ *      mono): wave shape + folder baked in. Used for dissonance,
+ *      centroid, flux, loudness, beating.
  *
  * Exposed on window.audio so Hydra sketches can read them via callbacks:
  *
@@ -265,7 +265,12 @@ export function updateAudioFeatures(audioEngine) {
   );
 
   // ── FFT-derived features ────────────────────────────────────────────
-  const analyser = audioEngine.analyserNode1;
+  // Mono (downmixed) analyser so the features hear the WHOLE mix. The
+  // per-channel analysers only see one ear each — in L/R pan mode a
+  // two-voice chord never lands in either one, so dissonance read as 0
+  // no matter the interval. Fallback to left for engines built before
+  // the mono tap existed (e.g. a stale HMR instance).
+  const analyser = audioEngine.analyserNodeMono || audioEngine.analyserNode1;
   if (!analyser || !audioEngine.audioContext) {
     audioFeatures.dissonance = 0;
     audioFeatures.consonance = 1;

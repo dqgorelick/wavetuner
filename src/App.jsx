@@ -242,6 +242,19 @@ const VIZ_MODES = [
     ),
   },
   {
+    id: 5,
+    // Inverse face: standing-wave "eyes" (1/3 cycles) over an XY-scope
+    // "mouth" — the reverse of mode 2. Icon is an upside-down smile.
+    label: 'Face 2',
+    icon: (
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <circle cx="8" cy="10" r="1.6" fill="currentColor" stroke="none" />
+        <circle cx="16" cy="10" r="1.6" fill="currentColor" stroke="none" />
+        <path d="M7.5 16 Q 12 12, 16.5 16" />
+      </g>
+    ),
+  },
+  {
     id: 4,
     label: 'Timeline',
     icon: (
@@ -364,6 +377,36 @@ function App() {
   // white core).
   const [staticLineWidth, setStaticLineWidth] = useState(() => lsNum('staticLineWidth', 2.0));
   const [staticOutlineThickness, setStaticOutlineThickness] = useState(() => lsNum('staticOutlineThickness', 2.5));
+  // ── Smiling-face (vizMode 2) geometry ────────────────────────────────
+  // Face-specific controls, independent of the global standing-wave
+  // settings above. Surfaced as sliders in the Visualizer panel while the
+  // smiling face is the active mode. Eye size / gap / mouth-gap are
+  // multipliers on the original hardcoded proportions; line width and
+  // period count are absolute (defaults match what mode 2 used before,
+  // so 1.0 / 2.0 / 20 reproduce the original look). faceStandingHeight
+  // scales the mouth wave's amplitude.
+  // Eye size scales only the oscilloscope eyes (mode 2), independent of the
+  // mouth. Falls back to the legacy `faceEyeHeight` key so an existing value
+  // carries over after the rename.
+  // Overall face scale: one multiplier on the whole layout (eyes, gaps,
+  // mouth together). Applies to both face modes (2 and 5).
+  const [faceScale, setFaceScale] = useState(() => lsNum('faceScale', 1.0));
+  const [faceEyeSize, setFaceEyeSize] = useState(() => lsNum('faceEyeSize', lsNum('faceEyeHeight', 1.0)));
+  const [faceEyeGap, setFaceEyeGap] = useState(() => lsNum('faceEyeGap', 1.0));
+  const [faceMouthWidth, setFaceMouthWidth] = useState(() => lsNum('faceMouthWidth', 1.0));
+  const [faceMouthLineWidth, setFaceMouthLineWidth] = useState(() => lsNum('faceMouthLineWidth', 2.0));
+  const [faceStandingHeight, setFaceStandingHeight] = useState(() => lsNum('faceStandingHeight', 1.0));
+  const [faceStandingPeriods, setFaceStandingPeriods] = useState(() => lsNum('faceStandingPeriods', 20));
+  const [faceMouthGap, setFaceMouthGap] = useState(() => lsNum('faceMouthGap', 1.0));
+  // Mouth bend: −1 semicircle frown … 0 straight … +1 semicircle smile.
+  // faceMouthCurveWidth is the mouth-width multiplier at full bend; the
+  // effective width lerps from faceMouthWidth to it as |bend| → 1.
+  const [faceMouthCurve, setFaceMouthCurve] = useState(() => lsNum('faceMouthCurve', 0));
+  const [faceMouthCurveWidth, setFaceMouthCurveWidth] = useState(() => lsNum('faceMouthCurveWidth', 1.0));
+  // Pause → neutral: while paused the smile/frown relaxes back to the
+  // straight resting line (in step with the wave collapsing); on play it
+  // eases back to the set bend. Stored as 1/0.
+  const [faceMouthPauseNeutral, setFaceMouthPauseNeutral] = useState(() => lsNum('faceMouthPauseNeutral', 1) !== 0);
   // Lissajous-only multipliers (vizMode 0). Surfaced via the Hydra
   // panel's Visualizer section. Defaults of 1 keep the look identical
   // to pre-slider rendering — drag up/down to taste.
@@ -373,7 +416,8 @@ function App() {
   // Lissajous rotation: 0 = square (default), +1 = diamond (+45°),
   // −1 = mirror diamond (−45°). Opt-in via the Hydra panel.
   const [vizRotation, setVizRotation] = useState(() => lsNum('vizRotation', 0));
-  // Visualizer mode: 0 circle (XY), 1 line (standing wave), 2 face, 3 hilbert.
+  // Visualizer mode: 0 circle (XY), 1 line (standing wave), 2 face,
+  // 3 hilbert, 5 inverse face (wave eyes + XY mouth).
   const [vizMode, setVizMode] = useState(() => lsNum('vizMode', 0));
   // Visualizer quality / performance tier:
   //   'pretty'      — full quality, every per-frame feature runs (default).
@@ -455,11 +499,25 @@ function App() {
     lsSet('timelineAutoRange', timelineAutoRange ? '1' : '0');
     lsSet('vfxScale', vfxScale);
     lsSet('vfxBlend', vfxBlend);
+    lsSet('faceScale', faceScale);
+    lsSet('faceEyeSize', faceEyeSize);
+    lsSet('faceEyeGap', faceEyeGap);
+    lsSet('faceMouthWidth', faceMouthWidth);
+    lsSet('faceMouthLineWidth', faceMouthLineWidth);
+    lsSet('faceStandingHeight', faceStandingHeight);
+    lsSet('faceStandingPeriods', faceStandingPeriods);
+    lsSet('faceMouthGap', faceMouthGap);
+    lsSet('faceMouthCurve', faceMouthCurve);
+    lsSet('faceMouthCurveWidth', faceMouthCurveWidth);
+    lsSet('faceMouthPauseNeutral', faceMouthPauseNeutral ? 1 : 0);
   }, [
     staticMode, staticPeriods, staticLineWidth, staticOutlineThickness,
     vizScale, vizLineWidth, vizOutline, vizRotation, vizMode, vizCycles,
     timelineWindowSec, timelineFreqMin, timelineFreqMax, timelineAutoRange,
     vfxScale, vfxBlend,
+    faceScale, faceEyeSize, faceEyeGap, faceMouthWidth, faceMouthLineWidth,
+    faceStandingHeight, faceStandingPeriods, faceMouthGap,
+    faceMouthCurve, faceMouthCurveWidth, faceMouthPauseNeutral,
   ]);
   const handleVfxDrag = useCallback((scale, blend) => {
     setVfxScale(scale);
@@ -1202,6 +1260,17 @@ function App() {
         staticPeriods={staticPeriods}
         staticLineWidth={staticLineWidth}
         staticOutlineThickness={staticOutlineThickness}
+        faceScale={faceScale}
+        faceEyeSize={faceEyeSize}
+        faceEyeGap={faceEyeGap}
+        faceMouthWidth={faceMouthWidth}
+        faceMouthLineWidth={faceMouthLineWidth}
+        faceStandingHeight={faceStandingHeight}
+        faceStandingPeriods={faceStandingPeriods}
+        faceMouthGap={faceMouthGap}
+        faceMouthCurve={faceMouthCurve}
+        faceMouthCurveWidth={faceMouthCurveWidth}
+        faceMouthPauseNeutral={faceMouthPauseNeutral}
         vizMode={vizMode}
         vizCycles={vizCycles}
         timelineWindowSec={timelineWindowSec}
@@ -1389,6 +1458,28 @@ function App() {
             vizRotation={vizRotation}
             onVizRotationChange={setVizRotation}
             vizMode={vizMode}
+            faceScale={faceScale}
+            onFaceScaleChange={setFaceScale}
+            faceEyeSize={faceEyeSize}
+            onFaceEyeSizeChange={setFaceEyeSize}
+            faceEyeGap={faceEyeGap}
+            onFaceEyeGapChange={setFaceEyeGap}
+            faceMouthWidth={faceMouthWidth}
+            onFaceMouthWidthChange={setFaceMouthWidth}
+            faceMouthLineWidth={faceMouthLineWidth}
+            onFaceMouthLineWidthChange={setFaceMouthLineWidth}
+            faceStandingHeight={faceStandingHeight}
+            onFaceStandingHeightChange={setFaceStandingHeight}
+            faceStandingPeriods={faceStandingPeriods}
+            onFaceStandingPeriodsChange={setFaceStandingPeriods}
+            faceMouthGap={faceMouthGap}
+            onFaceMouthGapChange={setFaceMouthGap}
+            faceMouthCurve={faceMouthCurve}
+            onFaceMouthCurveChange={setFaceMouthCurve}
+            faceMouthCurveWidth={faceMouthCurveWidth}
+            onFaceMouthCurveWidthChange={setFaceMouthCurveWidth}
+            faceMouthPauseNeutral={faceMouthPauseNeutral}
+            onFaceMouthPauseNeutralChange={setFaceMouthPauseNeutral}
             timelineWindowSec={timelineWindowSec}
             onTimelineWindowChange={setTimelineWindowSec}
             timelineFreqMin={timelineFreqMin}

@@ -201,6 +201,17 @@ function edgeWindow(p, fadeFrac) {
   return 1;
 }
 
+// Trace width drawStatic will use for a given box width. Split out so the
+// smiling-face caller can clamp mouth curvature (which needs the chord
+// length) with the exact same number drawStatic derives internally.
+function staticTraceWidth(width) {
+  // Capped at 1.5× the FrequencySpectrumBar's width (which is
+  // `min(500, viewport - 40)` — see .freq-spectrum-bar in App.css).
+  // Clamped again so it never overflows the canvas itself.
+  const spectrumWidth = Math.min(500, Math.max(100, width - 40));
+  return Math.min(width - 20, spectrumWidth * 1.5);
+}
+
 // Static synthesized view — per-oscillator colored traces (additive bloom)
 // in each pool's morphed wave shape (idealized wavetable, so a square
 // drone draws as a square), with the XY-scope's cycling color tinting
@@ -219,7 +230,24 @@ function drawStatic(
   //                    aggregate — matches the XY scope's neon-tube
   //                    look. 0 means just the white core (current
   //                    behavior); > 0 adds the colored glow halo.
-  const { lineWidthScale = 1, outlineThickness = 0 } = options;
+  // curve:             bend of the wave's spine, in [−1, 1]. 0 draws the
+  //                    usual straight line; +1 bends it along a full
+  //                    semicircle smile (corners up), −1 a semicircle
+  //                    frown (corners down). The arc is positioned so its
+  //                    AVERAGE height stays at the straight line's height
+  //                    — the center dips ~⅓ of the sag one way while the
+  //                    corners swing ~⅔ the other — and the wave displaces
+  //                    along the arc's radial normal, so partial bends
+  //                    morph continuously from the line.
+  // curveNeutralOnPause: when true, the bend follows the drone bus
+  //                    gain's pause ramp — relaxing to 0 as the drones
+  //                    fade out and returning to `curve` as they rise —
+  //                    so the smile/frown moves in lockstep with the
+  //                    eyes' audio-driven shrink and onset.
+  const {
+    lineWidthScale = 1, outlineThickness = 0, heightScale = 1,
+    curve = 0, curveNeutralOnPause = false,
+  } = options;
   // Clearing is the caller's responsibility — drawScope wipes the whole
   // bottom strip (including the reserved orb/UI area) each frame.
 
@@ -295,17 +323,76 @@ function drawStatic(
   const fundamental = smoothedWindow.fundamental;
   const periods = smoothedWindow.periods;
 
+  // Pause → line. A 0→1 factor that eases in while the transport is
+  // paused and out when it resumes. It (a) scales the drawn amplitude
+  // to zero so the summation wave collapses onto the center line and
+  // (b) floors the aggregate's alpha (below) so the resulting flat line
+  // stays visible even after the drone bus — and thus volSum — has
+  // ramped to 0. Stored on the shared smoothedWindow ref so it persists
+  // across frames. Deliberate, designed motion: the wave settles to a
+  // resting line rather than just blinking out.
+  const pausedTarget = audioEngine.paused ? 1 : 0;
+  if (smoothedWindow.pausedFade === undefined) {
+    smoothedWindow.pausedFade = pausedTarget;
+  } else {
+    smoothedWindow.pausedFade += (pausedTarget - smoothedWindow.pausedFade) * 0.12;
+  }
+  const pausedFade = smoothedWindow.pausedFade;
+
   const periodSec = 1 / fundamental;
   const windowSec = periods * periodSec;
   const windowHalf = windowSec / 2;
 
-  // Trace width is capped at 1.5× the FrequencySpectrumBar's width (which
-  // is `min(500, viewport - 40)` — see .freq-spectrum-bar in App.css).
-  // Clamped again so it never overflows the canvas itself.
-  const spectrumWidth = Math.min(500, Math.max(100, width - 40));
-  const traceWidth = Math.min(width - 20, spectrumWidth * 1.5);
+  const traceWidth = staticTraceWidth(width);
   const traceOffsetX = (width - traceWidth) / 2;
   const centerY = height * 0.5;
+
+  // Arc spine for curved mode. Chord length = traceWidth; subtended
+  // angle θ = |curve|·π so the extremes are semicircles. The arc's
+  // AVERAGE height is pinned at centerY: the mean of cos φ over
+  // [−θ/2, θ/2] is sinc(θ/2) = sin(θ/2)/(θ/2), so placing the circle
+  // center R·sinc(θ/2) from the line balances the arc about it — the
+  // midpoint leaves the line by ~⅓ of the sag and the corners by ~⅔ in
+  // the other direction. As curve → 0, R → ∞ and the projection
+  // converges on the straight line, so a knob sweep morphs smoothly
+  // through straight.
+  // Pause → neutral: scale the bend by the live drone bus gain — the
+  // same 0.3 s fade / 0.5 s rise ramp that drives the eyes' shrink and
+  // onset (see AudioEngine._applyDroneBusGain) — so the mouth un-bends
+  // and returns in lockstep with the eyes instead of on its own clock.
+  // Side effect by design: toggling the drone off also relaxes the face.
+  const effCurve = curveNeutralOnPause
+    ? curve * Math.min(1, audioEngine.getDroneVizGain())
+    : curve;
+  let arcGeom = null;
+  if (Math.abs(effCurve) > 0.004) {
+    const theta = Math.min(1, Math.abs(effCurve)) * Math.PI;
+    const arcSign = effCurve > 0 ? 1 : -1; // +1 smile (corners up), −1 frown (corners down)
+    const arcR = traceWidth / (2 * Math.sin(theta / 2));
+    arcGeom = {
+      theta,
+      sign: arcSign,
+      R: arcR,
+      cx: traceOffsetX + traceWidth / 2,
+      cy: centerY - arcSign * arcR * (Math.sin(theta / 2) / (theta / 2)),
+    };
+  }
+  // Project a normalized position p ∈ [0,1] along the spine plus a signed
+  // displacement (px; positive = "up" in straight mode, radially inward /
+  // outward on the arc) into canvas coords. Writes into PT — the render
+  // loops run per-sample, so no per-point allocation.
+  const PT = { x: 0, y: 0 };
+  const projectPoint = (p, disp) => {
+    if (!arcGeom) {
+      PT.x = traceOffsetX + p * traceWidth;
+      PT.y = centerY - disp;
+      return;
+    }
+    const phi = (p - 0.5) * arcGeom.theta;
+    const rad = arcGeom.R - arcGeom.sign * disp;
+    PT.x = arcGeom.cx + rad * Math.sin(phi);
+    PT.y = arcGeom.cy + arcGeom.sign * rad * Math.cos(phi);
+  };
   // Per-pool viz gain (pool bus only, NOT master) folds into each pool's
   // *contribution amount* below, so spacebar (pauses droneBusGain) fades
   // drone contributions out while leaving keyboard voices visible, and
@@ -318,13 +405,24 @@ function drawStatic(
   // it's the dominant feature of the strip. NB: ampScale is just
   // height — pool gains are multiplied into each per-osc contribution
   // separately so drones and voices can fade independently.
-  const ampScale = mode === 'beating' ? height * 0.33 : height * 0.22;
+  // heightScale is a per-caller amplitude multiplier (the smiling face's
+  // "line height" slider); (1 - pausedFade) collapses the wave to a flat
+  // line while paused.
+  const ampScale = (mode === 'beating' ? height * 0.33 : height * 0.22)
+    * heightScale * (1 - pausedFade);
 
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(traceOffsetX, centerY);
-  ctx.lineTo(traceOffsetX + traceWidth, centerY);
+  if (arcGeom) {
+    // Same spine the samples ride: canvas angle α = sign·(π/2 − φ·sign…)
+    // reduces to a centered arc around ±π/2 depending on direction.
+    const mid = arcGeom.sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+    ctx.arc(arcGeom.cx, arcGeom.cy, arcGeom.R, mid - arcGeom.theta / 2, mid + arcGeom.theta / 2);
+  } else {
+    ctx.moveTo(traceOffsetX, centerY);
+    ctx.lineTo(traceOffsetX + traceWidth, centerY);
+  }
   ctx.stroke();
 
   // Individual per-oscillator lines are thin; the aggregate composite is
@@ -440,9 +538,8 @@ function drawStatic(
         const p = i / (samples - 1);
         const t = p * windowSec - windowHalf;
         const amp = c * wtLookupRad(droneWT, TWO_PI * f * t + relPhases[k]) * synthNorm * edgeWindow(p, edgeFade);
-        const x = traceOffsetX + p * traceWidth;
-        const y = centerY - amp * ampScale;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        projectPoint(p, amp * ampScale);
+        if (i === 0) ctx.moveTo(PT.x, PT.y); else ctx.lineTo(PT.x, PT.y);
       }
       ctx.stroke();
     }
@@ -470,9 +567,8 @@ function drawStatic(
         const p = i / (samples - 1);
         const t = p * windowSec - windowHalf;
         const amp = c * wtLookupRad(kbdWT, TWO_PI * v.freq * t + rp) * synthNorm * edgeWindow(p, edgeFade);
-        const x = traceOffsetX + p * traceWidth;
-        const y = centerY - amp * ampScale;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        projectPoint(p, amp * ampScale);
+        if (i === 0) ctx.moveTo(PT.x, PT.y); else ctx.lineTo(PT.x, PT.y);
       }
       ctx.stroke();
     }
@@ -511,16 +607,17 @@ function drawStatic(
       for (const av of activeVoices) {
         sum += av.contrib * wtLookupRad(kbdWT, TWO_PI * av.freq * t + av.relPhase);
       }
-      const x = traceOffsetX + p * traceWidth;
-      const y = centerY - sum * synthNorm * ampScale * aggHeightScale * edgeWindow(p, edgeFade);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      projectPoint(p, sum * synthNorm * ampScale * aggHeightScale * edgeWindow(p, edgeFade));
+      if (i === 0) ctx.moveTo(PT.x, PT.y); else ctx.lineTo(PT.x, PT.y);
     }
     ctx.stroke();
   };
 
   // aggAlpha already incorporates per-pool gain via volSum (which is
   // in contribution-space) — no extra master multiplier needed here.
-  ctx.globalAlpha = aggAlpha;
+  // Floor it with pausedFade so the collapsed flat line stays visible
+  // after the paused drone bus has faded volSum (and aggAlpha) to 0.
+  ctx.globalAlpha = Math.max(aggAlpha, pausedFade);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -1194,6 +1291,30 @@ export default function Oscilloscope({
   staticPeriods = 10,
   staticLineWidth = 1.0,
   staticOutlineThickness = 0,
+  // Overall face scale: multiplies the base size both face modes (2 and
+  // 5) derive their whole layout from, so eyes, gaps and mouth scale
+  // together. 1 = original.
+  faceScale = 1,
+  // Smiling-face (vizMode 2) geometry. Eye size / gap / mouth-gap are
+  // multipliers on the original hardcoded proportions; mouth line width
+  // and period count are absolute; standing height scales the mouth
+  // wave's amplitude. Defaults reproduce the original face.
+  faceEyeSize = 1,
+  faceEyeGap = 1,
+  faceMouthWidth = 1,
+  faceMouthLineWidth = 2,
+  faceStandingHeight = 1,
+  faceStandingPeriods = 20,
+  faceMouthGap = 1,
+  // Mouth curvature: −1 (semicircle frown) … 0 (straight) … +1
+  // (semicircle smile). faceMouthCurveWidth is the mouth-width
+  // multiplier at full bend — the effective width lerps from
+  // faceMouthWidth to it as |curve| goes 0 → 1.
+  faceMouthCurve = 0,
+  faceMouthCurveWidth = 1,
+  // When true, the smile/frown relaxes to the neutral straight line
+  // while the transport is paused and returns on play.
+  faceMouthPauseNeutral = true,
   vizMode = 0,
   vizCycles = 13,
   // Timeline (vizMode 4) controls. windowSec = X-range (seconds of history
@@ -1249,6 +1370,28 @@ export default function Oscilloscope({
   useEffect(() => {
     staticOutlineRef.current = staticOutlineThickness;
   }, [staticOutlineThickness]);
+  const faceScaleRef = useRef(faceScale);
+  useEffect(() => { faceScaleRef.current = faceScale; }, [faceScale]);
+  const faceEyeSizeRef = useRef(faceEyeSize);
+  useEffect(() => { faceEyeSizeRef.current = faceEyeSize; }, [faceEyeSize]);
+  const faceEyeGapRef = useRef(faceEyeGap);
+  useEffect(() => { faceEyeGapRef.current = faceEyeGap; }, [faceEyeGap]);
+  const faceMouthWidthRef = useRef(faceMouthWidth);
+  useEffect(() => { faceMouthWidthRef.current = faceMouthWidth; }, [faceMouthWidth]);
+  const faceMouthLineWidthRef = useRef(faceMouthLineWidth);
+  useEffect(() => { faceMouthLineWidthRef.current = faceMouthLineWidth; }, [faceMouthLineWidth]);
+  const faceStandingHeightRef = useRef(faceStandingHeight);
+  useEffect(() => { faceStandingHeightRef.current = faceStandingHeight; }, [faceStandingHeight]);
+  const faceStandingPeriodsRef = useRef(faceStandingPeriods);
+  useEffect(() => { faceStandingPeriodsRef.current = faceStandingPeriods; }, [faceStandingPeriods]);
+  const faceMouthGapRef = useRef(faceMouthGap);
+  useEffect(() => { faceMouthGapRef.current = faceMouthGap; }, [faceMouthGap]);
+  const faceMouthCurveRef = useRef(faceMouthCurve);
+  useEffect(() => { faceMouthCurveRef.current = faceMouthCurve; }, [faceMouthCurve]);
+  const faceMouthCurveWidthRef = useRef(faceMouthCurveWidth);
+  useEffect(() => { faceMouthCurveWidthRef.current = faceMouthCurveWidth; }, [faceMouthCurveWidth]);
+  const faceMouthPauseNeutralRef = useRef(faceMouthPauseNeutral);
+  useEffect(() => { faceMouthPauseNeutralRef.current = faceMouthPauseNeutral; }, [faceMouthPauseNeutral]);
   const vizScaleRef = useRef(vizScale);
   useEffect(() => { vizScaleRef.current = vizScale; }, [vizScale]);
   const vizLineWidthRef = useRef(vizLineWidth);
@@ -1274,6 +1417,9 @@ export default function Oscilloscope({
   //   2 — face: two synth XY "eyes" + 1D "mouth" beneath
   //   3 — Hilbertscope: plots (signal, Hilbert-transform) per sample —
   //       each osc traces a circle, composite is a Fourier epicycle.
+  //   4 — Timeline / piano-roll.
+  //   5 — inverse face: two standing-wave "eyes" (1/3 cycles) + XY
+  //       "mouth" beneath (the mirror of mode 2).
   const vizModeRef = useRef(vizMode);
   useEffect(() => {
     vizModeRef.current = vizMode;
@@ -1538,48 +1684,137 @@ export default function Oscilloscope({
         // 2. The whole face (eyes + gap + mouth) is vertically centered
         //    in the usable area, so empty space ends up equally above
         //    and below instead of stacking all at the bottom.
-        // 3. Gaps and mouth height scale off eyeSize so proportions
-        //    stay consistent across screen sizes.
-        const eyeSize = Math.max(
-          0,
-          Math.min(width * 0.35, usableHeight * 0.42)
-        );
-        const eyeGap = eyeSize * 0.1;
-        const totalEyesWidth = eyeSize * 2 + eyeGap;
+        // 3. Gaps and mouth proportions scale off baseEyeSize (the eye
+        //    size at slider = 100%), so they stay consistent across screen
+        //    sizes AND are unaffected by the Eye size slider — that slider
+        //    scales the drawn eyes only, never the mouth.
+        // The face* refs are user sliders: eye size / gap / mouth-gap are
+        // multipliers on these base proportions (default 1 = original).
+        // faceScale multiplies the base size the whole layout derives
+        // from, so eyes, gaps and mouth all scale together. The clamps
+        // below still bound the drawn eyes/mouth to the viewport.
+        const baseEyeSize = Math.min(width * 0.35, usableHeight * 0.42)
+          * faceScaleRef.current;
+        // The full layout (eye centers, mouth, vertical centering) is
+        // computed from baseEyeSize only — the Eye size slider scales
+        // just the drawn eyes, in place about their fixed centers, so
+        // nothing else on the face moves when it changes.
+        const eyeGap = baseEyeSize * 0.1 * faceEyeGapRef.current;
+        const totalEyesWidth = baseEyeSize * 2 + eyeGap;
         const eyesOffsetX = (width - totalEyesWidth) / 2;
-        const leftEyeX = eyesOffsetX;
-        const rightEyeX = eyesOffsetX + eyeSize + eyeGap;
+        const leftEyeCenterX = eyesOffsetX + baseEyeSize / 2;
+        const rightEyeCenterX = eyesOffsetX + baseEyeSize * 1.5 + eyeGap;
 
-        // Mouth horizontal bounds track the eye span exactly.
-        const mouthWidth = totalEyesWidth;
-        const mouthOffsetX = eyesOffsetX;
-
-        const mouthGap = Math.max(12, Math.round(eyeSize * 0.15));
+        // Mouth geometry is pinned to two unscaled eye-widths — the eye
+        // gap is deliberately excluded so the Eye gap slider never
+        // resizes the mouth — scaled by its own slider (default 1) and
+        // re-centered so it stays symmetric under the eyes. The width
+        // lerps between the straight-mouth multiplier and the
+        // curved-mouth multiplier as the bend knob moves toward either
+        // extreme, so the straight and fully-curved mouths can be sized
+        // independently.
+        const mouthBend = Math.max(-1, Math.min(1, faceMouthCurveRef.current));
+        const mouthWidthMult = faceMouthWidthRef.current
+          + (faceMouthCurveWidthRef.current - faceMouthWidthRef.current) * Math.abs(mouthBend);
+        const mouthWidth = baseEyeSize * 2 * mouthWidthMult;
+        const mouthOffsetX = (width - mouthWidth) / 2;
+        const mouthGap = Math.round(Math.max(12, baseEyeSize * 0.15) * faceMouthGapRef.current);
         const mouthHeight = Math.max(
           0,
           Math.min(
-            Math.round(eyeSize * 0.5),
-            usableHeight - eyeSize - mouthGap - 20
+            Math.round(baseEyeSize * 0.5),
+            usableHeight - baseEyeSize - mouthGap - 20
           )
         );
 
         // Center vertically. Clamp to a 10-px top margin so the eyes
         // never touch the viewport edge.
-        const totalFaceHeight = eyeSize + mouthGap + mouthHeight;
+        const totalFaceHeight = baseEyeSize + mouthGap + mouthHeight;
         const eyesTop = Math.max(
           10,
           Math.round((usableHeight - totalFaceHeight) / 2)
         );
-        const mouthTop = eyesTop + eyeSize + mouthGap;
+        const mouthTop = eyesTop + baseEyeSize + mouthGap;
+        const eyeCenterY = eyesTop + baseEyeSize / 2;
+
+        // Clamp the bend so the arc stays on the canvas. The total sag
+        // (corner-to-midpoint) has the closed form (chord/2)·tan(θ/4),
+        // so the largest angle a sag budget allows is
+        // 4·atan(2·maxSag/chord). The arc's average height is pinned at
+        // the mouth line, splitting the sag across it: the corners take
+        // ~⅔ (bounded by .67) on one side and the midpoint ~⅓ (bounded
+        // by .37) on the other, so both rooms constrain both bends.
+        // mouthRise is the arc's actual highest point above the line —
+        // the clear-band logic below needs it.
+        let mouthCurve = mouthBend;
+        let mouthRise = 0;
+        if (mouthBend !== 0) {
+          const chord = staticTraceWidth(mouthWidth);
+          const mouthCenterY = mouthTop + mouthHeight / 2;
+          const roomUp = Math.max(0, mouthCenterY - 10);
+          const roomDown = Math.max(0, usableHeight - mouthCenterY - 10);
+          const maxSag = mouthBend > 0
+            ? Math.min(roomUp / 0.67, roomDown / 0.37)
+            : Math.min(roomDown / 0.67, roomUp / 0.37);
+          const theta = Math.min(
+            Math.abs(mouthBend) * Math.PI,
+            4 * Math.atan((2 * maxSag) / chord)
+          );
+          if (theta > 0.004 * Math.PI) {
+            mouthCurve = Math.sign(mouthBend) * (theta / Math.PI);
+            const half = theta / 2;
+            const arcR = chord / (2 * Math.sin(half));
+            const sincH = Math.sin(half) / half;
+            // Smile: the corners are the top (sinc − cos above the
+            // line); frown: the midpoint is (1 − sinc above the line).
+            mouthRise = mouthBend > 0
+              ? arcR * (sincH - Math.cos(half))
+              : arcR * (1 - sincH);
+          } else {
+            mouthCurve = 0;
+          }
+        }
+
+        // Drawn eye size: base × Eye size slider, clamped so eyes growing
+        // about their fixed centers stay inside the top and side edges.
+        const eyeSize = Math.max(
+          0,
+          Math.min(
+            baseEyeSize * faceEyeSizeRef.current,
+            2 * (eyeCenterY - 4),
+            2 * Math.min(leftEyeCenterX, width - rightEyeCenterX)
+          )
+        );
+        const drawnEyesTop = eyeCenterY - eyeSize / 2;
+        const leftEyeX = leftEyeCenterX - eyeSize / 2;
+        const rightEyeX = rightEyeCenterX - eyeSize / 2;
 
         // Fade-clear everything above the mouth (includes the eye
         // region + gap so trails bleeding into the gap fade out too).
+        // Oversized eyes can dip below mouthTop; extend the fade band
+        // to cover them so their trails fade instead of being erased.
+        // Either bend arcs above mouthTop (smile corners, frown midpoint)
+        // — raise the opaque band to keep the curved mouth
+        // persistence-free, but never so high it cuts into the eyes'
+        // trail region (a mouth reaching the eyes keeps its top inside
+        // the fade band and picks up their trail look).
+        let opaqueTop = mouthTop;
+        if (mouthCurve !== 0) {
+          opaqueTop = Math.min(
+            mouthTop,
+            Math.floor(mouthTop + mouthHeight / 2 - mouthRise - mouthHeight * 0.45)
+          );
+        }
+        const clearSplit = Math.min(
+          usableHeight,
+          Math.max(opaqueTop, Math.ceil(drawnEyesTop + eyeSize))
+        );
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-        ctx.fillRect(0, 0, width, mouthTop);
-        // Opaque clear of the mouth region + below — static wave has
-        // no persistence.
+        ctx.fillRect(0, 0, width, clearSplit);
+        // Opaque clear of the remaining mouth region + below — static
+        // wave has no persistence.
         ctx.fillStyle = 'rgba(0, 0, 0, 1)';
-        ctx.fillRect(0, mouthTop, width, usableHeight - mouthTop);
+        ctx.fillRect(0, clearSplit, width, usableHeight - clearSplit);
 
         // Both eyes show the full L/R mix — identical traces left and
         // right. Source switches between synth (clean sines) and audio
@@ -1591,8 +1826,8 @@ export default function Oscilloscope({
           outlineScale: vizOutlineRef.current,
           rotation: vizRotationRef.current,
         };
-        drawXY(ctx, eyeSize, leftEyeX, eyesTop, lineScale, r, g, b, L, R, xyOpts);
-        drawXY(ctx, eyeSize, rightEyeX, eyesTop, lineScale, r, g, b, L, R, xyOpts);
+        drawXY(ctx, eyeSize, leftEyeX, drawnEyesTop, lineScale, r, g, b, L, R, xyOpts);
+        drawXY(ctx, eyeSize, rightEyeX, drawnEyesTop, lineScale, r, g, b, L, R, xyOpts);
 
         // Mouth: white-line static wave, constrained to the eye span
         // so it can never be wider than the eyes above it.
@@ -1602,10 +1837,13 @@ export default function Oscilloscope({
           drawStatic(
             ctx, mouthWidth, mouthHeight, lineScale, r, g, b,
             renderVolumesRef.current, smoothedWindowRef.current,
-            staticStyle, staticPeriodsRef.current,
+            staticStyle, faceStandingPeriodsRef.current,
             {
-              lineWidthScale: staticLineWidthRef.current,
+              lineWidthScale: faceMouthLineWidthRef.current,
               outlineThickness: staticOutlineRef.current,
+              heightScale: faceStandingHeightRef.current,
+              curve: mouthCurve,
+              curveNeutralOnPause: faceMouthPauseNeutralRef.current,
             }
           );
           ctx.restore();
@@ -1631,6 +1869,95 @@ export default function Oscilloscope({
           outlineScale: vizOutlineRef.current,
           rotation: vizRotationRef.current,
         });
+
+      } else if (vizMode === 5) {
+        // ── MODE 5: inverse face (wave eyes + XY mouth) ───────────────
+        // The mirror of mode 2: the eyes are standing-summation waves
+        // (drawStatic) at 1/3 the usual period count, and the mouth is
+        // the XY oscilloscope (drawXY). A standing wave fills only a
+        // thin horizontal band, so the eye boxes are wide and short
+        // (rather than square) to keep the face compact; the whole face
+        // (eyes + gap + square scope mouth) is vertically centered.
+        // faceScale multiplies the base eye width everything else (eye
+        // height, gaps, mouth size) derives from — whole face scales.
+        const eyeW = Math.max(0, Math.min(width * 0.30, usableHeight * 0.42))
+          * faceScaleRef.current;
+        const eyeH = eyeW * 0.6;
+        const eyeGap = eyeW * 0.4;
+        const totalEyesWidth = eyeW * 2 + eyeGap;
+        const eyesOffsetX = (width - totalEyesWidth) / 2;
+        const leftEyeX = eyesOffsetX;
+        const rightEyeX = eyesOffsetX + eyeW + eyeGap;
+
+        // Negative gap: the eye box's lower half and the mouth box's
+        // upper region are both empty padding (the wave is a thin band
+        // centered in eyeH; the XY figure fills only ~0.6 of its box),
+        // so the boxes intentionally overlap to bring the *visible*
+        // eyes down close to the *visible* mouth without the drawn
+        // content colliding.
+        const mouthGap = -Math.round(eyeW * 0.26);
+        // Square XY mouth, sized off the eye width and bounded by the
+        // vertical room left under the eyes.
+        const mouthSize = Math.max(
+          0,
+          Math.min(
+            eyeW * 1.44,
+            usableHeight - eyeH - mouthGap - 20
+          )
+        );
+        const mouthX = (width - mouthSize) / 2;
+
+        // Center the whole face vertically; clamp to a 10-px top margin.
+        const totalFaceHeight = eyeH + mouthGap + mouthSize;
+        const eyesTop = Math.max(
+          10,
+          Math.round((usableHeight - totalFaceHeight) / 2)
+        );
+        const mouthTop = eyesTop + eyeH + mouthGap;
+
+        // Opaque-clear the full eye band (static wave has no persistence),
+        // fade-clear below it so the XY mouth keeps its trails. The split
+        // is the eye-box bottom, not mouthTop — with the negative overlap
+        // mouthTop sits inside the eye band, and clearing there would let
+        // the eye wave's lower peaks smear into the fade region. The mouth
+        // figure sits well below the eye-box bottom, so it's unaffected.
+        const clearSplit = Math.min(eyesTop + eyeH, usableHeight);
+        ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+        ctx.fillRect(0, 0, width, clearSplit);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(0, clearSplit, width, usableHeight - clearSplit);
+
+        // Eyes: standing summation wave at 1/3 the period count. Both
+        // eyes read the same shared render state, so they render as an
+        // identical matched pair.
+        if (staticStyle !== 'off' && eyeW > 0) {
+          const eyePeriods = Math.max(1, Math.round(staticPeriodsRef.current / 3));
+          const staticOpts = {
+            lineWidthScale: staticLineWidthRef.current,
+            outlineThickness: staticOutlineRef.current,
+          };
+          for (const eyeX of [leftEyeX, rightEyeX]) {
+            ctx.save();
+            ctx.translate(eyeX, eyesTop);
+            drawStatic(
+              ctx, eyeW, eyeH, lineScale, r, g, b,
+              renderVolumesRef.current, smoothedWindowRef.current,
+              staticStyle, eyePeriods, staticOpts
+            );
+            ctx.restore();
+          }
+        }
+
+        // Mouth: XY oscilloscope, same audio source + options as mode 0.
+        if (mouthSize > 0) {
+          const { L, R } = getXY('audio');
+          drawXY(ctx, mouthSize, mouthX, mouthTop, lineScale, r, g, b, L, R, {
+            source: 'audio',
+            lineWidthScale: vizLineWidthRef.current,
+            outlineScale: vizOutlineRef.current,
+            rotation: vizRotationRef.current,
+          });
+        }
 
       } else if (vizMode === 4) {
         // ── MODE 4: Timeline / piano-roll ────────────────────────────

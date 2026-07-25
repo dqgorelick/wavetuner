@@ -60,6 +60,28 @@ export default function HydraPanel({
   vizRotation,
   onVizRotationChange,
   vizMode,
+  faceScale,
+  onFaceScaleChange,
+  faceEyeSize,
+  onFaceEyeSizeChange,
+  faceEyeGap,
+  onFaceEyeGapChange,
+  faceMouthWidth,
+  onFaceMouthWidthChange,
+  faceMouthLineWidth,
+  onFaceMouthLineWidthChange,
+  faceStandingHeight,
+  onFaceStandingHeightChange,
+  faceStandingPeriods,
+  onFaceStandingPeriodsChange,
+  faceMouthGap,
+  onFaceMouthGapChange,
+  faceMouthCurve,
+  onFaceMouthCurveChange,
+  faceMouthCurveWidth,
+  onFaceMouthCurveWidthChange,
+  faceMouthPauseNeutral,
+  onFaceMouthPauseNeutralChange,
   timelineWindowSec,
   onTimelineWindowChange,
   timelineFreqMin,
@@ -303,6 +325,146 @@ export default function HydraPanel({
           </div>
         </div>
       </section>
+
+      {(vizMode === 2 || vizMode === 5) && (
+        <section className="hydra-section">
+          <h5 className="hydra-section-title">
+            {vizMode === 2 ? 'Smiling face' : 'Face 2'}
+          </h5>
+          <VizSlider
+            label="Face scale"
+            value={faceScale}
+            min={0.3}
+            max={1.5}
+            step={0.05}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceScaleChange}
+            title="Overall size of the whole face — eyes, gaps and mouth scale together. 100% = original."
+          />
+          {vizMode === 2 && (
+          <>
+          <VizSlider
+            label="Eye size"
+            value={faceEyeSize}
+            min={0.3}
+            max={2}
+            step={0.05}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceEyeSizeChange}
+            title="Size of the two oscilloscope eyes only (mouth unaffected). 100% = original."
+          />
+          <VizSlider
+            label="Eye gap"
+            value={faceEyeGap}
+            min={-4}
+            max={5}
+            step={0.1}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceEyeGapChange}
+            title="Horizontal space between the two eyes. 100% = original; 0 = eye boxes touching; negative overlaps them so the drawn figures can close the remaining visible gap."
+          />
+          <VizSlider
+            label="Mouth gap"
+            value={faceMouthGap}
+            min={-4}
+            max={4}
+            step={0.1}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceMouthGapChange}
+            title="Vertical space between the eyes and the mouth. 100% = original; 0 = boxes touching; negative overlaps them to pull the visible mouth right up to the eyes."
+          />
+          <VizSlider
+            label="Mouth width"
+            value={faceMouthWidth}
+            min={0.3}
+            max={2}
+            step={0.05}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceMouthWidthChange}
+            title="Horizontal width of the straight mouth. 100% = the eye span; higher extends past the eyes, lower pulls it in. When the Smile knob leaves center, the width blends toward Curve width."
+          />
+          <VizSlider
+            label="Smile"
+            value={faceMouthCurve}
+            min={-1}
+            max={1}
+            step={0.05}
+            format={(v) => {
+              const pct = Math.round(Math.abs(v) * 100);
+              if (pct === 0) return '—';
+              return v > 0 ? `☺ ${pct}%` : `☹ ${pct}%`;
+            }}
+            onChange={onFaceMouthCurveChange}
+            title="Bend of the mouth's standing wave. Center = straight line; right swings the corners up into a smile, left down into a frown; the extremes are full semicircles. The mouth's average height stays on the neutral line."
+          />
+          <div
+            className="tune-slider-row hydra-shape-row"
+            title="Relax: while playback is paused the smile/frown eases back to the neutral straight line (with the wave settling), then eases back to the set bend on play. Keep: the bend stays through pause."
+          >
+            <span className="tune-slider-label">On pause</span>
+            <div className="settings-toggle-row hydra-shape-toggle">
+              <button
+                type="button"
+                className={`settings-toggle-btn ${faceMouthPauseNeutral ? 'on' : 'off'}`}
+                onClick={() => onFaceMouthPauseNeutralChange(true)}
+                aria-pressed={faceMouthPauseNeutral}
+              >
+                relax
+              </button>
+              <button
+                type="button"
+                className={`settings-toggle-btn ${!faceMouthPauseNeutral ? 'on' : 'off'}`}
+                onClick={() => onFaceMouthPauseNeutralChange(false)}
+                aria-pressed={!faceMouthPauseNeutral}
+              >
+                keep
+              </button>
+            </div>
+          </div>
+          <VizSlider
+            label="Curve width"
+            value={faceMouthCurveWidth}
+            min={0.3}
+            max={2}
+            step={0.05}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceMouthCurveWidthChange}
+            title="Mouth width at full smile/frown. The effective width blends from Mouth width to this as the Smile knob leaves center."
+          />
+          <VizSlider
+            label="Mouth line"
+            value={faceMouthLineWidth}
+            min={0.5}
+            max={6}
+            step={0.1}
+            format={(v) => `${v.toFixed(1)}×`}
+            onChange={onFaceMouthLineWidthChange}
+            title="Thickness of the mouth's standing-wave line."
+          />
+          <VizSlider
+            label="Wave height"
+            value={faceStandingHeight}
+            min={0.2}
+            max={2.5}
+            step={0.05}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={onFaceStandingHeightChange}
+            title="Amplitude of the mouth's standing wave. 100% = original."
+          />
+          <VizSlider
+            label="Wave periods"
+            value={faceStandingPeriods}
+            min={2}
+            max={60}
+            step={1}
+            format={(v) => `${v}`}
+            onChange={onFaceStandingPeriodsChange}
+            title="How many periods of the fundamental fit across the mouth. Fewer = easier to read the wave shape; more = denser, better for beat envelopes."
+          />
+          </>
+          )}
+        </section>
+      )}
 
       {(vizMode === 4 || vizQuality === 'off') && (
         <section className="hydra-section">

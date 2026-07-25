@@ -3,10 +3,11 @@ import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
+import { audioFeatures } from '../audio/AudioFeatures';
 import { droneStereo, panWidth, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { activeProfile } from '../audio/timbreProfiles';
 import { getMovingImpact } from '../audio/dissonanceSettings';
-import palette, { useTheme } from '../theme/palette';
+import palette, { useTheme, DUO_WHITE } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 import GlobalDetuneOrb from './GlobalDetuneOrb';
 
@@ -204,6 +205,22 @@ const DISS_BASELINE_Y = BAR_TOP_Y - DISS_LINE_LIFT;
 const DISS_CURVE_MAX_Y = DISS_BASELINE_Y - DISS_CURVE_HEIGHT;
 const ORB_FLOAT_GAP = 8;
 const DOT_CENTER_Y = DISS_CURVE_MAX_Y - ORB_FLOAT_GAP - DOT_SIZE / 2;
+
+// ── Played-note lines ────────────────────────────────────────────────────
+// Every sounding keyboard/MIDI note draws a vertical line on the bar at its
+// pitch, and is folded into the auto-zoom target so the view opens up to hold
+// it (a note two octaves above the drones pulls the frame out to show both).
+//
+// The line rises from the base of the spectrum to the live curve surface at
+// its pitch — the same stem the drone voices grow, minus the segment that
+// reaches up to an orb. Its geometry lives with the position lines' (see
+// _updateNoteLines), since the two share the curve-surface math.
+//
+// Envelope amp below this counts as silent: the line stops drawing and stops
+const NOTE_AMP_THRESHOLD = 0.02;
+// Two notes closer than this in log2 space (≈1 cent) draw as one line — the
+// same pitch played on both keyboard and MIDI, or a stereo pair.
+const NOTE_DEDUPE_LOG = 1 / 1200;
 
 // Same-octave keyboard indicator: a small dot floating just above the orb,
 // shown when a keyboard/MIDI note at this slot's EXACT octave is sounding.
@@ -782,6 +799,19 @@ function _levelAtBarX(barPx) {
 // Bottom of the spectrum bar — where every position line ends.
 const POS_LINE_BOTTOM_Y = BAR_TOP_Y + BAR_LINE_HEIGHT;
 
+// Release handle capping the foot of each played-note stem. The rotated tick
+// labels pivot at the bar's lower edge and read upward, which leaves this strip
+// clear — so the dot sits underneath the numbers rather than colliding with
+// them. Pressing it releases that voice, the same path as re-pressing a held
+// key. 1px below where the stem ends, so it reads as the stem's foot.
+const NOTE_DOT_Y = POS_LINE_BOTTOM_Y + 1;
+// Midway between the staged-target dots (STAGED_DOT_R) and the speck this
+// started as: big enough to read as a handle, still clearly subordinate to the
+// staging chrome above the orbs.
+const NOTE_DOT_R = 4.75;
+// Still a small target, so an invisible concentric circle carries the pointer.
+const NOTE_DOT_HIT_R = 9;
+
 // Draw each voice's position line as a SINGLE SVG polyline: from the orb's edge
 // down to the live dissonance-curve surface at its frequency (the dynamic curve
 // top), then straight down to the bottom of the spectrum bar. One element per
@@ -807,6 +837,29 @@ function _updatePositionLines(lineEls, dotXs, freqXs) {
       'points',
       `${seg.x1},${seg.y1} ${freqX},${surfaceY} ${freqX},${POS_LINE_BOTTOM_Y}`,
     );
+  }
+}
+
+// Played-note lines are the position line's LOWER segment: from the base of the
+// spectrum straight up to the live curve surface at that pitch. A note has no
+// orb, so there's no upper segment — the line simply stops where a drone's
+// would turn to meet its orb, and a dot caps the base. Geometry is imperative
+// for the same reason the position lines are: the top endpoint rides the eased
+// curve, which morphs every frame.
+//
+// Each note's whole group is translated to its x, so the per-frame write is one
+// transform plus one endpoint — the line and its dot stay glued without
+// recomputing either. `voices` may name an id whose element hasn't mounted yet
+// (the poll updates its ref before React flushes the new line); it's skipped
+// and picked up next frame.
+function _updateNoteLines(noteEls, voices, range, barWidth) {
+  for (const v of voices) {
+    const els = noteEls.get(v.id);
+    if (!els || !els.line) continue;
+    const x = BAR_H_PADDING + freqToFraction(v.hz, range.logMin, range.logMax) * barWidth;
+    const surfaceY = _curveSurfaceY(_levelAtBarX(x - BAR_H_PADDING));
+    els.g.setAttribute('transform', `translate(${x.toFixed(2)},0)`);
+    els.line.setAttribute('y1', surfaceY.toFixed(2));
   }
 }
 
@@ -1257,9 +1310,20 @@ function FrequencySpectrumBar({
   // edge-pan state without immediately mutating engine freqs (which would
   // wake via addFrequencyListener) call wakeRef.current() to start it.
   const wakeRef = useRef(null);
+  // Sounding keyboard/MIDI notes, in NOMINAL Hz. `noteLines` drives the SVG
+  // (changes only on note on/off); noteVoicesRef is the same set read by the
+  // per-frame draw and zoom loops, which can't close over state; noteElsRef
+  // maps voice id → its elements, for the amp→opacity write (on the group, so
+  // the stem and its dot fade together) and the stem's curve-riding endpoint.
+  const [noteLines, setNoteLines] = useState([]);
+  const noteVoicesRef = useRef([]);
+  const noteElsRef = useRef(new Map());
   // Dissonance HUD canvas + its rAF-driving refs. draggingRef mirrors the
   // dragging set so the per-frame draw loop can read it without restarting.
   const dissCanvasRef = useRef(null);
+  // DEBUG consonance readout above the all-orb (see draw loop below).
+  const consDebugRef = useRef(null);
+  const lastConsRef = useRef(-1);
   const draggingRef = useRef(draggingDots);
   // Per-voice position lines (orb → curve surface → bar bottom) updated
   // imperatively each frame, plus refs caching the current orb x-positions the
@@ -1305,6 +1369,22 @@ function FrequencySpectrumBar({
       // Position lines (orb → live curve surface → bar bottom) are owned by the
       // SVG layer; their top endpoint reads the curve levels the draw just eased.
       _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current);
+      // Played-note stems ride the same freshly-eased curve.
+      _updateNoteLines(
+        noteElsRef.current, noteVoicesRef.current, rangeRef.current, barWidthRef.current,
+      );
+      // DEBUG readout — overall consonance from the live FFT meter
+      // (audioFeatures, updated by the Oscilloscope loop). Note: in
+      // performance mode that loop skips the FFT scan unless Hydra or the
+      // settings panel is up, so the value can go stale there.
+      const consEl = consDebugRef.current;
+      if (consEl) {
+        const pct = Math.round(audioFeatures.consonance * 100);
+        if (pct !== lastConsRef.current) {
+          consEl.textContent = `${pct}`;
+          lastConsRef.current = pct;
+        }
+      }
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
@@ -1467,6 +1547,80 @@ function FrequencySpectrumBar({
     return () => obs.disconnect();
   }, []);
 
+  // Played-note poll. Collects every sounding keyboard/MIDI voice as a NOMINAL
+  // frequency — detune AND transpose divided back out — because that's the
+  // space the orbs and the zoom range live in. A note played at an orb's pitch
+  // then lands exactly on that orb, and transposing slides the tick labels
+  // without dragging the note stems across them.
+  //
+  // Nominal has to come from getHeldNotesLive, NOT getActiveVoices().freq: that
+  // one is the SOUNDING pitch, which carries the voice's detune (and in stereo
+  // is just the L side of a pair straddling the orb). Drawing it puts the stem
+  // sharp of its own orb — and because detune is a fixed Hz offset, that error
+  // grows without bound in cents as pitch falls: ~1.5 cents at 60 Hz becomes
+  // ~6 at 28 Hz, and further with the detune orb up.
+  //
+  // Two consumers, two update rates. The zoom loop and the SVG read the pitch
+  // set, which only changes on note on/off (setState, coalesced by signature).
+  // Opacity tracks the live envelope amp, which changes every audio block, so
+  // it's written straight to the DOM — a setState per frame would rerender the
+  // draggable orbs.
+  useEffect(() => {
+    let raf = null;
+    let sig = '';
+    // Last known nominal per voice id. getHeldNotesLive drops a voice the
+    // instant it's released, but its stem lives on through the release tail —
+    // and a released voice's pitch is frozen, so the last value stays true.
+    const nominalById = new Map();
+    const tick = () => {
+      const ratio = audioEngine.getTransposeRatio() || 1;
+      const voices = keyboardVoiceManager.getActiveVoices();
+      for (const h of keyboardVoiceManager.getHeldNotesLive()) nominalById.set(h.id, h.hz);
+      const next = [];
+      const logs = [];
+      for (const v of voices) {
+        if (!(v.freq > 0) || v.amp < NOTE_AMP_THRESHOLD) continue;
+        // Fallback covers only a voice already releasing when we first saw it
+        // (mount mid-tail) — sharp by the detune, but fading out anyway.
+        const hz = nominalById.get(v.id) ?? v.freq / ratio;
+        const log = Math.log2(hz);
+        // Same pitch from two sources reads as one note on the bar.
+        let dup = false;
+        for (const l of logs) {
+          if (Math.abs(l - log) < NOTE_DEDUPE_LOG) { dup = true; break; }
+        }
+        if (dup) continue;
+        logs.push(log);
+        next.push({ id: v.id, hz, slot: v.slot });
+      }
+      next.sort((a, b) => a.hz - b.hz);
+
+      noteVoicesRef.current = next;
+      const nextSig = next.map((n) => `${n.id}:${n.hz.toFixed(4)}`).join(',');
+      if (nextSig !== sig) {
+        sig = nextSig;
+        setNoteLines(next);
+        // The pitch set moved — kick the demand-driven zoom loop so it reframes.
+        wakeRef.current?.();
+      }
+
+      for (const v of voices) {
+        const els = noteElsRef.current.get(v.id);
+        if (els) els.g.style.opacity = Math.min(1, v.amp / 0.5);
+      }
+
+      // Evict voices the manager has dropped entirely, so a long session's
+      // note history can't accumulate in the cache.
+      if (nominalById.size > voices.length) {
+        const alive = new Set(voices.map((v) => v.id));
+        for (const id of nominalById.keys()) if (!alive.has(id)) nominalById.delete(id);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, []);
+
   // Auto-zoom is demand-driven: ticks only when (a) the engine notifies a
   // freq/mute change, (b) an edge-pan is active, or (c) the zoom range is
   // still easing toward target. At idle (no drag, no engine changes, range
@@ -1584,6 +1738,12 @@ function FrequencySpectrumBar({
             let framed = newFreqs;
             if (stagedActive && stagedActive.length) framed = framed.concat(stagedActive);
             if (tailFreqs.length) framed = framed.concat(tailFreqs);
+            // Sounding keyboard/MIDI notes pull the frame open too, so a note
+            // played outside the drones' span zooms out to show both. Framing
+            // exactly the set the note poll draws keeps the view honest: a
+            // line is on screen for as long as it exists.
+            const noteVoices = noteVoicesRef.current;
+            if (noteVoices.length) framed = framed.concat(noteVoices.map((n) => n.hz));
             const target = computeTargetRange(framed);
             // Tails expire silently (no engine event) — keep re-evaluating
             // while a ceremony is playing so the zoom-in starts on its own
@@ -2130,6 +2290,10 @@ function FrequencySpectrumBar({
       )}
       <div className="fsb-row" style={{ height: TOTAL_HEIGHT }}>
       <div className="fsb-side fsb-side-left">
+        {/* DEBUG: overall consonance (0–100) from audioFeatures.consonance —
+            the FFT-measured Sethares value, so it reflects the full mix
+            (keyboard, folding, saturation), not just the drone orbs. */}
+        <div className="fsb-cons-debug" ref={consDebugRef} aria-hidden="true">–</div>
         <GlobalDetuneOrb onDragStateChange={setGlobalOrbDragging} />
       </div>
       <div
@@ -2197,6 +2361,72 @@ function FrequencySpectrumBar({
                 ))}
               </mask>
             </defs>
+            {/* Played notes: one vertical line per sounding keyboard/MIDI
+                voice, at its pitch. Drawn first so the orbs and their position
+                lines stay on top, and colored by the drone slot the note was
+                played from, which ties a line back to the orb it came from.
+                Opacity is written per-frame from the envelope amp by the note
+                poll, so a line attacks and releases with the note it marks. */}
+            {noteLines.map((n) => {
+              // Every voice binds to a slot (noteOn refuses a note without one;
+              // spawnVoiceAt falls back to the nearest drone), so the neutral
+              // is for the slotless voice the KVM API still permits — and it
+              // tests null explicitly because `null >= 0` is true, which would
+              // otherwise reach oscColor(null) and take osc 1's classic color.
+              const color = n.slot != null && n.slot >= 0
+                ? palette.oscColor(n.slot, oscillatorCount)
+                : DUO_WHITE;
+              // Children sit at local x=0; _updateNoteLines translates the group
+              // to the note's pitch and rides y1 up to the curve surface every
+              // frame. The mount-time transform here just avoids a one-frame
+              // flash at the bar's left edge before that first write lands.
+              const x = BAR_H_PADDING + freqToFraction(n.hz, range.logMin, range.logMax) * barWidth;
+              return (
+                <g
+                  key={`note-${n.id}`}
+                  transform={`translate(${x.toFixed(2)},0)`}
+                  ref={(el) => {
+                    if (el) noteElsRef.current.set(n.id, { g: el, line: el.querySelector('line') });
+                    else noteElsRef.current.delete(n.id);
+                  }}
+                >
+                  <line
+                    x1={0}
+                    y1={POS_LINE_BOTTOM_Y}
+                    x2={0}
+                    y2={POS_LINE_BOTTOM_Y}
+                    stroke={color}
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    style={{ filter: `drop-shadow(0 0 4px ${color})` }}
+                  />
+                  <circle
+                    cx={0}
+                    cy={NOTE_DOT_Y}
+                    r={NOTE_DOT_R}
+                    fill={color}
+                    style={{ filter: `drop-shadow(0 0 3px ${color})` }}
+                  />
+                  {/* Pointer target only — the visible dot is a 5px speck.
+                      Releases this exact voice by id, so two notes a cent apart
+                      can't release each other. */}
+                  <circle
+                    className="fsb-note-dot"
+                    cx={0}
+                    cy={NOTE_DOT_Y}
+                    r={NOTE_DOT_HIT_R}
+                    fill="transparent"
+                    onPointerDown={(e) => {
+                      // Stop the press reaching the bar background, which would
+                      // otherwise read it as the start of a transpose drag.
+                      e.stopPropagation();
+                      e.preventDefault();
+                      keyboardVoiceManager.releaseVoiceById(n.id);
+                    }}
+                  />
+                </g>
+              );
+            })}
             {DISS_SHOW_POSITION_LINES && frequencies.map((_, i) => {
               // Full per-voice position line: orb edge → live curve surface →
               // bar bottom, as ONE polyline. Geometry is set every frame by

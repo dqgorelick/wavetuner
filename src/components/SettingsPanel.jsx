@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import RoutingPatchBay from './RoutingPatchBay';
-import DissonanceMeter from './DissonanceMeter';
 import {
   getMovingImpact,
   setMovingImpact,
@@ -497,9 +496,6 @@ export default function SettingsPanel({
         </div>
       </div>
 
-      <div className="settings-section settings-section-analyzer">
-        <DissonanceMeter active={isOpen} />
-      </div>
     </div>
   );
 }

@@ -31,6 +31,11 @@ export const supportsLiveCode = true;
 // pipeline must run whenever this backend is on.
 export const consumesAudioFeatures = true;
 
+// Hydra always has the feedback chain (o0 + window.vfx), on any device.
+export function supportsFeedback() {
+  return true;
+}
+
 // Re-exported for callers that need the default at boot. Mirrors the
 // shader backend's identically named export — same id string so a
 // switched-out build still runs the same default sketch.

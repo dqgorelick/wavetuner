@@ -3,7 +3,6 @@ import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { pairDissonance } from '../audio/dissonanceModel';
-import { audioFeatures } from '../audio/AudioFeatures';
 import { droneStereo, panWidth, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { activeProfile } from '../audio/timbreProfiles';
 import { getMovingImpact } from '../audio/dissonanceSettings';
@@ -1757,9 +1756,6 @@ function FrequencySpectrumBar({
   // Dissonance HUD canvas + its rAF-driving refs. draggingRef mirrors the
   // dragging set so the per-frame draw loop can read it without restarting.
   const dissCanvasRef = useRef(null);
-  // DEBUG consonance readout above the all-orb (see draw loop below).
-  const consDebugRef = useRef(null);
-  const lastConsRef = useRef(-1);
   const draggingRef = useRef(draggingDots);
   // Per-voice position lines (orb → curve surface → bar bottom) updated
   // imperatively each frame, plus refs caching the current orb x-positions the
@@ -1857,18 +1853,6 @@ function FrequencySpectrumBar({
       _updateNoteLines(
         noteElsRef.current, noteVoicesRef.current, rangeRef.current, barWidthRef.current,
       );
-      // DEBUG readout — overall consonance from the live FFT meter
-      // (audioFeatures, updated by the Oscilloscope loop). Note: in
-      // performance mode that loop skips the FFT scan unless Hydra or the
-      // settings panel is up, so the value can go stale there.
-      const consEl = consDebugRef.current;
-      if (consEl) {
-        const pct = Math.round(audioFeatures.consonance * 100);
-        if (pct !== lastConsRef.current) {
-          consEl.textContent = `${pct}`;
-          lastConsRef.current = pct;
-        }
-      }
     };
     // 60 fps cap: on ProMotion phones rAF fires at 120 Hz, doubling the
     // HUD's per-frame cost for no visible gain (the field is eased and the
@@ -3025,10 +3009,6 @@ function FrequencySpectrumBar({
       )}
       <div className="fsb-row" style={{ height: geo.totalHeight }}>
       <div className="fsb-side fsb-side-left" style={{ marginBottom: geo.sideMarginBottom }}>
-        {/* DEBUG: overall consonance (0–100) from audioFeatures.consonance —
-            the FFT-measured Sethares value, so it reflects the full mix
-            (keyboard, folding, saturation), not just the drone orbs. */}
-        <div className="fsb-cons-debug" ref={consDebugRef} aria-hidden="true">–</div>
         <GlobalDetuneOrb onDragStateChange={setGlobalOrbDragging} />
       </div>
       <div

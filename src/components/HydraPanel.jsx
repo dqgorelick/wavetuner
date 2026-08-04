@@ -7,6 +7,7 @@ import {
   selectSketch,
   getSketches,
   supportsLiveCode,
+  supportsFeedback,
   DEFAULT_SKETCH_ID,
 } from '../visuals/backend';
 import { listUserSketches, saveSketch, deleteSketch } from '../visuals/hydraStorage';
@@ -578,6 +579,9 @@ export default function HydraPanel({
         </>
       )}
 
+      {/* Hidden when the running pipeline has no feedback layer (the
+          mobile lite shader) — the sliders would be dead controls. */}
+      {supportsFeedback() && (
       <section className="hydra-section">
         <h5 className="hydra-section-title">Feedback</h5>
         <VizSlider
@@ -601,6 +605,7 @@ export default function HydraPanel({
           title="How strongly the feedback layer mixes in. 0 = no feedback; 1 = doubled feedback. Also drag-scrubable from the oscilloscope."
         />
       </section>
+      )}
 
       <section className="hydra-section">
         <h5 className="hydra-section-title">Built-ins</h5>

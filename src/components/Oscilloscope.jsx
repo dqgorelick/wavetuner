@@ -1393,9 +1393,9 @@ export default function Oscilloscope({
   // window (the analysers tap pre-master, so the audible saturation is
   // otherwise invisible here). See saturateInto.
   scopeSaturation = false,
-  // True when something actually reads window.audio this frame (Hydra
-  // running or the settings DissonanceMeter open). In performance mode
-  // the per-frame audio-feature FFT is skipped entirely when false.
+  // True when something actually reads window.audio this frame (a
+  // features-consuming visual backend running — hydra sketch uniforms).
+  // The per-frame audio-feature FFT is skipped entirely when false.
   featuresActive = true,
   // Drag-on-scope → Feedback sliders. App owns the slider state and
   // passes this callback; the pointer handlers below compute the slider

@@ -1430,12 +1430,11 @@ function App() {
         vizRotation={vizRotation}
         vizQuality={vizQuality}
         scopeSaturation={scopeSaturation}
-        // Audio features (window.audio) are only consumed when a backend
-        // that reads them is running (hydra sketch uniforms — the shader
-        // backend never reads them) or the settings panel is open (its
-        // DissonanceMeter). The scope skips the per-frame FFT entirely
-        // when neither is true.
-        featuresActive={(isHydraEnabled && consumesAudioFeatures) || isSettingsOpen}
+        // Audio features (window.audio) are only consumed by hydra sketch
+        // uniforms — the shader backend never reads them, and the settings
+        // FFT meters are gone. The scope skips the per-frame FFT entirely
+        // unless a features-consuming backend is actually running.
+        featuresActive={isHydraEnabled && consumesAudioFeatures}
         onVfxDrag={handleVfxDrag}
       />
       <HydraOverlay ref={hydraCanvasRef} visible={isHydraEnabled} />

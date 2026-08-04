@@ -34,6 +34,7 @@ export {
   selectSketch,
   getSketches,
   supportsLiveCode,
+  supportsFeedback,
   consumesAudioFeatures,
   DEFAULT_SKETCH_ID,
 } from '@visual-backend';

@@ -5,7 +5,7 @@ import keyboardVoiceManager from './audio/KeyboardVoiceManager';
 import { droneEnvelope, keyboardEnvelope } from './audio/Envelope';
 import { droneWave, keyboardWave } from './audio/Wave';
 import { droneFold, keyboardFold, FOLD_TYPE_IDS, DEFAULT_FOLD_TYPE } from './audio/Fold';
-import { droneStereo, keyboardStereo } from './audio/StereoMode';
+import { droneStereo, keyboardStereo, foldLegacyCeiling, MAX_DETUNE_HZ } from './audio/StereoMode';
 import frequencyManager from './audio/FrequencyManager';
 import { getSystem } from './audio/jiRatios';
 import midiInput from './audio/MidiInput';
@@ -14,6 +14,8 @@ import midiCCMap from './audio/MidiCCMap';
 import palette from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
+import TransportRail from './components/TransportRail';
+import NavRail from './components/NavRail';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
 import { TuningPanel, PerformPanel } from './components/FrequencyManager';
 import GenerativePanel from './components/GenerativePanel';
@@ -21,6 +23,9 @@ import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
 import KeyboardTray from './components/KeyboardTray';
 import Mixer from './components/Mixer';
+import FreqPanel from './components/FreqPanel';
+import AllPanel from './components/AllPanel';
+import SourceTrayPanel from './components/SourceTrayPanel';
 import MidiPanel from './components/MidiPanel';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
@@ -78,7 +83,9 @@ function getInitialStateFromURL() {
   const dFoldT = parseFoldType(params.get('dFoldT'));
   const kFoldT = parseFoldType(params.get('kFoldT'));
   // Per-pool stereo mode + detune. Both pools share the same param
-  // shapes: dPan/dDet for drones, kPan/kDet for keyboard.
+  // shapes: dPan/dCurve for drones, kPan/kCurve for keyboard. dDet/kDet
+  // are only READ now (legacy links) — the ceiling is pinned, so links
+  // written since carry the detune in the curve alone.
   const dPanRaw = (params.get('dPan') || '').toLowerCase();
   const droneStereoMode = dPanRaw === 'lr' || dPanRaw === 'stereo' ? dPanRaw : null;
   const droneDetuneHz = parseFloatInRange(params.get('dDet'), 0, 10);
@@ -188,19 +195,23 @@ if (INITIAL_URL_STATE.kFoldT !== null) keyboardFold.setType(INITIAL_URL_STATE.kF
 // Per-pool stereo mode + detune — pushed pre-init so the first
 // frame of audio uses the saved values rather than snapping from default.
 if (INITIAL_URL_STATE.droneStereoMode !== null) droneStereo.setMode(INITIAL_URL_STATE.droneStereoMode);
-if (INITIAL_URL_STATE.droneDetuneHz !== null) droneStereo.setDetuneHz(INITIAL_URL_STATE.droneDetuneHz);
 // URL-provided curves are pushed in pre-init; the random default is
 // applied AFTER audioEngine.initialize() so it sees the real
 // oscillator count (autosave can load 12 slots, but INITIAL_URL_STATE
 // .count would still be the URL/4-default — pre-seeding to that count
 // would leave the higher slots flat).
+//
+// dDet/kDet are LEGACY ceilings from links shared before the ceiling
+// was pinned at MAX_DETUNE_HZ — folded into the curve so an old link
+// still sounds the way it was shared (see foldLegacyCeiling).
 if (INITIAL_URL_STATE.droneCurve) {
-  droneStereo.detuneCurve = INITIAL_URL_STATE.droneCurve.slice();
+  droneStereo.detuneCurve = foldLegacyCeiling(
+    INITIAL_URL_STATE.droneCurve, INITIAL_URL_STATE.droneDetuneHz);
 }
 if (INITIAL_URL_STATE.kbdStereoMode !== null) keyboardStereo.setMode(INITIAL_URL_STATE.kbdStereoMode);
-if (INITIAL_URL_STATE.kbdDetuneHz !== null) keyboardStereo.setDetuneHz(INITIAL_URL_STATE.kbdDetuneHz);
 if (INITIAL_URL_STATE.kbdCurve) {
-  keyboardStereo.detuneCurve = INITIAL_URL_STATE.kbdCurve.slice();
+  keyboardStereo.detuneCurve = foldLegacyCeiling(
+    INITIAL_URL_STATE.kbdCurve, INITIAL_URL_STATE.kbdDetuneHz);
 }
 // Color theme — pushed pre-mount so the very first paint already uses
 // the user's saved palette rather than flashing the default.
@@ -288,32 +299,92 @@ function App() {
   }, [isHydraEnabled]);
   const [isHydraPanelOpen, setIsHydraPanelOpen] = useState(false);
   const hydraCanvasRef = useRef(null);
-  // Mixer visibility toggle — persisted so the user's preference survives
-  // reloads. The MIXER button in OscillatorControls flips this.
-  const [isMixerOpen, setIsMixerOpen] = useState(() => {
-    try { return localStorage.getItem('mixerOpen') !== '0'; } catch { return true; }
+  // Side-menu radio — mixer / tuning / perform open ONE at a time in the
+  // column beside the console (iPad-style); clicking the open menu's
+  // toggle closes it. Persisted under a single key; falls back to the
+  // legacy per-panel keys from before the radio so an existing session
+  // reopens whichever panel it had (mixer wins, then tuning, then perform).
+  const [sideMenu, setSideMenu] = useState(() => {
+    try {
+      const v = localStorage.getItem('sideMenu');
+      if (v === 'none') return null;
+      if (v === 'mixer' || v === 'tuning' || v === 'perform') return v;
+      if (localStorage.getItem('mixerOpen') !== '0') return 'mixer';
+      if (localStorage.getItem('tuningOpen') === '1') return 'tuning';
+      if (localStorage.getItem('performOpen') === '1') return 'perform';
+      return null;
+    } catch { return 'mixer'; }
   });
   useEffect(() => {
-    try { localStorage.setItem('mixerOpen', isMixerOpen ? '1' : '0'); } catch { /* ignore */ }
-  }, [isMixerOpen]);
+    try { localStorage.setItem('sideMenu', sideMenu ?? 'none'); } catch { /* ignore */ }
+  }, [sideMenu]);
+  // Console selection → frequency / ALL panel (iOS "selection IS the
+  // panel"): a voice index, 'all', or null. Not persisted — a fresh
+  // load starts with no panel, matching iOS. Session-only state.
+  const [freqPanelSel, setFreqPanelSel] = useState(null);
+  // Knob-band source tray (waves / shape / fold / noise / saturate) —
+  // also a resident of the side-menu column, so it's part of the same
+  // radio. Session-only, like the frequency panels.
+  const [sourceTray, setSourceTray] = useState(null);
+  const toggleSideMenu = useCallback((id) => {
+    setSideMenu((cur) => (cur === id ? null : id));
+    // The frequency / ALL panels and the source trays share the
+    // side-menu column — opening a menu takes the column (last-opened
+    // wins, same radio behavior).
+    setFreqPanelSel(null);
+    setSourceTray(null);
+  }, []);
+  const toggleSourceTray = useCallback((kind) => {
+    setSourceTray((cur) => (cur === kind ? null : kind));
+    setFreqPanelSel(null);
+    setSideMenu(null);
+  }, []);
 
-  // Tuning panel visibility — persisted. Toggled by the TUNING button.
-  const [isTuningOpen, setIsTuningOpen] = useState(() => {
-    try { return localStorage.getItem('tuningOpen') === '1'; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('tuningOpen', isTuningOpen ? '1' : '0'); } catch { /* ignore */ }
-  }, [isTuningOpen]);
+  // Selecting a voice takes over the side-menu column (radio with
+  // mixer / tuning / perform — one surface in the column at a time).
+  const handleSelectVoice = useCallback((sel) => {
+    setFreqPanelSel(sel);
+    if (sel != null) {
+      setSideMenu(null);
+      setSourceTray(null);
+    }
+  }, []);
 
-  // Perform panel (parameter lock: tracked params + transition timing) —
-  // split out of the tuning panel so performance controls stand alone.
-  // Persisted. Toggled by the PERFORM button next to TUNING.
-  const [isPerformOpen, setIsPerformOpen] = useState(() => {
-    try { return localStorage.getItem('performOpen') === '1'; } catch { return false; }
-  });
+  // The column reveals itself open and collapses closed (App.css
+  // .side-menu-stack) — so on close it has to stay mounted, CONTENTS AND
+  // ALL, until the collapse finishes, or React yanks the panel in a
+  // single frame and only an empty box animates. `shown` tracks the live
+  // radio exactly on the way in (switching surfaces while the column is
+  // open just swaps content, no re-animation) and lags it by the
+  // animation on the way out.
+  const isColumnOpen = sideMenu != null || freqPanelSel != null || sourceTray != null;
+  const [shown, setShown] = useState(
+    () => ({ menu: sideMenu, freq: freqPanelSel, tray: sourceTray })
+  );
+  // Adjusted during render (React's supported pattern for state derived
+  // from other state) so an open column's content swaps in the SAME
+  // commit as the click — only the closing lag needs a timer.
+  if (isColumnOpen && (shown.menu !== sideMenu || shown.freq !== freqPanelSel
+    || shown.tray !== sourceTray)) {
+    setShown({ menu: sideMenu, freq: freqPanelSel, tray: sourceTray });
+  }
+  // A column restored from localStorage is simply THERE on load — it
+  // shouldn't reveal itself at a console that already made room for it.
+  // The reveal arms the first time the column actually closes.
+  const [revealArmed, setRevealArmed] = useState(() => !isColumnOpen);
   useEffect(() => {
-    try { localStorage.setItem('performOpen', isPerformOpen ? '1' : '0'); } catch { /* ignore */ }
-  }, [isPerformOpen]);
+    if (isColumnOpen) return undefined;
+    // Must match --side-menu-ms in App.css. Mobile (the ≤768px covering
+    // sheet) doesn't animate at all — desktop/tablet only — so there the
+    // column unmounts on the spot instead of lingering for a reveal that
+    // never plays.
+    const ms = window.matchMedia('(max-width: 768px)').matches ? 0 : 340;
+    const t = setTimeout(() => {
+      setShown({ menu: null, freq: null, tray: null });
+      setRevealArmed(true);
+    }, ms);
+    return () => clearTimeout(t);
+  }, [isColumnOpen]);
 
   // Transition (generative) panel visibility — deliberately NOT persisted
   // while the feature is in development: every app load starts closed; the
@@ -528,6 +599,11 @@ function App() {
   // user-facing toggle.
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [oscillatorCount, setOscillatorCount] = useState(INITIAL_URL_STATE.count);
+  // Close the frequency panel when its voice disappears (count shrink) —
+  // the iOS oscillatorCount-shrink auto-closer.
+  useEffect(() => {
+    setFreqPanelSel((s) => (typeof s === 'number' && s >= oscillatorCount ? null : s));
+  }, [oscillatorCount]);
   const [routingMap, setRoutingMap] = useState({});
   // Continuous per-voice pans (−1…+1), mirrored from the engine. Kept
   // fresh by the engine's onPanChange callback below, which fires for
@@ -538,7 +614,15 @@ function App() {
       setVoicePans(audioEngine.getVoicePans());
       setRoutingMap(audioEngine.getRoutingMap());
     };
-    return () => { audioEngine.onPanChange = null; };
+    // Engine-side pan resets (the ⊙/LR mode flip, fired from the console's
+    // ALL lane, the ALL panel and Settings) lerp at the same PERFORM glide
+    // time a dial click uses. A hook rather than an import so the engine
+    // stays clear of FrequencyManager.
+    audioEngine.getPanGlideMs = () => frequencyManager.recallGlideMs;
+    return () => {
+      audioEngine.onPanChange = null;
+      audioEngine.getPanGlideMs = null;
+    };
   }, []);
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   const [activeOscs, setActiveOscs] = useState(() => new Set());
@@ -560,24 +644,17 @@ function App() {
   // class shifts every bottom-anchored fixed element up by the tray's
   // height (see App.css).
   const [isKbdTrayOpen, setIsKbdTrayOpen] = useState(false);
-  // Keyboard mapping picker. Lives in React state so SettingsPanel can
-  // render the radios; pushed into the Tuning singleton on change so
-  // non-React callers (voice manager, computer-keyboard hook) see it via
-  // tuning.degreeAndOctaveForMidi.
+  // Keyboard mapping picker. Lives in React state so the keyboard tray's
+  // "notes" toggle can render it; pushed into the Tuning singleton on
+  // change so non-React callers (voice manager, computer-keyboard hook)
+  // see it via tuning.degreeAndOctaveForMidi. Defaults to 'chromatic'
+  // (every key plays); Load flips it to white-only for 7-note scales.
   const [kbdKeyMode, setKbdKeyMode] = useState('chromatic'); // 'chromatic' | 'white-only'
-  const [kbdFillMode, setKbdFillMode] = useState('fill');    // 'fill' | 'jump'
   useEffect(() => { tuning.setKeyMode(kbdKeyMode); }, [kbdKeyMode]);
-  useEffect(() => { tuning.setFillMode(kbdFillMode); }, [kbdFillMode]);
-  // Auto-default: when there are more drone notes than fit in one
-  // octave for the current key mode, the only useful fill mode is
-  // "fill" (jump would silence the extra notes). Threshold: 7 for
-  // white-only (7 keys per octave), 11 for chromatic (12 keys per
-  // octave — at N=12 jump and fill collapse to the same thing, but
-  // beyond that fill is the only mode that exposes every degree).
-  useEffect(() => {
-    const threshold = kbdKeyMode === 'white-only' ? 7 : 11;
-    if (oscillatorCount > threshold) setKbdFillMode('fill');
-  }, [oscillatorCount, kbdKeyMode]);
+  // Octave fill mode is pinned to 'fill' (Tuning's default) — 'jump'
+  // silences drone notes past one octave, so it was only ever useful at
+  // small voice counts. The picker is gone from Settings; the mode is
+  // still a Tuning field if we ever want to surface it again.
   // Hold mode is per source. The computer keyboard runs in an expressive
   // mode (long ramp on attack, freeze-on-keyup), so hold-on is its
   // default; MIDI defaults to press-and-hold like a normal controller.
@@ -609,6 +686,47 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('showKbdLabels', showKbdLabels ? '1' : '0'); } catch { /* ignore */ }
   }, [showKbdLabels]);
+  // Spectrum orb row layout — 'below' flips the orbs under the bar (iOS
+  // parity: number beneath each orb, drag Hz readout up top). Toggled in
+  // Settings, persisted under "orbsBelow". Below is the default; only an
+  // explicit "above spectrum" choice ('0') keeps the classic layout.
+  const [orbsBelow, setOrbsBelow] = useState(() => {
+    try { return localStorage.getItem('orbsBelow') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('orbsBelow', orbsBelow ? '1' : '0'); } catch { /* ignore */ }
+  }, [orbsBelow]);
+  // Pan dots — pin each orb's pan indicator on full-time instead of only
+  // flashing it while a pan changes (iOS panDotAlwaysOn, which defaults off
+  // there; on web it's the default). Persisted under "panDots"; only an
+  // explicit "off" ('0') hides them.
+  const [panDots, setPanDots] = useState(() => {
+    try { return localStorage.getItem('panDots') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('panDots', panDots ? '1' : '0'); } catch { /* ignore */ }
+  }, [panDots]);
+  // Orb drag feel — three ways the vertical axis can read during a DRAG (the
+  // grab gesture is unaffected by all of them and keeps its volume drag):
+  //   'linear'    — one pixel of horizontal drag is worth the same amount of
+  //                 pitch wherever the pointer is.
+  //   'precision' — video-scrubber tiers: pulling the pointer away from the
+  //                 bar scales the horizontal drag DOWN (1/2 → 1/5 → 1/20),
+  //                 so a long pull buys fine tuning without a modifier key.
+  //   'ios'       — the iOS "linear scaling" ramp (scrubSettings.js): fine at
+  //                 the grab point, accelerating to a coarse sweep as you pull
+  //                 away in EITHER direction. Its own sliders live in Settings.
+  // Persisted under "orbDragMode", migrating the older boolean "scrubPrecision".
+  const [orbDragMode, setOrbDragMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('orbDragMode');
+      if (saved === 'linear' || saved === 'precision' || saved === 'ios') return saved;
+      return localStorage.getItem('scrubPrecision') === '1' ? 'precision' : 'linear';
+    } catch { return 'linear'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('orbDragMode', orbDragMode); } catch { /* ignore */ }
+  }, [orbDragMode]);
   // MIDI mappings panel. Opening it == entering learn mode (Ableton
   // style). Closing it cancels any in-progress arm. Tracked outside
   // React state for the button + dots so a CC stream doesn't trigger
@@ -694,6 +812,15 @@ function App() {
     setSaturationDrive(drive);
     audioEngine.setSaturationDrive(drive);
   }, []);
+  // Show the master saturation in the oscilloscope. The analysers tap
+  // pre-master (saturation is post-master by design), so when this is on
+  // the scope replays the same curve over its window in JS — see
+  // Oscilloscope's saturateInto. Persisted like the other viz options.
+  // Default ON since 2026-08-03; stored under a fresh key because the
+  // mount-effect below had already auto-written the old default-off
+  // value ('scopeSaturation': 0) into every visitor's localStorage.
+  const [scopeSaturation, setScopeSaturation] = useState(() => lsNum('satInScope', 1) !== 0);
+  useEffect(() => { lsSet('satInScope', scopeSaturation ? 1 : 0); }, [scopeSaturation]);
 
   // Color theme — mirrors the palette singleton so SettingsPanel can render
   // the picker. Singleton was already populated from the URL above (and
@@ -935,13 +1062,17 @@ function App() {
     //   - autosave provided one (preInitApplyPatch restored it above).
     // Without that skip, every reload after saving would erase the user's
     // curve in favor of fresh random.
+    // The seed is capped at each pool's newSlotHz (1 / 1.5 Hz) rather
+    // than the pinned 10 Hz ceiling — a fresh load should open on the
+    // same gentle spread it always had; the ceiling is there for the
+    // user to reach for, not to land on.
     const autoDroneCurve = pendingAutosave?.snapshot?.stereo?.drone?.curve;
     const autoKbdCurve = pendingAutosave?.snapshot?.stereo?.keyboard?.curve;
     if (!INITIAL_URL_STATE.droneCurve && !Array.isArray(autoDroneCurve)) {
-      droneStereo.randomizeCurve();
+      droneStereo.randomizeCurve(droneStereo.newSlotValue * MAX_DETUNE_HZ);
     }
     if (!INITIAL_URL_STATE.kbdCurve && !Array.isArray(autoKbdCurve)) {
-      keyboardStereo.randomizeCurve();
+      keyboardStereo.randomizeCurve(keyboardStereo.newSlotValue * MAX_DETUNE_HZ);
     }
 
     // Kick off Web MIDI from the user gesture. requestMIDIAccess on
@@ -1026,16 +1157,17 @@ function App() {
     if (droneFold.type !== DEFAULT_FOLD_TYPE)    queryParts.push(`dFoldT=${droneFold.type}`);
     if (keyboardFold.type !== DEFAULT_FOLD_TYPE) queryParts.push(`kFoldT=${keyboardFold.type}`);
     // Per-pool stereo mode + detune — only encode when non-default
-    // (mode='lr', detune=0) to keep URLs short.
+    // (mode='lr', curve all-zero) to keep URLs short. No dDet/kDet: the
+    // ceiling is pinned, so the curve alone carries the detune. 3 dp
+    // because the curve is now absolute against 10 Hz — 2 dp would
+    // quantize sub-Hz beating to 0.1 Hz steps.
     if (droneStereo.mode !== 'lr')      queryParts.push(`dPan=${droneStereo.mode}`);
-    if (droneStereo.detuneHz > 0)       queryParts.push(`dDet=${droneStereo.detuneHz.toFixed(1)}`);
     if (droneStereo.detuneCurve.some(v => v > 0)) {
-      queryParts.push(`dCurve=${droneStereo.detuneCurve.map(v => v.toFixed(2)).join(',')}`);
+      queryParts.push(`dCurve=${droneStereo.detuneCurve.map(v => v.toFixed(3)).join(',')}`);
     }
     if (keyboardStereo.mode !== 'lr')   queryParts.push(`kPan=${keyboardStereo.mode}`);
-    if (keyboardStereo.detuneHz > 0)    queryParts.push(`kDet=${keyboardStereo.detuneHz.toFixed(1)}`);
     if (keyboardStereo.detuneCurve.some(v => v > 0)) {
-      queryParts.push(`kCurve=${keyboardStereo.detuneCurve.map(v => v.toFixed(2)).join(',')}`);
+      queryParts.push(`kCurve=${keyboardStereo.detuneCurve.map(v => v.toFixed(3)).join(',')}`);
     }
     // Theme — only encode when not the default ('duo') to keep URLs short.
     if (palette.theme !== 'duo') queryParts.push(`t=${palette.theme}`);
@@ -1164,6 +1296,22 @@ function App() {
     }
   }, [isMobile, oscillatorCount, maxOscillators, handleOscillatorCountChange]);
 
+  // Mobile drops three surfaces entirely (Dan, 2026-08-04): the on-screen
+  // KEYBOARD and the MIXER menu (their toggles come off the right stack)
+  // and the MIDI menu (its corner button comes out of the top-left row).
+  // Hiding the toggle isn't enough on its own — the keyboard tray is
+  // session state that survives a resize and the side menu is restored
+  // from localStorage (where 'mixer' is the default), so anything already
+  // open would be stranded on screen with no way back to it. Close them
+  // here. The tuning / perform menus keep their NavRail toggles, so only
+  // 'mixer' is cleared out of the radio.
+  useEffect(() => {
+    if (!isMobile) return;
+    setIsKbdTrayOpen(false);
+    setSideMenu((cur) => (cur === 'mixer' ? null : cur));
+    setIsMidiPanelOpen(false);
+  }, [isMobile]);
+
   const handleRoutingChange = useCallback(async (action, oscIndex, outputChannel) => {
     // Fade out before routing change to prevent pops
     const wasPaused = audioEngine.paused;
@@ -1193,17 +1341,16 @@ function App() {
   // mode) — click-free at any drag speed, no dip, no fade needed here.
   // State mirrors (voicePans + routingMap projection) refresh via the
   // engine's onPanChange callback above.
-  const handleSetVoicePan = useCallback((oscIndex, pan) => {
-    audioEngine.setVoicePan(oscIndex, pan);
-  }, []);
-
-  // Reset button in the drone tray — every voice back to its origin
-  // pan/routing. Stereo-pair voices glide home; only multichannel
-  // patch-bay assignments need the click-free dip.
-  const handleResetVoiceRouting = useCallback(() => {
-    audioEngine.resetRoutingToDefaults();
-    setRoutingMap(audioEngine.getRoutingMap());
-    setVoicePans(audioEngine.getVoicePans());
+  // A CLICK on the dial (side ↔ center) passes { glide: true }: it's a
+  // jump, so it lerps across at PERFORM's recall glide time — the same
+  // number the spectrum bar's transpose-reset click borrows — instead of
+  // teleporting the image. Drags stay direct.
+  const handleSetVoicePan = useCallback((oscIndex, pan, { glide = false } = {}) => {
+    if (glide) {
+      audioEngine.glideVoicePan(oscIndex, pan, frequencyManager.recallGlideMs);
+    } else {
+      audioEngine.setVoicePan(oscIndex, pan);
+    }
   }, []);
 
   // Toggling the drone stereo mode (Settings or Mixer) resets per-voice
@@ -1248,7 +1395,7 @@ function App() {
   }, []);
 
   return (
-    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''} drone-tray-open${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
+    <div id="wrapper" className={`${isPaused ? 'paused' : ''}${isKbdTrayOpen ? ' kbd-tray-open' : ''}${isHydraEnabled ? ' hydra-mode' : ''}${isSettingsOpen ? ' settings-open' : ''}`.trim()}>
       {(!isStarted || isHelpOpen) && (
         <StartScreen
           onStart={isStarted ? handleCloseHelp : handleStart}
@@ -1282,6 +1429,7 @@ function App() {
         vizOutline={vizOutline}
         vizRotation={vizRotation}
         vizQuality={vizQuality}
+        scopeSaturation={scopeSaturation}
         // Audio features (window.audio) are only consumed when Hydra is
         // running (sketch uniforms) or the settings panel is open (its
         // DissonanceMeter). In performance mode the scope skips the
@@ -1298,109 +1446,146 @@ function App() {
           <FrequencySpectrumBar
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
+            orbDragMode={orbDragMode}
             onActiveChange={setActiveOscs}
             extraActive={fineTuningOscs}
             suppressAutoUnmute={isKbdTrayOpen}
             onOscillatorCountChange={handleOscillatorCountChange}
             maxOscillators={maxOscillators}
             onDragStateChange={setIsOrbDragging}
+            orbsBelow={orbsBelow}
+            panDots={panDots}
+            // The console's selection reaches the orb row: the selected
+            // voice's orb wears a white ring, the counterpart of the note
+            // cell's corner brackets.
+            selectedVoice={freqPanelSel}
           />
-          {(isTuningOpen || isPerformOpen) && (
-            <div className="left-stack">
-              {isTuningOpen && (
-                <TuningPanel
-                  oscillatorCount={oscillatorCount}
-                  onOscillatorCountChange={handleOscillatorCountChange}
-                  maxOscillators={maxOscillators}
-                  onAlign={handleAlign}
-                  onLoad={handleLoad}
-                  isAligning={isAligning}
-                  tuningSystem={tuningSystem}
-                  onTuningSystemChange={handleTuningSystemChange}
-                  scaleSize={scaleSize}
-                  onScaleSizeChange={setScaleSize}
-                  frozen={isOrbDragging || isAligning}
-                />
-              )}
-              {isPerformOpen && <PerformPanel />}
-            </div>
-          )}
-          <div className="right-stack">
-            {isMixerOpen && (
-              <Mixer
-                oscillatorCount={oscillatorCount}
-                minOscillators={2}
-                maxOscillators={maxOscillators}
-                onSlotsChange={syncStateFromEngine}
-                midiLearnOn={isMidiPanelOpen}
-              />
-            )}
-            {/* Panel toggles — always visible, beneath the mixer on the right. */}
-            <div className="right-toggles">
-              <button
-                type="button"
-                className={`bottom-cell bottom-toggle ${isKbdTrayOpen ? 'on' : 'off'}`}
-                onClick={() => setIsKbdTrayOpen((v) => !v)}
-                aria-pressed={isKbdTrayOpen}
-                title={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
-                aria-label={isKbdTrayOpen ? 'Hide keyboard' : 'Show keyboard'}
-              >
-                <span className="bottom-toggle-label">KBD</span>
-              </button>
-              <button
-                type="button"
-                className={`bottom-cell bottom-toggle ${isMixerOpen ? 'on' : 'off'}`}
-                onClick={() => setIsMixerOpen((v) => !v)}
-                aria-pressed={isMixerOpen}
-                title={isMixerOpen ? 'Hide mixer' : 'Show mixer'}
-                aria-label={isMixerOpen ? 'Hide mixer' : 'Show mixer'}
-              >
-                <span className="bottom-toggle-label">MIXER</span>
-              </button>
-              <button
-                type="button"
-                className={`bottom-cell bottom-toggle ${isTuningOpen ? 'on' : 'off'}`}
-                onClick={() => setIsTuningOpen((v) => !v)}
-                aria-pressed={isTuningOpen}
-                title={isTuningOpen ? 'Hide tuning' : 'Show tuning'}
-                aria-label={isTuningOpen ? 'Hide tuning' : 'Show tuning'}
-              >
-                <span className="bottom-toggle-label">TUNING</span>
-              </button>
-              <button
-                type="button"
-                className={`bottom-cell bottom-toggle ${isPerformOpen ? 'on' : 'off'}`}
-                onClick={() => setIsPerformOpen((v) => !v)}
-                aria-pressed={isPerformOpen}
-                title={isPerformOpen ? 'Hide perform controls' : 'Show perform controls — tracked parameters and transition timing'}
-                aria-label={isPerformOpen ? 'Hide perform controls' : 'Show perform controls'}
-              >
-                <span className="bottom-toggle-label">PERFORM</span>
-              </button>
-              <button
-                type="button"
-                className={`bottom-cell bottom-toggle ${isTransitionOpen ? 'on' : 'off'}`}
-                onClick={() => setIsTransitionOpen((v) => !v)}
-                aria-pressed={isTransitionOpen}
-                title={isTransitionOpen ? 'Hide transitions' : 'Show transitions'}
-                aria-label={isTransitionOpen ? 'Hide transitions' : 'Show transitions'}
-              >
-                <span className="bottom-toggle-label">
-                  <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-                    <path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z" />
-                  </svg>
-                </span>
-              </button>
-            </div>
-          </div>
+          {/* (The floating .right-stack group that held the KBD / MIXER
+              toggles is gone — Dan, 2026-08-04: both moved into the right
+              edge rail under the dice, joining perform / tuning /
+              transitions, so every panel toggle lives in one column.) */}
 
           <OscillatorControls
+            // Edge rails — the iOS master/right rails as in-flow columns
+            // flanking the console row: play/pause + master meter fader on
+            // the left, the nav icons (perform folder / Hz / dice) +
+            // undo/redo on the right. They follow the section as it widens.
+            leftRail={<TransportRail isPaused={isPaused} onPausedChange={setIsPaused} />}
+            rightRail={(
+              <NavRail
+                sideMenu={sideMenu}
+                onToggleSideMenu={toggleSideMenu}
+                transitionOpen={isTransitionOpen}
+                onToggleTransition={() => setIsTransitionOpen((v) => !v)}
+                // KBD + mixer tabs are desktop-only (mobile drops both
+                // surfaces entirely — see the force-close effect above).
+                showKbdMixer={!isMobile}
+                kbdOpen={isKbdTrayOpen}
+                onToggleKbd={() => setIsKbdTrayOpen((v) => !v)}
+              />
+            )}
             oscillatorCount={oscillatorCount}
-            isPaused={isPaused}
-            onPausedChange={setIsPaused}
             voicePans={voicePans}
             onSetVoicePan={handleSetVoicePan}
-            onResetVoiceRouting={handleResetVoiceRouting}
+            saturationCurve={saturationCurve}
+            saturationDrive={saturationDrive}
+            onSaturationCurveChange={handleSaturationCurveChange}
+            onSaturationDriveChange={handleSaturationDriveChange}
+            openTray={sourceTray}
+            onToggleTray={toggleSourceTray}
+            selectedVoice={freqPanelSel}
+            onSelectVoice={handleSelectVoice}
+            // Orbs under the finger get bracketed in the console too (the
+            // set the spectrum bar reports through onActiveChange).
+            activeVoices={activeOscs}
+            // iPad-style side-menu column: open menus stack to the right of
+            // the mixer console (top → bottom: mixer, tuning, perform) and
+            // the console shifts left so the pair stays centered. The
+            // per-voice frequency / ALL panels (opened off the console's
+            // note readouts / ALL caption) and the knob band's source
+            // trays (waves / shape / fold / noise / saturate) share the
+            // column, radio-style — they carry their own header, so no
+            // side-menu-head. Settings and the save states will join this
+            // stack in a later pass.
+            // What the column RENDERS comes from `shown` (the lagged
+            // radio) rather than the live state, so the close animation
+            // has something to collapse; the buttons still read the live
+            // state.
+            sideMenus={(shown.menu != null || shown.freq != null || shown.tray != null) ? (
+              <div className={`side-menu-stack${isColumnOpen ? '' : ' is-closing'}${revealArmed ? '' : ' no-reveal'}`}>
+                {shown.freq === 'all' && (
+                  <AllPanel
+                    oscillatorCount={oscillatorCount}
+                    minOscillators={2}
+                    maxOscillators={maxOscillators}
+                    onOscillatorCountChange={handleOscillatorCountChange}
+                    onClose={() => setFreqPanelSel(null)}
+                  />
+                )}
+                {shown.freq != null && shown.freq !== 'all' && (
+                  <FreqPanel
+                    voice={shown.freq}
+                    voicePans={voicePans}
+                    onSetVoicePan={handleSetVoicePan}
+                    onClose={() => setFreqPanelSel(null)}
+                  />
+                )}
+                {shown.tray != null && (
+                  <SourceTrayPanel
+                    kind={shown.tray}
+                    onClose={() => setSourceTray(null)}
+                    saturationCurve={saturationCurve}
+                    saturationDrive={saturationDrive}
+                    onSaturationCurveChange={handleSaturationCurveChange}
+                    onSaturationDriveChange={handleSaturationDriveChange}
+                    scopeSaturation={scopeSaturation}
+                    onScopeSaturationChange={setScopeSaturation}
+                  />
+                )}
+                {/* iOS-iPhone menu grammar: title bar with the menu's name
+                    and a ✕ that closes it (same header vocabulary as the
+                    source trays). On mobile the stack becomes a full-width
+                    covering sheet — see the 768px block in App.css. */}
+                {shown.menu != null && (
+                  <div className="side-menu-head">
+                    <span className="side-menu-title">{shown.menu}</span>
+                    <button
+                      type="button"
+                      className="side-menu-close"
+                      onClick={() => setSideMenu(null)}
+                      aria-label={`Close ${shown.menu} menu`}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+                {shown.menu === 'mixer' && (
+                  <Mixer
+                    oscillatorCount={oscillatorCount}
+                    minOscillators={2}
+                    maxOscillators={maxOscillators}
+                    onSlotsChange={syncStateFromEngine}
+                    midiLearnOn={isMidiPanelOpen}
+                  />
+                )}
+                {shown.menu === 'tuning' && (
+                  <TuningPanel
+                    oscillatorCount={oscillatorCount}
+                    onOscillatorCountChange={handleOscillatorCountChange}
+                    maxOscillators={maxOscillators}
+                    onAlign={handleAlign}
+                    onLoad={handleLoad}
+                    isAligning={isAligning}
+                    tuningSystem={tuningSystem}
+                    onTuningSystemChange={handleTuningSystemChange}
+                    scaleSize={scaleSize}
+                    onScaleSizeChange={setScaleSize}
+                    frozen={isOrbDragging || isAligning}
+                  />
+                )}
+                {shown.menu === 'perform' && <PerformPanel />}
+              </div>
+            ) : null}
           />
           <button
             className="help-toggle"
@@ -1591,6 +1776,10 @@ function App() {
               <path fill="currentColor" d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" />
             </svg>
           </button>
+          {/* MIDI sits at the end of the top-LEFT corner row. Off on
+              mobile (Dan, 2026-08-04) — a phone browser has no MIDI
+              devices to pick and the row is tight. */}
+          {!isMobile && (
           <button
             className={`midi-toggle${isMidiPanelOpen ? ' active' : ''}`}
             onClick={handleMidiToggle}
@@ -1602,6 +1791,7 @@ function App() {
             <span ref={noteDotRef} className="midi-dot note" />
             <span ref={ccDotRef} className="midi-dot cc" />
           </button>
+          )}
           <button
             className={`settings-toggle${isSettingsOpen ? ' active' : ''}`}
             onClick={handleSettingsToggle}
@@ -1617,6 +1807,8 @@ function App() {
             isOpen={isMidiPanelOpen}
             onClose={() => setIsMidiPanelOpen(false)}
             oscillatorCount={oscillatorCount}
+            velocityCurve={velocityCurve}
+            onVelocityCurveChange={setVelocityCurve}
           />
           <SettingsPanel
             isOpen={isSettingsOpen}
@@ -1629,14 +1821,8 @@ function App() {
             onTuneVarianceChange={setTuneVarianceHz}
             tuneGlideSec={tuneGlideSec}
             onTuneGlideChange={setTuneGlideSec}
-            velocityCurve={velocityCurve}
-            onVelocityCurveChange={setVelocityCurve}
             theme={theme}
             onThemeChange={handleThemeChange}
-            kbdKeyMode={kbdKeyMode}
-            onKbdKeyModeChange={setKbdKeyMode}
-            kbdFillMode={kbdFillMode}
-            onKbdFillModeChange={setKbdFillMode}
             saturationCurve={saturationCurve}
             onSaturationCurveChange={handleSaturationCurveChange}
             saturationDrive={saturationDrive}
@@ -1645,6 +1831,12 @@ function App() {
             onKbdRepressModeChange={setKbdRepressMode}
             showKbdLabels={showKbdLabels}
             onShowKbdLabelsChange={setShowKbdLabels}
+            orbsBelow={orbsBelow}
+            onOrbsBelowChange={setOrbsBelow}
+            panDots={panDots}
+            onPanDotsChange={setPanDots}
+            orbDragMode={orbDragMode}
+            onOrbDragModeChange={setOrbDragMode}
           />
           <KeyboardTray
             isOpen={isKbdTrayOpen}

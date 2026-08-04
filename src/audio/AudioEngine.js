@@ -7,6 +7,7 @@
 import { droneEnvelope } from './Envelope';
 import { droneWave } from './Wave';
 import { droneFold, keyboardFold } from './Fold';
+import { noise, getNoiseBuffer } from './Noise';
 import { droneStereo, keyboardStereo, midiStereo, dronePanWeights, panWidth } from './StereoMode';
 import { getCandidates, getSystem, DEFAULT_SYSTEM, canonicalRatioForVoice } from './jiRatios';
 
@@ -120,12 +121,35 @@ class AudioEngine {
     this.droneUserGain = null;
     this.kbdBusGain = null;
     this.midiBusGain = null;
+    // Wave-generator level (0..2, unity 1). One gain over BOTH
+    // oscillator pools (drone + kbd/midi), post-fold pre-master;
+    // noise is not in this path.
+    this._waveUserGainValue = 1.0;
+    this.waveBusGain = null;
     this._droneBusMuted = false;
     this._kbdBusMuted = false;
     this._midiBusMuted = false;
     this._preMuteDroneBus = this._droneUserGainValue;
     this._preMuteKbdBus = this._kbdUserGainValue;
     this._preMuteMidiBus = this._midiUserGainValue;
+
+    // Noise source (see Noise.js for the state singleton + buffers).
+    // noiseGain carries the user level; _noisePlaying is the live
+    // {src, gain, type} so a color change can crossfade instead of
+    // hard-swapping buffers. Master pause gates noise via _noisePaused
+    // — noise has no per-voice envelope, so without this gate "pause
+    // everything" would leave the hiss running.
+    this.noiseGain = null;
+    this._noisePlaying = null;
+    this._noisePaused = false;
+    // Noise routing + viz branches (wired in initialize; see the noise
+    // branch comment there). Route pre/post crossfade for
+    // noise.postSaturation; noisePostMaster mirrors masterGainNode's
+    // fades; noiseVizGain gates noise into the pre-master analyser tap.
+    this.noiseRoutePre = null;
+    this.noiseRoutePost = null;
+    this.noisePostMaster = null;
+    this.noiseVizGain = null;
 
     // Master-bus soft limiter / saturator. Inserted between
     // masterGainNode and the visualizer splitter so peaks past unity
@@ -292,6 +316,14 @@ class AudioEngine {
     this._transposeSnap = AudioEngine._loadTransposeSnap();
     this._transposeListeners = new Set();
     this._transposeGlideRaf = null;   // rAF handle for an in-flight transpose slide
+    // rAF handles for in-flight per-voice pan glides, keyed by slot: a
+    // PanPot click slides the image over PERFORM's recall glide time
+    // instead of jumping (see glideVoicePan).
+    this._panGlideRafs = new Map();
+    // Optional () => ms hook the app sets so engine-side pan resets (the
+    // ⊙/LR mode flip) can lerp at PERFORM's recall glide time without the
+    // engine importing FrequencyManager. Unset ⇒ 0 ⇒ the old snap.
+    this.getPanGlideMs = null;
 
     AudioEngine.instance = this;
   }
@@ -589,8 +621,15 @@ class AudioEngine {
     this.droneUserGain = this.audioContext.createGain();
     this.droneUserGain.gain.setValueAtTime(this._droneUserGainValue, this.audioContext.currentTime);
 
+    // Wave-generator level — the "waves" dial. Both oscillator pools
+    // sum into this before the master, so it scales the whole onboard
+    // wave engine (but not noise, which joins at masterGainNode).
+    this.waveBusGain = this.audioContext.createGain();
+    this.waveBusGain.gain.setValueAtTime(this._waveUserGainValue, this.audioContext.currentTime);
+    this.waveBusGain.connect(this.masterGainNode);
+
     //                                              ┌→ droneFoldDry ─┐
-    // stereoMerger → droneBusGain → droneCountScale ┤                ├→ droneUserGain → masterGainNode
+    // stereoMerger → droneBusGain → droneCountScale ┤                ├→ droneUserGain → waveBusGain → masterGainNode
     //                                              └→ shaper → wet ─┘
     this.stereoMerger.connect(this.droneBusGain);
     this.droneBusGain.connect(this.droneCountScale);
@@ -599,16 +638,16 @@ class AudioEngine {
     this.droneFoldShaper.connect(this.droneFoldWet);
     this.droneFoldDry.connect(this.droneUserGain);
     this.droneFoldWet.connect(this.droneUserGain);
-    this.droneUserGain.connect(this.masterGainNode);
+    this.droneUserGain.connect(this.waveBusGain);
 
     //                  ┌→ keyboardFoldDry ─┐
-    // keyboardBusGain ─┤                    ├→ masterGainNode
+    // keyboardBusGain ─┤                    ├→ waveBusGain → masterGainNode
     //                  └→ shaper → wet ─────┘
     this.keyboardBusGain.connect(this.keyboardFoldDry);
     this.keyboardBusGain.connect(this.keyboardFoldShaper);
     this.keyboardFoldShaper.connect(this.keyboardFoldWet);
-    this.keyboardFoldDry.connect(this.masterGainNode);
-    this.keyboardFoldWet.connect(this.masterGainNode);
+    this.keyboardFoldDry.connect(this.waveBusGain);
+    this.keyboardFoldWet.connect(this.waveBusGain);
     
     // Load the soft-limiter worklet before wiring the post-master chain
     // so the saturator is in place from frame zero — no click from
@@ -627,15 +666,13 @@ class AudioEngine {
     postMaster.connect(this.audioContext.destination);
 
     // Visualizer tap — sits BEFORE masterGainNode. The individual source
-    // mixers (drone, keyboard, midi) are upstream of this node, so they
-    // still scale the scope/spectrum; the final fader does not. droneUserGain
-    // and the keyboard/midi fold-bus both feed masterGainNode AND this tap.
+    // mixers (drone, keyboard, midi) and the wave-generator level are
+    // upstream of this node, so they still scale the scope/spectrum; the
+    // final fader does not. waveBusGain feeds masterGainNode AND this tap.
     // The analysers are dead-end side branches — an AnalyserNode reads its
     // input without needing a downstream consumer.
     this.preMasterTap = this.audioContext.createGain();
-    this.droneUserGain.connect(this.preMasterTap);
-    this.keyboardFoldDry.connect(this.preMasterTap);
-    this.keyboardFoldWet.connect(this.preMasterTap);
+    this.waveBusGain.connect(this.preMasterTap);
 
     const splitter = this.audioContext.createChannelSplitter(2);
     this.preMasterTap.connect(splitter);
@@ -643,6 +680,50 @@ class AudioEngine {
     splitter.connect(this.analyserNode2, 1);
     // Mono side branch — the analyser downmixes the stereo tap itself.
     this.preMasterTap.connect(this.analyserNodeMono);
+
+    // Noise branch: looped stereo buffer → per-source crossfade gain →
+    // noiseGain (user level) → one of two routes (iOS noisePostSaturation
+    // parity, crossfaded so toggling is click-free):
+    //
+    //   pre  (default) — noiseRoutePre → masterGainNode, so noise rides
+    //        the master fader and passes THROUGH the saturator.
+    //   post — noiseRoutePost → noisePostMaster → destination. Joins
+    //        after the chain so it stays clean no matter how hard the
+    //        saturator is driven. noisePostMaster mirrors every
+    //        masterGainNode fade (see _masterFadeParams) so the noise
+    //        still follows the master fader / mute / pause ramps.
+    //
+    // A third, viz-only branch (noiseVizGain → preMasterTap) is gated by
+    // noise.showInViz, default OFF: broadband noise fuzzes the scope
+    // trace and adds jitter to everything else reading the analysers
+    // (peak meter, LSQ phase calibration, AudioFeatures), so it's
+    // opt-in. The source starts immediately even at level 0 — a
+    // zero-gain looping buffer is nearly free, and it means the first
+    // dial raise is instant with no start() click.
+    {
+      const t0 = this.audioContext.currentTime;
+      const post = noise.postSaturation ? 1 : 0;
+      this.noiseGain = this.audioContext.createGain();
+      this.noiseGain.gain.setValueAtTime(this._noiseEffectiveGain(), t0);
+      this.noiseRoutePre = this.audioContext.createGain();
+      this.noiseRoutePre.gain.setValueAtTime(1 - post, t0);
+      this.noiseGain.connect(this.noiseRoutePre);
+      this.noiseRoutePre.connect(this.masterGainNode);
+      this.noiseRoutePost = this.audioContext.createGain();
+      this.noiseRoutePost.gain.setValueAtTime(post, t0);
+      // Starts at 0 like masterGainNode did above; the master fade-in
+      // below ramps both together.
+      this.noisePostMaster = this.audioContext.createGain();
+      this.noisePostMaster.gain.setValueAtTime(0, t0);
+      this.noiseGain.connect(this.noiseRoutePost);
+      this.noiseRoutePost.connect(this.noisePostMaster);
+      this.noisePostMaster.connect(this.audioContext.destination);
+      this.noiseVizGain = this.audioContext.createGain();
+      this.noiseVizGain.gain.setValueAtTime(noise.showInViz ? 1 : 0, t0);
+      this.noiseGain.connect(this.noiseVizGain);
+      this.noiseVizGain.connect(this.preMasterTap);
+    }
+    this._noisePlaying = this._startNoiseSource(noise.type);
 
     // Get max channel count from destination
     this.outputChannelCount = this.audioContext.destination.maxChannelCount || 2;
@@ -655,8 +736,11 @@ class AudioEngine {
     this._setupDefaultRouting();
     
     // Fade in master to user volume only — count-scale lives on
-    // droneCountScale (already set above).
-    this.masterGainNode.gain.setTargetAtTime(this.masterVolumeUser, this.audioContext.currentTime, 0.1);
+    // droneCountScale (already set above). noisePostMaster fades with it
+    // (it carries the master level for post-routed noise).
+    for (const p of this._masterFadeParams()) {
+      p.setTargetAtTime(this.masterVolumeUser, this.audioContext.currentTime, 0.1);
+    }
 
     this.isInitialized = true;
     this.isPaused = false;
@@ -705,6 +789,11 @@ class AudioEngine {
         apply(keyboardFold, this.keyboardFoldShaper, this.keyboardFoldDry, this.keyboardFoldWet));
       this._foldUnsubscribe = () => { unsubA(); unsubB(); };
     }
+    // Noise level rides noiseGain; a color change crossfades to a new
+    // looped source (see _applyNoise / _swapNoiseSource).
+    if (!this._noiseUnsubscribe) {
+      this._noiseUnsubscribe = noise.onChange(() => this._applyNoise());
+    }
     // Drone stereo mode + detune: on mode flip, re-route every drone to
     // either single-channel (lr) or both channels (stereo). On detune
     // change, re-roll every offset and ramp the oscillators to their
@@ -730,9 +819,29 @@ class AudioEngine {
           // shouldn't persist across a mode flip. reconnect:false because
           // the click-free swap below does the disconnect/reconnect; here
           // we only rewrite the map so the swap picks up the defaults.
-          this.resetRoutingToDefaults({ reconnect: false });
+          // …and with a glide time set (PERFORM's, via getPanGlideMs) the
+          // voices TRAVEL to their new origins instead of teleporting: the
+          // map flips now, but the pan values stay where the ear left them
+          // (deferPan) so the reroute rebuilds the taps on the old image,
+          // and the glide runs once the graph is back up. The ⊙/LR button
+          // in the console's ALL lane is the usual trigger.
+          const glideMs = Math.max(0, Number(this.getPanGlideMs?.()) || 0);
+          const deferred = this.resetRoutingToDefaults({
+            reconnect: false,
+            deferPan: glideMs > 0,
+          });
           this._applyDroneDetuneCurve();
-          this._clickFreeDroneRouteSwap();
+          this._clickFreeDroneRouteSwap(deferred.length ? () => {
+            // One more ramp window of patience: the swap has just
+            // SCHEDULED its 25 ms fade back up, and setVoicePan's own
+            // setTargetAtTime writes on those same gains would land
+            // mid-ramp. Let the graph settle, then travel.
+            setTimeout(() => {
+              for (const { index, pan } of deferred) {
+                this.glideVoicePan(index, pan, glideMs);
+              }
+            }, 30);
+          } : null);
         } else if (info.kind === 'detune' || info.kind === 'curve') {
           this._applyDroneDetuneCurve();
         }
@@ -884,6 +993,89 @@ class AudioEngine {
     return this.saturationDrive;
   }
 
+  /**
+   * Noise. Level + color live on the `noise` singleton (Noise.js) so the
+   * UI can subscribe like Wave/Fold; these engine methods own the nodes.
+   * Effective gain = paused ? 0 : level² (square law from Noise.gainValue).
+   */
+  _noiseEffectiveGain() {
+    return this._noisePaused ? 0 : noise.gainValue();
+  }
+
+  _applyNoise() {
+    if (!this.isInitialized || !this.noiseGain) return;
+    const t = this.audioContext.currentTime;
+    this.noiseGain.gain.setTargetAtTime(this._noiseEffectiveGain(), t, 0.03);
+    // Routing crossfade (saturate vs clean) + viz-tap gate — both live
+    // on the singleton like level/color, both click-free by ramp.
+    if (this.noiseRoutePre && this.noiseRoutePost) {
+      const post = noise.postSaturation ? 1 : 0;
+      this.noiseRoutePre.gain.setTargetAtTime(1 - post, t, 0.05);
+      this.noiseRoutePost.gain.setTargetAtTime(post, t, 0.05);
+    }
+    if (this.noiseVizGain) {
+      this.noiseVizGain.gain.setTargetAtTime(noise.showInViz ? 1 : 0, t, 0.05);
+    }
+    if (this._noisePlaying && this._noisePlaying.type !== noise.type) {
+      this._swapNoiseSource(noise.type);
+    }
+  }
+
+  /** Start a looped source for `type`, faded in over ~20 ms. */
+  _startNoiseSource(type) {
+    const t = this.audioContext.currentTime;
+    const src = this.audioContext.createBufferSource();
+    src.buffer = getNoiseBuffer(this.audioContext, type);
+    src.loop = true;
+    const gain = this.audioContext.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.setTargetAtTime(1, t, 0.02);
+    src.connect(gain);
+    gain.connect(this.noiseGain);
+    src.start();
+    return { src, gain, type };
+  }
+
+  /** Crossfade the running color into the new one — no hard buffer swap. */
+  _swapNoiseSource(type) {
+    const old = this._noisePlaying;
+    this._noisePlaying = this._startNoiseSource(type);
+    if (old) {
+      const t = this.audioContext.currentTime;
+      old.gain.gain.setTargetAtTime(0, t, 0.02);
+      const oldSrc = old.src;
+      const oldGain = old.gain;
+      setTimeout(() => {
+        try { oldSrc.stop(); } catch { /* already stopped */ }
+        try { oldGain.disconnect(); } catch { /* already gone */ }
+      }, 200);
+    }
+  }
+
+  /**
+   * Gain AudioParams that must carry the master fade in lock-step.
+   * noisePostMaster is the master-level stand-in for post-saturation
+   * routed noise (that path bypasses masterGainNode so it can skip the
+   * saturator, but must still follow volume / mute / pause ramps).
+   * Every masterGainNode.gain schedule goes through this list.
+   */
+  _masterFadeParams() {
+    const params = [this.masterGainNode.gain];
+    if (this.noisePostMaster) params.push(this.noisePostMaster.gain);
+    return params;
+  }
+
+  /** Master-pause gate for noise — mirrors pauseDrones/setKeyboardEnabled. */
+  setNoisePaused(paused) {
+    this._noisePaused = !!paused;
+    if (this.isInitialized && this.noiseGain) {
+      this.noiseGain.gain.setTargetAtTime(
+        this._noiseEffectiveGain(), this.audioContext.currentTime, 0.05
+      );
+    }
+  }
+  isNoisePaused() { return this._noisePaused; }
+
   setMasterVolume(value) {
     const clamped = Math.max(0, Math.min(1, value));
     this.masterVolumeUser = clamped;
@@ -897,11 +1089,9 @@ class AudioEngine {
     // silently swallow master-fader drags while drones are paused but
     // MIDI / kbd voices are still playing.
     if (this.isInitialized && this.masterGainNode) {
-      this.masterGainNode.gain.setTargetAtTime(
-        this.masterVolumeUser,
-        this.audioContext.currentTime,
-        0.05
-      );
+      for (const p of this._masterFadeParams()) {
+        p.setTargetAtTime(this.masterVolumeUser, this.audioContext.currentTime, 0.05);
+      }
     }
   }
 
@@ -998,6 +1188,17 @@ class AudioEngine {
     }
   }
 
+  /** Wave-generator level (0..2, unity 1) — scales both oscillator
+   *  pools together, post-fold pre-master. Noise is unaffected. */
+  setWaveBusGain(value) {
+    const clamped = Math.max(0, Math.min(2, value));
+    this._waveUserGainValue = clamped;
+    if (this.isInitialized && this.waveBusGain) {
+      this.waveBusGain.gain.setTargetAtTime(clamped, this.audioContext.currentTime, 0.03);
+    }
+  }
+  getWaveBusGain() { return this._waveUserGainValue; }
+
   /** Master mute toggle. Mirrors setMasterVolume's existing 0..1 range
    *  but ramps to 0 (mute) or back to the stored masterVolumeUser
    *  (unmute) without overwriting the user's set value. */
@@ -1006,7 +1207,9 @@ class AudioEngine {
     this._masterMuted = !this._masterMuted;
     if (this.isInitialized && this.masterGainNode) {
       const target = this._masterMuted ? 0 : this.masterVolumeUser;
-      this.masterGainNode.gain.setTargetAtTime(target, this.audioContext.currentTime, 0.05);
+      for (const p of this._masterFadeParams()) {
+        p.setTargetAtTime(target, this.audioContext.currentTime, 0.05);
+      }
     }
   }
 
@@ -1656,7 +1859,7 @@ class AudioEngine {
    * ~70 ms — well under perceptual threshold — and the silent reroute
    * eliminates the click entirely.
    */
-  _clickFreeDroneRouteSwap() {
+  _clickFreeDroneRouteSwap(afterSwap = null) {
     if (!this.audioContext) return;
     const RAMP_S = 0.025;
     const ctx = this.audioContext;
@@ -1714,6 +1917,15 @@ class AudioEngine {
         node.gain.cancelScheduledValues(tAfter);
         node.gain.setValueAtTime(0, tAfter);
         node.gain.linearRampToValueAtTime(t1, tAfter + RAMP_S);
+      }
+      // The graph is back up on its new routing — anything that wants to
+      // MOVE the image (the ⊙/LR flip's pan glide) starts here, not
+      // before: setVoicePan's gain writes inside the dip window would
+      // fight the fade-to-0 ramp above and put the click back.
+      if (afterSwap) {
+        try { afterSwap(); } catch (err) {
+          console.error('AudioEngine: post-swap hook failed', err);
+        }
       }
     }, RAMP_S * 1000 + 5);
   }
@@ -2397,8 +2609,12 @@ class AudioEngine {
    * persistent tap/gain nodes — no graph edits, so dragging the dial is
    * click-free at any speed.
    */
-  setVoicePan(oscIndex, pan, { syncRouting = true } = {}) {
+  setVoicePan(oscIndex, pan, { syncRouting = true, cancelGlide = true } = {}) {
     if (oscIndex < 0) return;
+    // Any direct write — a drag, a patch load, a mode reset — takes the
+    // voice back from an in-flight click glide. The glide's own frames
+    // pass cancelGlide:false so they don't cancel themselves.
+    if (cancelGlide && this._panGlideRafs.size) this.cancelVoicePanGlide(oscIndex);
     const p = Math.max(-1, Math.min(1, Number(pan) || 0));
     this.panValues[oscIndex] = p;
     if (!this.isInitialized || !this.audioContext || oscIndex >= this.oscillatorCount) {
@@ -2471,6 +2687,60 @@ class AudioEngine {
   }
 
   /**
+   * Slide one voice's pan to `targetPan` over `durationMs` — the pan
+   * sibling of glideVolumes/glideTranspose. Every frame writes through
+   * setVoicePan, so the tap weights, the stereo collapse and the discrete
+   * routing projection all follow exactly the path a drag takes, the
+   * 30 ms tau still smooths each step, and the dial (which mirrors
+   * onPanChange) sweeps along with the sound. Fired by the PanPot's
+   * click-to-bounce, which borrows PERFORM's recall glide time so a tap
+   * crosses the image at the same rate a recall does.
+   */
+  glideVoicePan(oscIndex, targetPan, durationMs = 1000, onComplete = null, easing = null) {
+    if (oscIndex < 0) return;
+    this.cancelVoicePanGlide(oscIndex);
+    const target = Math.max(-1, Math.min(1, Number(targetPan) || 0));
+    const start = Math.max(-1, Math.min(1, Number(this.panValues[oscIndex]) || 0));
+    if (durationMs <= 0 || Math.abs(target - start) < 1e-4) {
+      this.setVoicePan(oscIndex, target);
+      if (onComplete) onComplete();
+      return;
+    }
+    const startMs = performance.now();
+    const ease = typeof easing === 'function'
+      ? easing
+      : (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+    const step = () => {
+      const t = Math.min(1, (performance.now() - startMs) / durationMs);
+      const p = t >= 1 ? target : start + (target - start) * ease(t);
+      this.setVoicePan(oscIndex, p, { cancelGlide: false });
+      if (t >= 1) {
+        this._panGlideRafs.delete(oscIndex);
+        if (onComplete) onComplete();
+        return;
+      }
+      this._panGlideRafs.set(oscIndex, requestAnimationFrame(step));
+    };
+    this._panGlideRafs.set(oscIndex, requestAnimationFrame(step));
+  }
+
+  /** Stop an in-flight pan glide — one voice, or all of them when called
+   *  with no index. The pan keeps whatever value the last frame wrote. */
+  cancelVoicePanGlide(oscIndex = null) {
+    if (oscIndex == null) {
+      for (const id of this._panGlideRafs.values()) cancelAnimationFrame(id);
+      this._panGlideRafs.clear();
+      return;
+    }
+    const id = this._panGlideRafs.get(oscIndex);
+    if (id != null) {
+      cancelAnimationFrame(id);
+      this._panGlideRafs.delete(oscIndex);
+    }
+  }
+
+  /**
    * Reset every drone back to its origin L/R image: slot i → channel
    * (i % channelCount), i.e. the alternating hard-pan the engine starts
    * with. Fired by the drone-tray reset button and whenever the drone
@@ -2478,8 +2748,13 @@ class AudioEngine {
    * performs its own reconnect afterward (the click-free mode swap does),
    * so we only rewrite the map values without an extra disconnect.
    */
-  resetRoutingToDefaults({ reconnect = true } = {}) {
-    if (!this.isInitialized) return;
+  resetRoutingToDefaults({ reconnect = true, deferPan = false } = {}) {
+    if (!this.isInitialized) return [];
+    // With deferPan the map is rewritten but the pure-pan moves are NOT
+    // applied: they're handed back so the caller can glide them home once
+    // its own reroute has landed (the ⊙/LR flip does — see the mode
+    // listener). Without it the pans snap, as they always did.
+    const deferred = [];
     const max = this.channelGains.length || 2;
     // Origin depends on mode: 'lr' → alternating hard-pan (slot i → i%2);
     // 'stereo' → the L/R split for every voice (channels [0,1], i.e. "both").
@@ -2504,6 +2779,8 @@ class AudioEngine {
             this.panValues[i] = defPan;
             this._clickFreeVoiceRouteSwap(i);
             this._emitPanChange(i, defPan);
+          } else if (deferPan) {
+            deferred.push({ index: i, pan: defPan });
           } else {
             // Pure stereo-pair reset — glide the dial home, no dip.
             this.setVoicePan(i, defPan, { syncRouting: false });
@@ -2512,11 +2789,16 @@ class AudioEngine {
           console.error('AudioEngine: Failed to reset routing', err);
         }
       } else if (panChanged) {
-        this.panValues[i] = defPan;
-        this._emitPanChange(i, defPan);
+        if (deferPan) {
+          deferred.push({ index: i, pan: defPan });
+        } else {
+          this.panValues[i] = defPan;
+          this._emitPanChange(i, defPan);
+        }
       }
       if (this.onRoutingChange) this.onRoutingChange(i, this.routingMap[i]);
     }
+    return deferred;
   }
 
   /**
@@ -3882,11 +4164,12 @@ class AudioEngine {
     
     const fadeDuration = 0.3; // 300ms fade
     const currentTime = this.audioContext.currentTime;
-    this.masterGainNode.gain.cancelScheduledValues(currentTime);
-    const currentGain = this.masterGainNode.gain.value;
-    this.masterGainNode.gain.setValueAtTime(Math.max(currentGain, 0.001), currentTime);
-    this.masterGainNode.gain.exponentialRampToValueAtTime(0.001, currentTime + fadeDuration);
-    this.masterGainNode.gain.setValueAtTime(0, currentTime + fadeDuration);
+    for (const p of this._masterFadeParams()) {
+      p.cancelScheduledValues(currentTime);
+      p.setValueAtTime(Math.max(p.value, 0.001), currentTime);
+      p.exponentialRampToValueAtTime(0.001, currentTime + fadeDuration);
+      p.setValueAtTime(0, currentTime + fadeDuration);
+    }
     
     this.isPaused = true;
     
@@ -3904,9 +4187,11 @@ class AudioEngine {
     const currentTime = this.audioContext.currentTime;
     const targetGain = this.masterVolumeUser;
 
-    this.masterGainNode.gain.cancelScheduledValues(currentTime);
-    this.masterGainNode.gain.setValueAtTime(0.001, currentTime);
-    this.masterGainNode.gain.exponentialRampToValueAtTime(targetGain, currentTime + fadeDuration);
+    for (const p of this._masterFadeParams()) {
+      p.cancelScheduledValues(currentTime);
+      p.setValueAtTime(0.001, currentTime);
+      p.exponentialRampToValueAtTime(targetGain, currentTime + fadeDuration);
+    }
 
     this.isPaused = false;
 
@@ -3946,9 +4231,11 @@ class AudioEngine {
     // unpausing must not silently un-mute it.
     const t = this.audioContext.currentTime;
     if (!this._masterMuted && this.masterGainNode.gain.value < 0.01) {
-      this.masterGainNode.gain.cancelScheduledValues(t);
-      this.masterGainNode.gain.setValueAtTime(0.001, t);
-      this.masterGainNode.gain.exponentialRampToValueAtTime(this.masterVolumeUser, t + 0.5);
+      for (const p of this._masterFadeParams()) {
+        p.cancelScheduledValues(t);
+        p.setValueAtTime(0.001, t);
+        p.exponentialRampToValueAtTime(this.masterVolumeUser, t + 0.5);
+      }
     }
     this._applyDroneBusGain();
   }

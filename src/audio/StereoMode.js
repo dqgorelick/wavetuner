@@ -15,9 +15,12 @@
  *                   voices inherit the same per-slot detune amount
  *                   (single osc, panned center).
  *
- * detuneHz         Master scale in Hz, range [0, MAX_DETUNE_HZ]. Acts
- *                   as both the Y-axis ceiling for the curve display
- *                   and the multiplier applied to curve values.
+ * detuneHz         Master scale in Hz. PINNED at MAX_DETUNE_HZ since
+ *                   2026-08-04 — the ceiling slider is gone and the
+ *                   per-voice sliders in the frequency panels are the
+ *                   only detune control surface. Kept as a field so the
+ *                   legacy-ceiling fold and old patches stay
+ *                   expressible (see foldLegacyCeiling).
  *
  * detuneCurve      Array of normalized [0, 1] values, one per drone
  *                   slot. Resized via resizeCurve(n) when the engine
@@ -30,6 +33,46 @@ const VALID_MODES = new Set(['lr', 'stereo']);
 // Exported: the orb detune flash normalizes its spread angle against this
 // (full slider = ±90°), so the dial and the display share one ceiling.
 export const MAX_DETUNE_HZ = 10;
+
+/** The Hz axis every detune surface shares (iOS parity, `DetuneScale`).
+ *  With the ceiling pinned at 10 Hz a linear axis would squeeze all the
+ *  slow beating everyone actually reaches for into the bottom 10% of
+ *  travel, so the axis is log-ish: the bottom half covers 0–1 Hz
+ *  (linear — log can't reach 0), the top half 1–10 Hz (log₁₀).
+ *
+ *  This maps Hz ⇄ display/drag position ONLY; the engine still reads
+ *  curve × MAX_DETUNE_HZ. */
+export const DetuneScale = {
+  /** Hz → axis position [0, 1]. */
+  norm(hz) {
+    const clamped = Math.max(0, Math.min(MAX_DETUNE_HZ, hz || 0));
+    if (clamped <= 1) return clamped * 0.5;
+    return 0.5 + 0.5 * Math.log10(clamped);
+  },
+  /** Axis position [0, 1] → Hz. */
+  hz(norm) {
+    const clamped = Math.max(0, Math.min(1, norm || 0));
+    if (clamped <= 0.5) return clamped * 2;
+    return Math.pow(10, (clamped - 0.5) * 2);
+  },
+  /** Curve value [0, 1] → axis position (curve `v` ⇒ v × MAX_DETUNE_HZ). */
+  curveNorm(value) { return DetuneScale.norm((value || 0) * MAX_DETUNE_HZ); },
+  /** Axis position → curve value. */
+  curveValue(norm) { return DetuneScale.hz(norm) / MAX_DETUNE_HZ; },
+};
+
+/** Legacy-patch fold. Patches and shared URLs saved before the ceiling
+ *  was pinned stored their own `detuneHz` (default 1); scaling their
+ *  curve by ceiling/MAX reproduces the SAME effective per-slot Hz under
+ *  the pinned ceiling, so old sessions sound identical and a re-save
+ *  writes the folded curve. Derived purely from the stored values, so
+ *  re-loading the same patch is idempotent. */
+export function foldLegacyCeiling(curve, ceilingHz) {
+  const f = Number.isFinite(ceilingHz)
+    ? Math.max(0, Math.min(MAX_DETUNE_HZ, ceilingHz)) / MAX_DETUNE_HZ
+    : 1;
+  return curve.map(v => Math.max(0, Math.min(1, (+v || 0) * f)));
+}
 
 /**
  * Smooth random curve in [0, 1] with N samples. Perlin-style: random
@@ -110,9 +153,16 @@ export function panWidth(pan) {
 }
 
 class StereoMode {
-  constructor({ mode = 'lr', detuneHz = 0, detuneCurve = [] } = {}) {
+  /** `newSlotHz` — the detune a freshly-added slot gets (see
+   *  resizeCurve). Under the pinned ceiling this is what used to be the
+   *  pool's default master Hz, so adding a drone still lands on the
+   *  same gentle beating it always did. */
+  constructor({ mode = 'lr', newSlotHz = 1, detuneCurve = [] } = {}) {
     this.mode = VALID_MODES.has(mode) ? mode : 'lr';
-    this.detuneHz = Math.max(0, Math.min(MAX_DETUNE_HZ, detuneHz));
+    // Pinned — there is no ceiling control anymore. Legacy ceilings are
+    // folded into the curve at load (foldLegacyCeiling).
+    this.detuneHz = MAX_DETUNE_HZ;
+    this.newSlotValue = Math.max(0, Math.min(1, newSlotHz / MAX_DETUNE_HZ));
     this.detuneCurve = detuneCurve.map(v => Math.max(0, Math.min(1, v)));
     this._listeners = new Set();
   }
@@ -121,13 +171,6 @@ class StereoMode {
     if (!VALID_MODES.has(m) || m === this.mode) return;
     this.mode = m;
     this._notify({ kind: 'mode' });
-  }
-
-  setDetuneHz(v) {
-    const next = Math.max(0, Math.min(MAX_DETUNE_HZ, v));
-    if (next === this.detuneHz) return;
-    this.detuneHz = next;
-    this._notify({ kind: 'detune' });
   }
 
   /** Set one slot's curve value [0, 1]. Caller passes a slot index in
@@ -162,10 +205,19 @@ class StereoMode {
 
   /** Replace the curve with a fresh smooth-random curve at the current
    *  length. Fires 'curve' so audio retunes immediately. No-op if the
-   *  curve is empty (engine hasn't initialized yet). */
-  randomizeCurve() {
+   *  curve is empty (engine hasn't initialized yet).
+   *
+   *  The raw smooth values are uniform on the DISPLAY axis (DetuneScale),
+   *  not on the curve value — under the pinned 10 Hz ceiling uniform
+   *  curve values would average 5 Hz of beating. `maxHz` caps the top of
+   *  that axis: the startup seed passes the pool's own newSlotHz so a
+   *  fresh load keeps its familiar gentle spread, while an explicit
+   *  RANDOM press spans the full ceiling. */
+  randomizeCurve(maxHz = MAX_DETUNE_HZ) {
     if (this.detuneCurve.length === 0) return;
-    this.detuneCurve = smoothRandomCurve(this.detuneCurve.length);
+    const top = DetuneScale.norm(maxHz);
+    this.detuneCurve = smoothRandomCurve(this.detuneCurve.length)
+      .map(n => DetuneScale.curveValue(n * top));
     this._notify({ kind: 'curve' });
   }
 
@@ -180,15 +232,17 @@ class StereoMode {
     this._notify({ kind: 'curve', structural: true });
   }
 
-  /** Resize the curve to N slots. New slots default to 1.0 (full curve
-   *  weight) so a freshly-added drone picks up the master detune scale
-   *  immediately — adjust the master Hz to control how prominent it is.
-   *  Excess slots are truncated. Fires 'curve' if anything changed. */
+  /** Resize the curve to N slots. New slots default to `newSlotValue`
+   *  (the pool's newSlotHz under the pinned ceiling — 1 Hz for drones,
+   *  1.5 Hz for keyboard voices) so a freshly-added drone picks up an
+   *  audible-but-gentle detune; the voice's own panel slider takes it
+   *  from there. Excess slots are truncated. Fires 'curve' if anything
+   *  changed. */
   resizeCurve(n) {
     const target = Math.max(0, Math.floor(n));
     if (target === this.detuneCurve.length) return;
     if (target > this.detuneCurve.length) {
-      while (this.detuneCurve.length < target) this.detuneCurve.push(1);
+      while (this.detuneCurve.length < target) this.detuneCurve.push(this.newSlotValue);
     } else {
       this.detuneCurve.length = target;
     }
@@ -216,19 +270,18 @@ class StereoMode {
 
 // Defaults:
 //   - Drone stays in 'lr' (preserves the legacy hard-pan look that users
-//     expect on first load). Master detune 0.5 Hz — subtle warmth on the
-//     held bed without obvious beating.
+//     expect on first load). New slots detune 1 Hz — subtle warmth on
+//     the held bed without obvious beating.
 //   - Computer keyboard starts in 'stereo' so pressing a key gives the
 //     dual-osc L≠R width by default — that's the more interesting voice
-//     setup. Master detune 1.5 Hz — keyboard voices are transient so the
-//     spread reads clearly even at gentle widths.
+//     setup. New slots detune 1.5 Hz — keyboard voices are transient so
+//     the spread reads clearly even at gentle widths.
 //   - MIDI starts in 'stereo' as a separate StereoMode instance so the
 //     mixer can toggle MIDI's pan mode independently from the computer
-//     keyboard. Its own detuneHz/detuneCurve fields are unused — there
-//     is only one "Keyboard stereo" detune control in Settings, and MIDI
-//     voices read keyboardStereo's curve + master Hz via the proxy below.
-export const droneStereo = new StereoMode({ detuneHz: 1 });
-export const keyboardStereo = new StereoMode({ mode: 'stereo', detuneHz: 1.5 });
+//     keyboard. Its own detuneCurve is unused — MIDI voices read
+//     keyboardStereo's curve via the proxy below.
+export const droneStereo = new StereoMode({ newSlotHz: 1 });
+export const keyboardStereo = new StereoMode({ mode: 'stereo', newSlotHz: 1.5 });
 export const midiStereo = new StereoMode({ mode: 'stereo' });
 
 /** Pick the StereoMode-like object that drives a given voice source.

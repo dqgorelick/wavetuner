@@ -135,8 +135,11 @@ const HARMONIUM_PATCH = {
       keyboard: { attack: 0.1,   decay: 1,   sustain: 0.4,  release: 0.3 },
     },
     stereo: {
-      drone:    { mode: 'stereo', detuneHz: 1.4, curve: [0.18, 0.31, 1, 1] },
-      keyboard: { mode: 'stereo', detuneHz: 1.5, curve: [0.79, 0.76, 1, 1] },
+      // Curves are absolute against the pinned 10 Hz ceiling — these are
+      // the pre-pin values folded in (drone 1.4 Hz × curve, kbd 1.5 Hz ×
+      // curve), so the patch sounds exactly as it always did.
+      drone:    { mode: 'stereo', detuneHz: 10, curve: [0.025, 0.043, 0.14, 0.14] },
+      keyboard: { mode: 'stereo', detuneHz: 10, curve: [0.119, 0.114, 0.15, 0.15] },
     },
     transitionMode: 'glide',
   },
@@ -203,8 +206,11 @@ const PLUCKS_PATCH = {
       keyboard: { attack: 0.023, decay: 0.489, sustain: 0.40, release: 0.373 },
     },
     stereo: {
-      drone:    { mode: 'lr',     detuneHz: 0.5 },
-      keyboard: { mode: 'stereo', detuneHz: 3 },
+      // Explicit curves against the pinned 10 Hz ceiling — the old form
+      // stored a bare ceiling (drone 0.5 Hz, kbd 3 Hz) and rode whatever
+      // curve happened to be live, which no longer means anything.
+      drone:    { mode: 'lr',     detuneHz: 10, curve: [0.05, 0.05, 0.05, 0.05] },
+      keyboard: { mode: 'stereo', detuneHz: 10, curve: [0.3, 0.3, 0.3, 0.3] },
     },
   },
 };

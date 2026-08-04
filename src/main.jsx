@@ -1,4 +1,10 @@
 import { createRoot } from 'react-dom/client'
+// Narrow face for console labels/readouts — the web stand-in for the
+// iOS SF Compressed (.width(.compressed)) look. Weights match the
+// console CSS: 500 (readouts), 600 (labels), 700 (kill/pager).
+import '@fontsource/ibm-plex-sans-condensed/500.css'
+import '@fontsource/ibm-plex-sans-condensed/600.css'
+import '@fontsource/ibm-plex-sans-condensed/700.css'
 import App from './App.jsx'
 import audioEngine from './audio/AudioEngine'
 import tuning from './audio/Tuning'

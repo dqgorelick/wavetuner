@@ -1,13 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
-import { droneEnvelope, keyboardEnvelope, computerKbdEnvelope } from '../audio/Envelope';
-import { droneWave, keyboardWave } from '../audio/Wave';
-import { droneFold, keyboardFold } from '../audio/Fold';
-import { droneStereo, keyboardStereo } from '../audio/StereoMode';
-import EnvelopeControls from './EnvelopeControls';
-import WaveControls from './WaveControls';
-import StereoModeControls from './StereoModeControls';
 import RoutingPatchBay from './RoutingPatchBay';
 import DissonanceMeter from './DissonanceMeter';
 import {
@@ -16,16 +9,29 @@ import {
   MOVING_IMPACT_MIN,
   MOVING_IMPACT_MAX,
 } from '../audio/dissonanceSettings';
+import {
+  getScrubSettings,
+  setScrubSetting,
+  SCALE_AMOUNT_MIN,
+  SCALE_AMOUNT_MAX,
+  FINE_LIMIT_MIN,
+  FINE_LIMIT_MAX,
+} from '../audio/scrubSettings';
 
 /**
  * SettingsPanel - Expandable settings panel from bottom-right.
  *
  * Section order (top → bottom):
- *   audio output → midi input
- *   → drone stereo → keyboard stereo → drone env → keyboard env
- *   → drone wave (with shape preview) → keyboard wave (with preview)
- *   → keyboard (keys/octaves/velocity) → tune button behavior
- *   → channel routing → color theme
+ *   audio output → saturation → keyboard (re-press / labels)
+ *   → tune button behavior → recall curve → channel routing
+ *   → orb row → pan dots → orb drag → color theme → dissonance HUD
+ *
+ * Deliberately NOT here — these live closer to where they're played:
+ *   envelopes + wave/fold      → source knob band trays
+ *   stereo mode (LR / stereo)  → mixer bus rows
+ *   velocity curve             → MIDI menu
+ *   keyboard keys (all/white)  → keyboard tray ("notes" toggle)
+ *   octave fill mode           → pinned to "fill" (Tuning's default)
  */
 export default function SettingsPanel({
   isOpen,
@@ -38,14 +44,8 @@ export default function SettingsPanel({
   onTuneVarianceChange,
   tuneGlideSec,
   onTuneGlideChange,
-  velocityCurve,
-  onVelocityCurveChange,
   theme,
   onThemeChange,
-  kbdKeyMode,
-  onKbdKeyModeChange,
-  kbdFillMode,
-  onKbdFillModeChange,
   saturationCurve,
   onSaturationCurveChange,
   saturationDrive,
@@ -54,6 +54,12 @@ export default function SettingsPanel({
   onKbdRepressModeChange,
   showKbdLabels,
   onShowKbdLabelsChange,
+  orbsBelow,
+  onOrbsBelowChange,
+  panDots,
+  onPanDotsChange,
+  orbDragMode,
+  onOrbDragModeChange,
 }) {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
@@ -61,6 +67,13 @@ export default function SettingsPanel({
   const [needsPermission, setNeedsPermission] = useState(false);
   // Dissonance HUD — moving-voice impact (0..1), persisted in dissonanceSettings.
   const [movingImpact, setMovingImpactState] = useState(() => getMovingImpact());
+  // iOS-ramp feel knobs — scrubSettings owns/persists them; this is a display
+  // copy so the sliders re-render (the module hands back one live object).
+  const [scrub, setScrub] = useState(() => ({ ...getScrubSettings() }));
+  const updateScrub = (key, value) => {
+    setScrubSetting(key, value);
+    setScrub({ ...getScrubSettings() });
+  };
   // Recall easing curve — mirrors frequencyManager (which owns/persists it).
   const [recallCurve, setRecallCurve] = useState(() => frequencyManager.recallCurve);
 
@@ -210,84 +223,8 @@ export default function SettingsPanel({
         </div>
       </div>
 
-      <StereoModeControls title="Drone stereo" stereoMode={droneStereo} slotCount={oscillatorCount} />
-      <StereoModeControls title="Keyboard stereo" stereoMode={keyboardStereo} slotCount={oscillatorCount} />
-
-      <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
-      <EnvelopeControls title="MIDI envelope" envelope={keyboardEnvelope} />
-      <EnvelopeControls
-        title="Computer keyboard envelope (AR)"
-        envelope={computerKbdEnvelope}
-        mode="ar"
-      />
-
-      <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
-      <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
-
       <div className="settings-section">
         <label className="settings-label">Keyboard</label>
-        <label className="settings-sublabel">Octaves</label>
-        <div className="settings-toggle-row">
-          <button
-            type="button"
-            className={`settings-toggle-btn ${kbdFillMode === 'jump' ? 'on' : 'off'}`}
-            onClick={() => onKbdFillModeChange?.('jump')}
-            aria-pressed={kbdFillMode === 'jump'}
-            title="Octaves jump cleanly between drone notes"
-          >
-            jump
-          </button>
-          <button
-            type="button"
-            className={`settings-toggle-btn ${kbdFillMode === 'fill' ? 'on' : 'off'}`}
-            onClick={() => onKbdFillModeChange?.('fill')}
-            aria-pressed={kbdFillMode === 'fill'}
-            title="Every key has a drone — fill octaves"
-          >
-            fill
-          </button>
-        </div>
-        {/* TODO: revisit keyboard ordering. Today, white-only mode shifts
-            the drone→key mapping so consecutive white keys play consecutive
-            scale degrees (ascending). This matches the playing-style
-            intent for diatonic systems, but loses the property that a
-            given QWERTY key always plays the same drone slot. An
-            alternative mode — "fixed semitone mapping" where blacks just
-            go silent without re-indexing whites — could live here as a
-            third option. For now we ship the ascending behavior; if
-            users miss the semitone-fixed mode, surface it as a setting. */}
-        <label className="settings-sublabel">Keys</label>
-        <div className="settings-toggle-row">
-          <button
-            type="button"
-            className={`settings-toggle-btn ${kbdKeyMode === 'chromatic' ? 'on' : 'off'}`}
-            onClick={() => onKbdKeyModeChange?.('chromatic')}
-            aria-pressed={kbdKeyMode === 'chromatic'}
-            title="Every key plays — black + white"
-          >
-            all
-          </button>
-          <button
-            type="button"
-            className={`settings-toggle-btn ${kbdKeyMode === 'white-only' ? 'on' : 'off'}`}
-            onClick={() => onKbdKeyModeChange?.('white-only')}
-            aria-pressed={kbdKeyMode === 'white-only'}
-            title="Only white keys play"
-          >
-            white
-          </button>
-        </div>
-        <label className="settings-sublabel">Velocity curve</label>
-        <select
-          className="settings-select"
-          value={velocityCurve || 'linear'}
-          onChange={(e) => onVelocityCurveChange?.(e.target.value)}
-        >
-          <option value="linear">Linear (default)</option>
-          <option value="soft">Soft — quieter touches feel quieter</option>
-          <option value="hard">Hard — flatten dynamics</option>
-          <option value="fixed">Fixed — ignore velocity</option>
-        </select>
         <label className="settings-sublabel">Re-press behavior (hold on)</label>
         <div className="settings-toggle-row">
           <button
@@ -392,6 +329,125 @@ export default function SettingsPanel({
       </div>
 
       {/* Tuning-system picker lives in the TuningPanel header. */}
+
+      <div className="settings-section">
+        <label className="settings-label">Orb row</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${!orbsBelow ? 'on' : 'off'}`}
+            onClick={() => onOrbsBelowChange?.(false)}
+            aria-pressed={!orbsBelow}
+            title="Orbs float above the spectrum line (classic web layout)"
+          >
+            above spectrum
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${orbsBelow ? 'on' : 'off'}`}
+            onClick={() => onOrbsBelowChange?.(true)}
+            aria-pressed={orbsBelow}
+            title="Orbs hang below the spectrum line on short arms, numbers beneath, Hz readout on top (matches iOS)"
+          >
+            below spectrum
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <label className="settings-label">Pan dots</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${panDots ? 'on' : 'off'}`}
+            onClick={() => onPanDotsChange?.(true)}
+            aria-pressed={!!panDots}
+            title="Each orb wears a small indicator on its rim showing where the voice sits in the stereo field (left horizon → top → right horizon)"
+          >
+            always
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${!panDots ? 'on' : 'off'}`}
+            onClick={() => onPanDotsChange?.(false)}
+            aria-pressed={!panDots}
+            title="Show the rim indicator only while a pan is being changed, then fade it out"
+          >
+            on change
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <label className="settings-label">Orb drag</label>
+        <div className="settings-toggle-row">
+          <button
+            type="button"
+            className={`settings-toggle-btn ${orbDragMode === 'linear' ? 'on' : 'off'}`}
+            onClick={() => onOrbDragModeChange?.('linear')}
+            aria-pressed={orbDragMode === 'linear'}
+            title="Linear: a pixel of horizontal drag is worth the same pitch anywhere. Vertical does nothing."
+          >
+            linear
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${orbDragMode === 'precision' ? 'on' : 'off'}`}
+            onClick={() => onOrbDragModeChange?.('precision')}
+            aria-pressed={orbDragMode === 'precision'}
+            title="Scrub: pull the pointer away from the bar to slow the drag down (½ → 1/5 → 1/20), like scrubbing a video."
+          >
+            pull for precision
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${orbDragMode === 'ios' ? 'on' : 'off'}`}
+            onClick={() => onOrbDragModeChange?.('ios')}
+            aria-pressed={orbDragMode === 'ios'}
+            title="iOS scaling: vertical position is the speed dial — 1× at the grab, faster as you raise the orb above it (up to 4×), finer as you pull below (down to the fine limit)."
+          >
+            ios scaling
+          </button>
+        </div>
+        {/* Grab mode (click an orb so it follows the cursor) sits out of all
+            three — its vertical axis still rides the voice's level. */}
+        {orbDragMode === 'ios' && (
+          <>
+            <div
+              className="tune-slider-row"
+              title="Strength of the ramp: 0× is flat (no scaling at all), 1× is the tuned curve, 2× exaggerates both ends."
+            >
+              <span className="tune-slider-label">Scale amount</span>
+              <input
+                type="range"
+                min={SCALE_AMOUNT_MIN}
+                max={SCALE_AMOUNT_MAX}
+                step="0.05"
+                value={scrub.scaleAmount}
+                onChange={(e) => updateScrub('scaleAmount', parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">{scrub.scaleAmount.toFixed(2)}×</span>
+            </div>
+            <div
+              className="tune-slider-row"
+              title="Slowest drag speed at a full pull DOWN, as a fraction of full speed — the speed at the grab stays 1×. 1× means no fine zone at all."
+            >
+              <span className="tune-slider-label">Fine limit</span>
+              <input
+                type="range"
+                min={FINE_LIMIT_MIN}
+                max={FINE_LIMIT_MAX}
+                step="0.01"
+                value={scrub.fineLimit}
+                onChange={(e) => updateScrub('fineLimit', parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">{scrub.fineLimit.toFixed(2)}×</span>
+            </div>
+          </>
+        )}
+      </div>
 
       <div className="settings-section">
         <label className="settings-label">Color theme</label>

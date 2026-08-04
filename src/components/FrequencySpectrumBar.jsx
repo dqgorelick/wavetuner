@@ -7,6 +7,7 @@ import { audioFeatures } from '../audio/AudioFeatures';
 import { droneStereo, panWidth, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { activeProfile } from '../audio/timbreProfiles';
 import { getMovingImpact } from '../audio/dissonanceSettings';
+import { scrubRatio } from '../audio/scrubSettings';
 import palette, { useTheme, DUO_WHITE } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 import GlobalDetuneOrb from './GlobalDetuneOrb';
@@ -28,6 +29,69 @@ const ZOOM_TAU_MS = 108;
 
 const SENSITIVITY_NORMAL = 0.5;
 const SENSITIVITY_FINE = 0.1;
+
+// ── Orb-DRAG vertical axis (Settings → Orb drag) ────────────────────────
+// Three modes, all of them owning the vertical axis of a drag; none of them
+// touch the GRAB gesture, which keeps its volume drag (Dan, 2026-08-04).
+// Vertical no longer sets the dragged voice's level in any mode — that job
+// moved to the mixer console's faders.
+//   'linear'    — flat 1x: a pixel of horizontal drag is worth the same pitch
+//                 wherever the pointer is. Vertical does nothing.
+//   'precision' — the tiers below.
+//   'ios'       — the DIRECTIONAL ramp (audio/scrubSettings.js, Dan
+//                 2026-08-04): 1x at the grab, raising the orb ABOVE it
+//                 accelerates the sweep (to 4x), pulling BELOW slows it for
+//                 precision (to the fine limit). One gesture covers both
+//                 reach and resolution; a `< 1x >` rate tag over the dragged
+//                 voice's Hz readout makes the invisible axis legible.
+//
+// "Pull for precision" inverts the linear feel the way a video scrubber does:
+// the further the pointer is pulled AWAY from where it grabbed the orb
+// (vertically), the less pitch each horizontal pixel is worth. Tiers rather
+// than a continuous curve so the resolution you're in is a place you can find
+// again and hold; the drag integrates deltas, so crossing a boundary changes
+// the rate without ever jumping the pitch. Distances are px of vertical
+// travel from the grab.
+const SCRUB_TIERS = [
+  { dist: 70, scale: 0.5 },    // half speed
+  { dist: 150, scale: 0.2 },   // fine
+  { dist: 260, scale: 0.05 },  // super fine
+];
+
+function scrubScale(dy) {
+  const d = Math.abs(dy);
+  let scale = 1;
+  for (const t of SCRUB_TIERS) {
+    if (d >= t.dist) scale = t.scale;
+  }
+  return scale;
+}
+
+// `< 1x >` rate-tag visibility. OFF for now (Dan, 2026-08-04 late — a
+// corner-border variant was tried on the Hz readout and then the mixer
+// note cell and reverted the same day; how to read the ramp out is still
+// an open call). The drag keeps computing rates so flipping this back is
+// one line.
+const SHOW_SCRUB_RATE_TAG = false;
+
+// Label for the drag-rate tag riding above the dragged voice's Hz readout:
+// "1x" in the neutral band around the grab row, "2.3x" above it, "1/5x"
+// below (musician-friendly reciprocals rather than "0.21x"). Coarse
+// quantization — one decimal up, integer reciprocal down — keeps the tag
+// from flickering through every float on a continuous ramp.
+function formatScrubRate(r) {
+  if (r >= 0.95) {
+    const v = Math.round(r * 10) / 10;
+    return `${Number.isInteger(v) ? v : v.toFixed(1)}x`;
+  }
+  return `1/${Math.round(1 / r)}x`;
+}
+
+// Release settle: how long the .settling class (a left/top overshoot
+// transition in App.css approximating iOS's spring(0.4, 0.7)) stays on an
+// orb after a drag releases. Slightly past the CSS 0.4s so the transition
+// finishes before left/top go back to instant.
+const ORB_SETTLE_MS = 420;
 
 // Global-transpose drag: dragging the empty bar background left/right shifts
 // the whole tuning's playback pitch (a DAW-BPM-style master offset that lives
@@ -53,6 +117,8 @@ const GRAB_VOL_SCALAR = 2;
 // Rate ramps linearly from 0 at the zone boundary to MAX_EDGE_PAN_RATE at the
 // canvas edge, in octaves/sec. dt is clamped so a backgrounded tab can't jump.
 // Zone width = 10% of canvas width = min(10vw, EDGE_ZONE_MAX_PX).
+// Keep in step with --stage-max in App.css (:root) — that variable caps
+// the same frame for every edge-anchored piece of chrome.
 const CANVAS_MAX_WIDTH = 1200;
 const EDGE_ZONE_FRAC = 0.10;
 const EDGE_ZONE_MAX_PX = 120;
@@ -85,7 +151,11 @@ function tickOpacityForRatio(ratio) {
 
 const LOG2_10 = Math.log2(10);
 
-function computeTicks(logMin, logMax) {
+// `padLog` widens the range ticks are GENERATED over (in log2 units) without
+// touching the density decision, which always reads the visible span. The
+// minor ticks below need it: a gap whose bounding label sits just off-screen
+// still has to be subdivided, or the ridges stop short of the bar's edges.
+function computeTicks(logMin, logMax, padLog = 0) {
   const log10Min = logMin / LOG2_10;
   const log10Max = logMax / LOG2_10;
   const log10Span = log10Max - log10Min;
@@ -98,21 +168,115 @@ function computeTicks(logMin, logMax) {
     const opacity = tickOpacityForRatio(count / TARGET_TICK_COUNT);
     if (opacity <= 0) continue;
 
-    const decadeStart = Math.floor(log10Min);
-    const decadeEnd = Math.ceil(log10Max);
+    const decadeStart = Math.floor((logMin - padLog) / LOG2_10);
+    const decadeEnd = Math.ceil((logMax + padLog) / LOG2_10);
     for (let d = decadeStart; d <= decadeEnd; d++) {
       const decadeBase = 10 ** d;
       for (const m of level.mantissas) {
         const freq = m * decadeBase;
         if (freq < FREQ_MIN || freq > FREQ_MAX) continue;
         const log2Freq = Math.log2(freq);
-        if (log2Freq < logMin || log2Freq > logMax) continue;
+        if (log2Freq < logMin - padLog || log2Freq > logMax + padLog) continue;
         const existing = tickMap.get(freq) || 0;
         if (opacity > existing) tickMap.set(freq, opacity);
       }
     }
   }
   return Array.from(tickMap, ([freq, opacity]) => ({ freq, opacity }));
+}
+
+// ── Minor ruler ticks (iOS parity: the short ridges between the numbers) ──
+// They sit on REAL round increments — 10s, 25s, 50s, 100s, 500s… — chosen per
+// gap, NOT on an even pixel subdivision of it. The axis is logarithmic, so the
+// pixel midpoint between 100 and 200 is 141.4 Hz: evenly-spaced ridges would
+// lie about where the numbers are, which is the whole point of a ruler. Each
+// gap between two SETTLED labels picks its own step so the ridge pitch lands
+// near MINOR_TICK_PITCH px, then the ridges are planted at multiples of that
+// step and positioned logarithmically (they bunch up toward the gap's high
+// end, exactly as a log ruler should).
+const MINOR_TICK_PITCH = 14;      // px, target spacing between ridges (iOS knurlPitch)
+const MINOR_TICK_MIN_GAP = 30;    // px; tighter gaps than this get no ridges
+const MINOR_NICE_STEPS = [1, 2, 2.5, 5, 10];
+// Roughly every 5th ridge stands taller — but on the ROUNDEST values, not on
+// every 5th index: with a 2.5 Hz step, index-5 would emphasize 37.5 while 35
+// stayed short. The taller ridges land on multiples of the next nice step up.
+const MINOR_TICK_EMPHASIS = 5;
+
+/** Nearest 1/2/2.5/5×10ⁿ to `raw`, compared in log space so the choice is
+ *  scale-free. */
+function niceTickStep(raw) {
+  if (!(raw > 0) || !Number.isFinite(raw)) return 0;
+  const decade = 10 ** Math.floor(Math.log10(raw));
+  let best = 0;
+  let bestErr = Infinity;
+  for (const m of MINOR_NICE_STEPS) {
+    const step = m * decade;
+    const err = Math.abs(Math.log(step / raw));
+    if (err < bestErr) { bestErr = err; best = step; }
+  }
+  return best;
+}
+
+/** The round-number lattice the ridges subdivide: the tick level that
+ *  DOMINATES the current zoom (highest opacity, coarser on a tie), generated
+ *  over a padded range so edge gaps still have a bounding mark. Not "every
+ *  settled level" — at a tight zoom no level has finished fading in, and the
+ *  ridges have to keep working there; past the finest level's fade-in the
+ *  ruler is ridges only, so that level is the floor. */
+function latticeTickFreqs(logMin, logMax, padLog = 0) {
+  const log10Span = (logMax - logMin) / LOG2_10;
+  if (log10Span <= 0) return [];
+  let best = null;
+  let bestOpacity = -1;
+  for (const level of TICK_LEVELS) {
+    const opacity = tickOpacityForRatio((level.perDecade * log10Span) / TARGET_TICK_COUNT);
+    if (opacity > bestOpacity) { bestOpacity = opacity; best = level; }
+  }
+  if (bestOpacity <= 0) best = TICK_LEVELS[TICK_LEVELS.length - 1];
+  const freqs = [];
+  const decadeStart = Math.floor((logMin - padLog) / LOG2_10);
+  const decadeEnd = Math.ceil((logMax + padLog) / LOG2_10);
+  for (let d = decadeStart; d <= decadeEnd; d++) {
+    const decadeBase = 10 ** d;
+    for (const m of best.mantissas) {
+      const freq = m * decadeBase;
+      const log2Freq = Math.log2(freq);
+      if (log2Freq < logMin - padLog || log2Freq > logMax + padLog) continue;
+      freqs.push(freq);
+    }
+  }
+  return freqs.sort((a, b) => a - b);
+}
+
+/** Ridge positions (px) for the gaps between `majors` (ascending freqs). */
+function computeMinorTicks(majors, logMin, logMax, width) {
+  const span = logMax - logMin;
+  const out = [];
+  if (!(span > 0) || !(width > 0)) return out;
+  const xOf = (freq) => ((Math.log2(freq) - logMin) / span) * width;
+  for (let i = 0; i < majors.length - 1; i++) {
+    const lo = majors[i];
+    const hi = majors[i + 1];
+    const x0 = xOf(lo);
+    const x1 = xOf(hi);
+    if (x1 <= 0 || x0 >= width) continue;     // gap entirely off-screen
+    const gap = x1 - x0;
+    if (gap < MINOR_TICK_MIN_GAP) continue;
+    const step = niceTickStep((hi - lo) / Math.round(gap / MINOR_TICK_PITCH));
+    if (!step) continue;
+    const tallStep = niceTickStep(step * MINOR_TICK_EMPHASIS);
+    const first = Math.floor(lo / step) + 1;  // strictly inside the gap
+    const last = Math.ceil(hi / step) - 1;
+    if (last - first > 200) continue;         // runaway guard
+    for (let k = first; k <= last; k++) {
+      const freq = Number((k * step).toPrecision(12));  // kills 0.1-summing drift
+      const x = xOf(freq);
+      if (x < 0 || x > width) continue;
+      const tall = Math.abs(freq - Math.round(freq / tallStep) * tallStep) < step * 1e-6;
+      out.push({ freq, x, tall });
+    }
+  }
+  return out;
 }
 
 const SHIFT_SYMBOL_TO_INDEX = {
@@ -133,8 +297,19 @@ function formatActiveFreq(freq) {
   return freq.toFixed(2);
 }
 
-const BAR_TOP_Y = DOT_SIZE + DOT_GAP;
-const TOTAL_HEIGHT = BAR_TOP_Y + BAR_LINE_HEIGHT + 4;
+// Pan readout under an orb, iOS's terse grammar (PanPot.valueLabel /
+// FrequencySpectrumBar.swift readoutFlashes): the magnitude alone, because
+// the rim dot's side is what says left-or-right; a hard pan is the bare side
+// letter, no "100%" — the letter can't mean anything else. Dead center never
+// reaches here (the head fades out at rest), so there's no 0% case.
+function formatPanFlash(pan) {
+  const pct = Math.round(Math.abs(pan) * 100);
+  if (pct >= 100) return pan < 0 ? 'L' : 'R';
+  return `${pct}%`;
+}
+
+// Vertical geometry is mode-dependent (orbs above vs below the spectrum) and
+// lives in geometryFor() below — see the "Row geometry" section.
 
 // ── Dissonance HUD curve ─────────────────────────────────────────────────
 // A sensory-dissonance hot-spot field drawn behind the orbs. Its baseline is
@@ -150,12 +325,8 @@ const DISS_CURVE_DOWN = BAR_LINE_HEIGHT;
 // spectrum bar — the colored region grows by the same amount and bleeds down
 // across the gap into the bar.
 const DISS_LINE_LIFT = 15;
-// Vertical band (container-local px) where a background drag transposes: just
-// the frequency-number strip (the spectrum bar line itself). The band ABOVE it
-// — the dissonance curve and the staged-launch triangles that sit just over
-// the tick tops — is intentionally left free so those markers stay clickable.
-const TRANSPOSE_ZONE_TOP = BAR_TOP_Y;
-const TRANSPOSE_ZONE_BOTTOM = BAR_TOP_Y + BAR_LINE_HEIGHT;
+// The transpose-drag band (just the frequency-number strip) is part of the
+// mode-dependent geometry — see geometryFor().
 // Horizontal sampling stride in CSS px. 1 = one column (and one field
 // evaluation) per pixel: the finest fill, so the column bars line up tightly
 // under the smooth curve stroke. 2 halves the per-frame cost at the expense of
@@ -200,11 +371,10 @@ if (typeof window !== 'undefined') {
 
 // ── Derived curve geometry (row coordinates, y down) ─────────────────────
 // Baseline = the level-0 flat line (lifted above the bar). Max = the level-1
-// peak. Orbs float ORB_FLOAT_GAP above the max so they always clear the curve.
-const DISS_BASELINE_Y = BAR_TOP_Y - DISS_LINE_LIFT;
-const DISS_CURVE_MAX_Y = DISS_BASELINE_Y - DISS_CURVE_HEIGHT;
+// peak. In the classic layout the orbs float ORB_FLOAT_GAP above the max so
+// they always clear the curve; in the flipped (iOS-style) layout they hang
+// below the bar instead. All derived Y values live in geometryFor().
 const ORB_FLOAT_GAP = 8;
-const DOT_CENTER_Y = DISS_CURVE_MAX_Y - ORB_FLOAT_GAP - DOT_SIZE / 2;
 
 // ── Played-note lines ────────────────────────────────────────────────────
 // Every sounding keyboard/MIDI note draws a vertical line on the bar at its
@@ -231,13 +401,12 @@ const KBD_DOT_SIZE = 5;
 // the voice-number / freq label that sits above the orb (translate -100%), so
 // the dot floats above the text rather than overlapping it.
 const KBD_DOT_GAP = 18;
-const KBD_DOT_CENTER_Y = DOT_CENTER_Y - DOT_SIZE / 2 - KBD_DOT_GAP - KBD_DOT_SIZE / 2;
 
 // ── Orb status flash (parameter display design language) ────────────────
 // When a per-voice parameter is adjusted, every orb briefly overlays its
 // value for that parameter: a one-line readout above the orb in the voice
 // number's exact spot, color and type (the number hides for the duration
-// — e.g. "L 100%", "R 45%", or the ⊙ center icon for pan), plus an
+// — e.g. "45%", or the bare "L" at a hard pan; see formatPanFlash), plus an
 // orb-colored indicator riding the orb's circumference on the top half at
 // the value's position. Holds STATUS_FLASH_HOLD_MS after the last change,
 // then fades out over STATUS_FLASH_FADE_MS. Pan (one dot) and detune (a
@@ -257,18 +426,104 @@ const STATUS_ARC_RADIUS = DOT_SIZE / 2;
 // A staged slot previews each voice's target two ways: a floating dot
 // STAGED_DOT_LIFT px above the orbs (tethered to its orb by a dotted line, and
 // sliding down to meet the orb as the voice glides), plus an upward triangle
-// just above the frequency ticks marking that target on the spectrum. Both
+// rising from the bar's bottom edge marking that target on the spectrum. Both
 // fade with how close the orb is to the target, so they dissolve when the orb
 // is there and fade back in as it drifts away — a "return here" marker that
 // persists after a launch until released.
 const STAGED_DOT_LIFT = 65;
 const STAGED_DOT_R = 7;              // smaller than the orbs (r = DOT_SIZE/2)
-const STAGED_DOT_Y = DOT_CENTER_Y - STAGED_DOT_LIFT;
-const TRIANGLE_W = 5;         // base (bottom) width
-const TRIANGLE_TOP_W = 1;     // apex (top) width — a near-point so it reads as a thin needle
-const TRIANGLE_H = 8;
-const TRIANGLE_BASE_Y = BAR_TOP_Y - 3;          // base just above the tick tops
-const TRIANGLE_APEX_Y = TRIANGLE_BASE_Y - TRIANGLE_H;
+const TRIANGLE_W = 8;         // base (bottom) width — iOS: ±4 around the target x
+const TRIANGLE_H = 7;         // ≈ equilateral for that base (iOS draws 8 × 6.5)
+
+// ── Row geometry (container-local px, y down) ───────────────────────────
+// Two layouts share every drawing routine and differ only in these Y values:
+//   classic  — orbs float ABOVE the dissonance curve (overflowing the row's
+//              top edge); voice number above each orb, which swaps to a live
+//              Hz readout while dragged.
+//   flipped  — iOS parity ("orbs below" in settings): the bar rides the top
+//              of the row and the orbs hang BELOW it on short arms; the
+//              voice number sits under each orb and a live Hz readout
+//              appears in a strip above the curve while dragged.
+// Flipped-only tuning:
+const FLIPPED_ARM_GAP = 8;      // bar bottom → orb top edge (the short arm)
+const FLIPPED_HZ_STRIP_H = 16;  // top strip reserved for the drag Hz readout
+// Height of the .fsb-hz-float box (its font-size, at line-height 1) and the y
+// its stem leaves from — the digits' lower edge plus a hair of air, iOS's
+// `digitsEdgeY`. The stem's other end lands where that voice's own position
+// line meets the consonance curve, so readout + marker read as one continuous
+// stem across the bar (iOS frequencyLabels(above:)).
+const FLIPPED_HZ_FLOAT_H = 13;
+const FLIPPED_HZ_STEM_TOP_Y = FLIPPED_HZ_FLOAT_H + 1;
+function geometryFor(flipped) {
+  const barTopY = flipped
+    ? FLIPPED_HZ_STRIP_H + DISS_CURVE_HEIGHT + DISS_LINE_LIFT
+    : DOT_SIZE + DOT_GAP;
+  const dissBaselineY = barTopY - DISS_LINE_LIFT;
+  const dissCurveMaxY = dissBaselineY - DISS_CURVE_HEIGHT;
+  // Bottom of the spectrum bar — where every position line ends (classic)
+  // or turns toward its orb (flipped).
+  const posLineBottomY = barTopY + BAR_LINE_HEIGHT;
+  const dotCenterY = flipped
+    ? posLineBottomY + FLIPPED_ARM_GAP + DOT_SIZE / 2
+    : dissCurveMaxY - ORB_FLOAT_GAP - DOT_SIZE / 2;
+  // Same-octave kbd dot floats on the label side of the orb (above the
+  // number classic, below it flipped) — KBD_DOT_GAP clears the text.
+  const kbdDotCenterY = flipped
+    ? dotCenterY + DOT_SIZE / 2 + KBD_DOT_GAP + KBD_DOT_SIZE / 2
+    : dotCenterY - DOT_SIZE / 2 - KBD_DOT_GAP - KBD_DOT_SIZE / 2;
+  // Staged-target dots: lifted above the orbs (classic) or parked just above
+  // the curve's peak line (flipped, iOS's ghost row). They descend as a
+  // launch lands — into the orb (classic), or onto the target frequency's
+  // position at the spectrum's top edge (flipped: the orbs are on the far
+  // side of the bar, so the handle anchors to the freq marker, not the orb).
+  const stagedDotY = flipped
+    ? dissCurveMaxY - STAGED_DOT_R
+    : dotCenterY - STAGED_DOT_LIFT;
+  const stagedLandY = flipped ? barTopY : dotCenterY;
+  const totalHeight = flipped
+    ? kbdDotCenterY + KBD_DOT_SIZE / 2 + 2
+    : barTopY + BAR_LINE_HEIGHT + 4;
+  // Target triangles hug the bar's BOTTOM edge, rising from the baseline
+  // (iOS parity — the stagedOverlay triangles sit on blY, apex up).
+  const triangleBaseY = posLineBottomY - 0.5;
+  return {
+    flipped,
+    barTopY,
+    dissBaselineY,
+    dissCurveMaxY,
+    posLineBottomY,
+    dotCenterY,
+    kbdDotCenterY,
+    stagedDotY,
+    stagedLandY,
+    totalHeight,
+    triangleBaseY,
+    triangleApexY: triangleBaseY - TRIANGLE_H,
+    // Release handle capping the foot of each played-note stem — 1px below
+    // where the stem ends, so it reads as the stem's foot.
+    noteDotY: posLineBottomY + 1,
+    // Vertical band where a background drag transposes: just the
+    // frequency-number strip. The bands outside it stay free so the other
+    // markers (and, flipped, the orb row) stay clickable.
+    transposeZoneTop: barTopY,
+    transposeZoneBottom: barTopY + BAR_LINE_HEIGHT,
+    // Transpose readout center — always ABOVE the spectrum. Classic: rides
+    // the orb row at the bar's right edge (iOS lifts its readout OUT of the
+    // orb row — Dan 2026-07-22: orbs ran over it when the tuning pushed a
+    // voice to the right edge — but here the auto-zoom always keeps
+    // right-edge padding, so orbs never reach it). Flipped: the orb row is
+    // below the bar now, so the readout parks in the top strip instead,
+    // clear of the consonance curve's tallest peak (Dan 2026-08-03).
+    transposeReadoutY: flipped ? dissCurveMaxY - 13 : dotCenterY,
+    // .fsb-side margin aligning the side adornments with the bar strip
+    // (classic: the 4px bottom padding; flipped: the whole orb-row depth).
+    sideMarginBottom: totalHeight - barTopY - BAR_LINE_HEIGHT,
+  };
+}
+// Live geometry for the module-level draw helpers below. The component
+// assigns this on every render (there is a single FrequencySpectrumBar
+// instance in the app), so the rAF loops always read the current layout.
+let GEO = geometryFor(false);
 const TRIANGLE_HIT_PAD = 8;                      // invisible click/swipe padding
 const SAME_SPOT_PX = 4;     // voice within this many px of target ⇒ on-spot (no markers)
 const TRIANGLE_FADE_RANGE_PX = 4;  // triangle ramps in fast once the voice leaves its spot
@@ -784,7 +1039,7 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
 // Row Y of the dissonance-curve surface for a displayed level ∈ [0,1]
 // (0 = baseline just above the bar, 1 = the curve's tallest peak).
 function _curveSurfaceY(level) {
-  return DISS_BASELINE_Y - DISS_CURVE_HEIGHT * level;
+  return GEO.dissBaselineY - DISS_CURVE_HEIGHT * level;
 }
 // Eased curve level at a bar-relative pixel x, read from the live per-column
 // buffer the draw loop fills. 0 when there's no field (paused / silent).
@@ -795,16 +1050,19 @@ function _levelAtBarX(barPx) {
   if (col < 0 || col >= levels.length) return 0;
   return levels[col];
 }
+// Top of the consonance-graph line under a CONTAINER x — the level lookup
+// and surface row in one, since three callers want exactly this point: the
+// readout stem's foot, the position line's upper stop, and the above-bar
+// crossing test (an orb is "above" once its center clears this).
+function _curveSurfaceAtX(containerX) {
+  return _curveSurfaceY(_levelAtBarX(containerX - BAR_H_PADDING));
+}
 
-// Bottom of the spectrum bar — where every position line ends.
-const POS_LINE_BOTTOM_Y = BAR_TOP_Y + BAR_LINE_HEIGHT;
-
-// Release handle capping the foot of each played-note stem. The rotated tick
-// labels pivot at the bar's lower edge and read upward, which leaves this strip
-// clear — so the dot sits underneath the numbers rather than colliding with
-// them. Pressing it releases that voice, the same path as re-pressing a held
-// key. 1px below where the stem ends, so it reads as the stem's foot.
-const NOTE_DOT_Y = POS_LINE_BOTTOM_Y + 1;
+// The rotated tick labels pivot at the bar's lower edge and read upward,
+// which leaves the strip just below the bar clear — so the played-note
+// release dot (GEO.noteDotY) sits underneath the numbers rather than
+// colliding with them. Pressing it releases that voice, the same path as
+// re-pressing a held key.
 // Midway between the staged-target dots (STAGED_DOT_R) and the speck this
 // started as: big enough to read as a handle, still clearly subordinate to the
 // staging chrome above the orbs.
@@ -818,26 +1076,92 @@ const NOTE_DOT_HIT_R = 9;
 // voice means the curve-region segment and the bar segment share one stroke +
 // glow — no DOM/canvas seam at the spectrum top. The top endpoint rides the
 // eased curve surface every frame, so it tracks the field as it morphs.
-function _updatePositionLines(lineEls, dotXs, freqXs) {
+// `dragPos` (Map index → {x, y}) overrides a voice's orb endpoint while it's
+// being finger-dragged or release-settling — the stem then runs from the orb
+// at the finger down to the TRUE frequency x on the bar (iOS parity).
+function _updatePositionLines(lineEls, dotXs, freqXs, dragPos) {
   for (let i = 0; i < lineEls.length; i++) {
     const el = lineEls[i];
     if (!el) continue;
-    const dotX = dotXs[i];
+    const dp = dragPos?.get(i);
+    const dotX = dp ? dp.x : dotXs[i];
+    const dotY = dp ? dp.y : GEO.dotCenterY;
     const freqX = freqXs[i];
-    if (!(dotX >= 0) || !(freqX >= 0)) { el.style.display = 'none'; continue; }
+    // Finite, NOT non-negative: a left drag carries the orb past the row's
+    // left edge, and a `>= 0` test there hid the whole line — frequency
+    // marker included — for a voice sitting comfortably mid-bar (Dan,
+    // 2026-08-04). The guard only ever meant "no position yet" (dotXs is
+    // empty for the first frames after mount). Negative x is a real
+    // coordinate; SVG clips the off-row part and keeps the rest.
+    if (!Number.isFinite(dotX) || !Number.isFinite(freqX)) { el.style.display = 'none'; continue; }
     // Every voice's line rides up to the live curve surface at its frequency
     // (muted voices included — they just render dimmer, see the JSX styling).
     const level = _levelAtBarX(freqX - BAR_H_PADDING);
     const surfaceY = _curveSurfaceY(level);
-    // Trim the top endpoint to the orb's edge so the line meets the orb cleanly.
-    const seg = offsetLine(dotX, DOT_CENTER_Y, freqX, surfaceY, DOT_SIZE / 2, 0);
-    if (!seg) { el.style.display = 'none'; continue; }
+    // The polyline runs orb → near bar edge → far endpoint. Classic: orb is
+    // above, so it meets the curve surface first, then drops to the bar's
+    // bottom. Flipped: the orb hangs below, and the stem's attachment slides
+    // with a dragged orb (iOS parity): anchored at the bar's bottom edge
+    // while the orb hangs below it, tracking the orb through the bar band,
+    // and locking to the indicator's tip on the curve surface once the orb
+    // is pulled above the spectrum — the stem "follows the line to the top".
+    // The indicator itself always spans surface → bar bottom; only the stem's
+    // attachment point moves.
+    // Trim the orb endpoint to the orb's edge so the line meets it cleanly.
+    const nearY = GEO.flipped
+      ? Math.min(Math.max(dotY, surfaceY), GEO.posLineBottomY)
+      : surfaceY;
+    const seg = offsetLine(dotX, dotY, freqX, nearY, DOT_SIZE / 2, 0);
+    if (!seg) {
+      // Stem shorter than the orb radius (orb swallowing its attachment
+      // point mid-crossing). iOS hides just the stem — keep the indicator.
+      if (GEO.flipped) {
+        el.style.display = '';
+        el.setAttribute('points', `${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`);
+      } else {
+        el.style.display = 'none';
+      }
+      continue;
+    }
     el.style.display = '';
     el.setAttribute(
       'points',
-      `${seg.x1},${seg.y1} ${freqX},${surfaceY} ${freqX},${POS_LINE_BOTTOM_Y}`,
+      GEO.flipped
+        ? (nearY < GEO.posLineBottomY
+            ? `${seg.x1},${seg.y1} ${freqX},${nearY} ${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`
+            : `${seg.x1},${seg.y1} ${freqX},${GEO.posLineBottomY} ${freqX},${surfaceY}`)
+        : `${seg.x1},${seg.y1} ${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`,
     );
   }
+}
+
+// Stem tying the flipped layout's drag Hz readout back down to the spectrum.
+// The readout sits in the top strip — the far side of the bar from the orbs —
+// so without a tether it floats free of the voice it describes. The stem
+// leaves the digits' lower edge and lands on the live curve surface at the
+// voice's TRUE frequency x, exactly where its position line starts: the two
+// meet, and the label + marker read as one stem from the readout, across the
+// curve, down through the bar. It hangs straight down from a readout sitting
+// on its own frequency and leans only when the collision pass has pushed that
+// readout off it — iOS's convention, where the stem always starts at
+// `targets[i]` no matter where the label was relaxed to.
+//
+// Both x's are set declaratively (they change only on re-render, with the
+// readout's own layout); the per-frame write is the foot alone, which rides
+// the eased curve as the field morphs.
+function _updateHzStems(stemEls) {
+  for (let i = 0; i < stemEls.length; i++) {
+    const el = stemEls[i];
+    if (!el) continue;
+    const freqX = parseFloat(el.getAttribute('x2'));
+    if (!(freqX >= 0)) continue;
+    el.setAttribute('y2', _hzStemFootY(freqX).toFixed(2));
+  }
+}
+// Foot of the readout stem: the curve surface at this x — the same point
+// _updatePositionLines runs the voice's marker up to.
+function _hzStemFootY(freqX) {
+  return _curveSurfaceAtX(freqX);
 }
 
 // Played-note lines are the position line's LOWER segment: from the base of the
@@ -981,8 +1305,11 @@ function offsetLine(x1, y1, x2, y2, r1, r2) {
 
 // Dots collision-resolve so they don't visually overlap. Muted dots
 // participate too — they're rendered (dimmed) and need to push the
-// visible orbs aside instead of stacking under them.
-function resolveCollisions(targetsPx, dotSize) {
+// visible orbs aside instead of stacking under them. Indices in
+// `excluded` (confirmed drags) sit the pass out entirely — a finger-held
+// orb must neither shove its neighbors nor be shoved (iOS parity) — and
+// keep their raw target x.
+function resolveCollisions(targetsPx, dotSize, excluded) {
   const minGap = dotSize * 0.85;
   const resolved = [...targetsPx];
   if (resolved.length < 2) return resolved;
@@ -990,6 +1317,7 @@ function resolveCollisions(targetsPx, dotSize) {
   for (let iter = 0; iter < 20; iter++) {
     const sorted = resolved
       .map((_, i) => i)
+      .filter((i) => !excluded?.has(i))
       .sort((a, b) => resolved[a] - resolved[b]);
     let moved = false;
     for (let i = 1; i < sorted.length; i++) {
@@ -1008,9 +1336,64 @@ function resolveCollisions(targetsPx, dotSize) {
   return resolved;
 }
 
+// Width-aware sibling of the orb pass, for the above-bar Hz readouts (iOS
+// resolveCollisions(targets:widths:padding:excluded:)). Each label claims its
+// own horizontal extent, so a wide "1318.50" pushes its neighbors further than
+// a narrow "82.40" does. Sorted once by TRUE position, then adjacent
+// overlapping pairs are pushed apart symmetrically until every center distance
+// clears the two half-widths plus `padding`.
+// `excluded` labels (muted voices, and any whose readout has left the strip to
+// ride a raised orb) sit the pass out entirely: they neither shove a neighbor
+// nor get shoved, and keep their raw target — so the row doesn't jump when one
+// fades out.
+function resolveLabelCollisions(targets, widths, padding, excluded) {
+  const resolved = [...targets];
+  if (resolved.length < 2) return resolved;
+  const sorted = targets
+    .map((_, i) => i)
+    .filter((i) => !excluded?.has(i))
+    .sort((a, b) => targets[a] - targets[b]);
+  for (let iter = 0; iter < 8; iter++) {
+    let moved = false;
+    for (let i = 1; i < sorted.length; i++) {
+      const a = sorted[i - 1];
+      const b = sorted[i];
+      const minGap = (widths[a] + widths[b]) / 2 + padding;
+      const gap = resolved[b] - resolved[a];
+      if (gap < minGap) {
+        const overlap = minGap - gap;
+        resolved[a] -= overlap / 2;
+        resolved[b] += overlap / 2;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return resolved;
+}
+
+// Rendered width of a readout, for that pass (iOS's hzLabelWidth). Measured on
+// a canvas in the float's exact CSS font rather than estimated per character —
+// the monospace stack resolves to a different face on every platform.
+let _hzMeasureCtx = null;
+function _hzLabelWidth(text) {
+  if (!_hzMeasureCtx) {
+    _hzMeasureCtx = document.createElement('canvas').getContext('2d');
+    _hzMeasureCtx.font =
+      `800 ${FLIPPED_HZ_FLOAT_H}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    // Setting `font` resets spacing, so this has to follow it.
+    if ('letterSpacing' in _hzMeasureCtx) _hzMeasureCtx.letterSpacing = '-0.3px';
+  }
+  return _hzMeasureCtx.measureText(text).width;
+}
+// Air the collision pass keeps between neighboring readouts (iOS hzLabelGap).
+const HZ_FLOAT_GAP = 6;
+
 function FrequencySpectrumBar({
   oscillatorCount = 4,
   fineTuneEnabled = false,
+  // 'linear' | 'precision' | 'ios' — see the Orb-DRAG vertical axis notes up top.
+  orbDragMode = 'linear',
   onActiveChange,
   extraActive,
   // When true (e.g. the keyboard tray is open), grabbing or starting a
@@ -1026,18 +1409,53 @@ function FrequencySpectrumBar({
   // grabbed. Lets sibling panels (e.g. the tuning panel) drop into a
   // cheaper render mode while values are changing every frame.
   onDragStateChange,
+  // iOS-style flipped layout (settings → "orb row"): orbs hang below the
+  // spectrum on short arms, number under each orb, drag Hz readout on top.
+  // Below is the default layout; "above spectrum" is the opt-in classic look.
+  orbsBelow = true,
+  // Settings → "Pan dots": pin the rim indicator on every orb full-time,
+  // tracking the live pan (iOS panDotAlwaysOn). Off, the indicator only
+  // appears during a pan flash. The text readout keeps flashing either way.
+  panDots = true,
+  // The console's lifted selection (a voice index, 'all', or null — the
+  // frequency panel's subject). That voice's orb wears a white ring, the
+  // orb-row counterpart of the note cell's corner brackets.
+  selectedVoice = null,
 }) {
   // Subscribe to theme changes so JSX re-renders when the user flips
   // palette in settings — every osc-color lookup below reads live from
   // the palette singleton.
   useTheme();
+  // Mode-dependent row geometry. Also published to the module-level GEO so
+  // the rAF draw helpers (position lines, curve surface) read the same
+  // layout — safe because the app mounts a single spectrum bar. Declared
+  // BEFORE the draw-loop effects below so the publish runs first on mount.
+  const geo = useMemo(() => geometryFor(!!orbsBelow), [orbsBelow]);
+  useEffect(() => { GEO = geo; }, [geo]);
   const [barWidth, setBarWidth] = useState(500 - 2 * BAR_H_PADDING);
   const [frequencies, setFrequencies] = useState(() => Array(oscillatorCount).fill(440));
   const [muted, setMuted] = useState(() => Array(oscillatorCount).fill(false));
   const [draggingDots, setDraggingDots] = useState(() => new Set());
   const [globalOrbDragging, setGlobalOrbDragging] = useState(false);
   const [grabbedOscs, setGrabbedOscs] = useState(() => new Set());
-  const [ghosts, setGhosts] = useState({}); // { [pointerId]: { index, x, y } } during drag
+  // Live pointer-drag positions for the REAL orbs (no ghost — the orb itself
+  // rides the finger, iOS parity). Container-local center coords, anchored at
+  // the orb's rendered position on touch-down plus the total pointer delta.
+  // `confirmed` mirrors dragRef's didDrag so a mere tap never pulls the orb
+  // out of the collision pass.
+  const [dragOrbs, setDragOrbs] = useState({}); // { [pointerId]: { index, x, y, edgeRate, confirmed } }
+  // Voices whose orb is currently dragged ABOVE the spectrum bar (flipped
+  // layout only) — iOS's orbsAboveBar. Toggled with ±3px hysteresis around
+  // the bar's bottom edge so the label swap doesn't flicker at the crossing;
+  // cleared on release. Drives the drag Hz readout detaching from the top
+  // strip to glue itself above the raised orb.
+  const [orbsAbove, setOrbsAbove] = useState(() => new Set());
+  // Indices mid release-settle: the .settling class transitions left/top from
+  // the finger back to the resolved spot for ~0.4s (approximating the iOS
+  // release spring), then a timer removes it so live position updates from
+  // the rAF zoom loop stay instant.
+  const [settlingDots, setSettlingDots] = useState(() => new Set());
+  const settleTimersRef = useRef(new Map()); // index → timeout id
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
   const [range, setRange] = useState({ logMin: ABSOLUTE_LOG_MIN, logMax: ABSOLUTE_LOG_MAX });
   const [shiftHeld, setShiftHeld] = useState(false);
@@ -1053,15 +1471,22 @@ function FrequencySpectrumBar({
   // One flash at a time — a new param takes over the display. `values`
   // snapshots per-voice on every event so the display tracks a live drag;
   // `active` is the voice being edited ('all' for global edits like the
-  // master detune slider) — only edited voices swap their number for the
-  // text readout, the others keep their numbers and just show the
+  // ALL panel's ZERO/RANDOM) — only edited voices swap their number for
+  // the text readout, the others keep their numbers and just show the
   // indicator; `leaving` drives the fade-out class.
   //   pan     values[i] ∈ [−1, 1]; indicator dot at pan×90° (0 = top).
-  //   detune  values[i] = effective Hz (curve × master × panWidth); TWO
+  //   detune  values[i] = effective Hz (curve × ceiling × panWidth); TWO
   //           radial tick lines at ±(d/max)×90° — coincident at 12
   //           o'clock when clean, spread to the 9/3 horizons at full.
   const [statusFlash, setStatusFlash] = useState(null); // { param, values, active, leaving }
   const statusFlashTimersRef = useRef({ hold: 0, leave: 0 });
+  // Live per-voice pans, mirrored from the engine for the PINNED rim dots
+  // (Settings → "Pan dots" / iOS panDotAlwaysOn). Refreshed on every pan
+  // event — the cadence the flash already re-renders at — so the dots track
+  // a dial drag; the flash's own `values` stay an event-time snapshot.
+  // A slot added since the last event isn't in the array yet — the render
+  // falls back to the engine for those (no resync effect needed).
+  const [voicePans, setVoicePans] = useState(() => audioEngine.getVoicePans());
   useEffect(() => {
     const timers = statusFlashTimersRef.current;
     const show = (param, values, active) => {
@@ -1091,17 +1516,22 @@ function FrequencySpectrumBar({
         const active = pendingPan.indices.size > 1 ? 'all' : first;
         pendingPan.indices.clear();
         if (pendingPan.disposed) return;
-        show('pan', audioEngine.getVoicePans(), active);
+        const pans = audioEngine.getVoicePans();
+        // Same array feeds the transient flash and the pinned dots — the
+        // flash keeps it as its snapshot, the dots re-read it each event.
+        setVoicePans(pans);
+        show('pan', pans, active);
       });
     });
-    // Detune flash: master slider drags ('detune') and curve-node edits
-    // ('curve', with the slot index when a single node is dragged).
-    // Structural curve events (slot add/remove) stay silent, and lr mode
-    // shows nothing — the curve is inert there, so flashing an all-zero
-    // spread would read as broken rather than informative.
+    // Detune flash: curve edits ('curve', with the slot index when a
+    // single node/panel slider is dragged). The old 'detune' kind is
+    // gone with the master ceiling slider. Structural curve events (slot
+    // add/remove) stay silent, and lr mode shows nothing — the curve is
+    // inert there, so flashing an all-zero spread would read as broken
+    // rather than informative.
     const offDetune = droneStereo.onChange((sm, info) => {
       if (!info || info.structural || sm.mode !== 'stereo') return;
-      if (info.kind !== 'detune' && info.kind !== 'curve') return;
+      if (info.kind !== 'curve') return;
       const values = audioEngine.getVoicePans()
         .map((pan, i) => sm.detuneHzAt(i) * panWidth(pan));
       show('detune', values, info.index ?? 'all');
@@ -1233,12 +1663,13 @@ function FrequencySpectrumBar({
   const dotElsRef = useRef([]);
   const labelElsRef = useRef([]);
   // Per-slot "same-octave played" dots floating above each orb (see
-  // KBD_DOT_CENTER_Y). Toggled `.active` by the keyboard-glow rAF loop.
+  // geo.kbdDotCenterY). Toggled `.active` by the keyboard-glow rAF loop.
   const kbdDotElsRef = useRef([]);
   const rangeRef = useRef(range);
   const barWidthRef = useRef(barWidth);
   const grabbedRef = useRef(grabbedOscs);
   const fineTuneRef = useRef(fineTuneEnabled);
+  const orbDragModeRef = useRef(orbDragMode);
   const shiftRef = useRef(shiftHeld);
 
   // Keep the local transpose readout in sync with the engine (covers the
@@ -1249,12 +1680,12 @@ function FrequencySpectrumBar({
 
   // Is the pointer over the draggable number strip (the frequency-label band,
   // up to the top of the dissonance curve)? Container-local Y test so orbs —
-  // which float ABOVE this band — and the spectrogram below are never grabbed.
+  // which float outside this band — and the spectrogram below are never grabbed.
   const inTransposeZone = (clientY) => {
     const el = containerRef.current;
     if (!el) return false;
     const y = clientY - el.getBoundingClientRect().top;
-    return y >= TRANSPOSE_ZONE_TOP && y <= TRANSPOSE_ZONE_BOTTOM;
+    return y >= geo.transposeZoneTop && y <= geo.transposeZoneBottom;
   };
   // Number-strip drag → global transpose. Orbs stopPropagation on pointerdown,
   // so any press reaching the container is background; we further gate on the
@@ -1329,13 +1760,21 @@ function FrequencySpectrumBar({
   // imperatively each frame, plus refs caching the current orb x-positions the
   // draw loop reads.
   const posLineRefs = useRef([]);
+  // Flipped-layout drag-readout stems (top strip → curve surface), same
+  // per-frame treatment as the position lines they land on.
+  const hzStemRefs = useRef([]);
   const dotXsRef = useRef([]);
   const freqXsRef = useRef([]);
+  // Mirrors of dragPosByIndex / settlingDots for the per-frame stem drawer,
+  // which can't close over state.
+  const dragPosRef = useRef(new Map());
+  const settlingRef = useRef(new Set());
 
   useEffect(() => { barWidthRef.current = barWidth; }, [barWidth]);
   useEffect(() => { grabbedRef.current = grabbedOscs; }, [grabbedOscs]);
   useEffect(() => { draggingRef.current = draggingDots; }, [draggingDots]);
   useEffect(() => { fineTuneRef.current = fineTuneEnabled; }, [fineTuneEnabled]);
+  useEffect(() => { orbDragModeRef.current = orbDragMode; }, [orbDragMode]);
   useEffect(() => { shiftRef.current = shiftHeld; }, [shiftHeld]);
 
   // Dissonance HUD: the consonance hot-spot field behind the orbs, drawn
@@ -1346,7 +1785,16 @@ function FrequencySpectrumBar({
   // always excludes them.
   useEffect(() => {
     let raf = null;
-    const draw = () => {
+    // One thrown frame used to kill this loop FOREVER: the re-arm sat at the
+    // end of the body, so an exception skipped it and the curve, the position
+    // lines, the readout stems and the note lines all froze at their last
+    // values — with the orbs and the auto-zoom still live, which reads as
+    // "the spectrum stopped following the frequencies" (observed once while
+    // drag-testing, 2026-08-04; the throwing statement is NOT identified).
+    // The re-arm now lives in `finally` so a bad frame costs one frame, and
+    // the first failure is reported instead of vanishing.
+    let loggedDrawError = false;
+    const drawFrame = () => {
       const c = dissCanvasRef.current;
       if (c) {
         // Assumed spectral profile (timbreProfiles) — DECOUPLED from the synth
@@ -1368,7 +1816,30 @@ function FrequencySpectrumBar({
       }
       // Position lines (orb → live curve surface → bar bottom) are owned by the
       // SVG layer; their top endpoint reads the curve levels the draw just eased.
-      _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current);
+      // Dragged orbs override their endpoint with the finger position; orbs
+      // mid release-settle override with their CSS-transitioned rendered
+      // position so the stem rides the orb home instead of snapping ahead.
+      let dragPos = dragPosRef.current;
+      if (settlingRef.current.size) {
+        const crect = containerRef.current?.getBoundingClientRect();
+        if (crect) {
+          dragPos = new Map(dragPos);
+          for (const i of settlingRef.current) {
+            if (dragPos.has(i)) continue;
+            const el = dotElsRef.current[i];
+            if (!el) continue;
+            const r = el.getBoundingClientRect();
+            dragPos.set(i, {
+              x: r.left + r.width / 2 - crect.left,
+              y: r.top + r.height / 2 - crect.top,
+            });
+          }
+        }
+      }
+      _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current, dragPos);
+      // The drag readout's stem lands on that same curve surface, so its foot
+      // rides the eased levels too (only mounted in the flipped layout).
+      _updateHzStems(hzStemRefs.current);
       // Played-note stems ride the same freshly-eased curve.
       _updateNoteLines(
         noteElsRef.current, noteVoicesRef.current, rangeRef.current, barWidthRef.current,
@@ -1385,7 +1856,18 @@ function FrequencySpectrumBar({
           lastConsRef.current = pct;
         }
       }
-      raf = requestAnimationFrame(draw);
+    };
+    const draw = () => {
+      try {
+        drawFrame();
+      } catch (err) {
+        if (!loggedDrawError) {
+          loggedDrawError = true;
+          console.error('[FrequencySpectrumBar] draw frame threw (loop kept alive):', err);
+        }
+      } finally {
+        raf = requestAnimationFrame(draw);
+      }
     };
     raf = requestAnimationFrame(draw);
     return () => { if (raf) cancelAnimationFrame(raf); };
@@ -1473,10 +1955,8 @@ function FrequencySpectrumBar({
         // dot-above below, so a played drone isn't confused with a played key).
         if (dot) {
           dot.classList.toggle('kbd-active', !interacting && nonZeroActive);
-          // Note-off in progress: the slot is muted but its envelope release
-          // is still sounding — pulse until the tail completes, THEN read as
-          // off. (isSlotReleasing is false once the release window passes.)
-          dot.classList.toggle('releasing', audioEngine.isSlotReleasing(i));
+          // No release-tail state on the orb: a muted slot reads as muted
+          // immediately, even while its envelope release is still sounding.
         }
 
         // Same-octave dot floating above the orb. Hidden during interaction.
@@ -1823,11 +2303,68 @@ function FrequencySpectrumBar({
     () => displayFrequencies.map((f) => BAR_H_PADDING + freqToFraction(f, range.logMin, range.logMax) * barWidth),
     [displayFrequencies, barWidth, range.logMin, range.logMax]
   );
+  // Confirmed drags sit out of the collision pass (a finger-held orb neither
+  // shoves nor is shoved — iOS parity). Derived from dragOrbs' confirmed flag
+  // rather than draggingDots so a mere tap-in-progress never reshuffles the row.
+  const collisionExcluded = useMemo(() => {
+    const s = new Set();
+    for (const g of Object.values(dragOrbs)) if (g.confirmed) s.add(g.index);
+    return s;
+  }, [dragOrbs]);
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, DOT_SIZE),
-    [freqXs]
+    () => resolveCollisions(freqXs, DOT_SIZE, collisionExcluded),
+    [freqXs, collisionExcluded]
   );
+  // Index → live drag position, for the orb/label/stem renderers. Last-write-
+  // wins if two pointers ever hold the same orb (matches the old ghost map).
+  const dragPosByIndex = useMemo(() => {
+    const m = new Map();
+    for (const g of Object.values(dragOrbs)) m.set(g.index, g);
+    return m;
+  }, [dragOrbs]);
   useEffect(() => { dotXsRef.current = dotXs; freqXsRef.current = freqXs; }, [dotXs, freqXs]);
+  useEffect(() => { dragPosRef.current = dragPosByIndex; }, [dragPosByIndex]);
+  // Any orb under a finger (or held by a keyboard grab) — the whole readout
+  // strip's on/off switch, iOS's `dragReadout`.
+  const hzStripShown = draggingDots.size > 0 || grabbedOscs.size > 0;
+  // Above-bar Hz readouts (flipped layout): one per voice, where each sits, and
+  // whether it's up. iOS frequencyLabels(above:) — touch ANY orb and the whole
+  // chord's frequencies come up over the spectrum, each planted over its own
+  // pitch. A readout parks at its voice's TRUE frequency and STAYS there while
+  // the finger drags the orb around below; the only thing that moves it
+  // sideways is the width-aware collision pass, so voices tuned close together
+  // step apart instead of stacking. Muted voices are out (nothing sounding to
+  // read) — EXCEPT the one under the finger: you can't tune what you can't
+  // read, so a muted voice being moved gets its readout like any other (Dan,
+  // 2026-08-04). A voice whose orb has been pulled above the bar is out too —
+  // it carries its readout with it and stops holding space here. Every voice
+  // stays MOUNTED so both edges can fade (see .fsb-hz-float / .fsb-hz-stem).
+  const hzFloats = useMemo(() => {
+    if (!geo.flipped) return [];
+    const texts = frequencies.map((f) => formatActiveFreq(f));
+    const widths = texts.map(_hzLabelWidth);
+    const hidden = new Set();
+    for (let i = 0; i < frequencies.length; i++) {
+      const held = draggingDots.has(i) || grabbedOscs.has(i);
+      if ((muted[i] && !held) || !(frequencies[i] > 0) || orbsAbove.has(i)) hidden.add(i);
+    }
+    const resolved = resolveLabelCollisions(freqXs, widths, HZ_FLOAT_GAP, hidden);
+    // Clamp into the row (bar + its side gutters) so an edge voice's readout
+    // stays fully on screen rather than sliding off — iOS clamps the same way.
+    const rowW = barWidth + BAR_H_PADDING * 2;
+    return frequencies.map((_, i) => ({
+      index: i,
+      text: texts[i],
+      x: Math.min(Math.max(resolved[i], widths[i] / 2), rowW - widths[i] / 2),
+      shown: hzStripShown && !hidden.has(i),
+    }));
+  }, [geo.flipped, frequencies, freqXs, barWidth, muted, orbsAbove, hzStripShown,
+      draggingDots, grabbedOscs]);
+  // (A "1/5×" / "2.4×" rate tag used to ride beside the drag readout here.
+  // Removed 2026-08-04, Dan: the tier is felt in the drag, and the tag both
+  // cluttered the readout and shoved the Hz digits sideways as it appeared.
+  // The rate itself is untouched — see scrubScale / scrubRatio.)
+  useEffect(() => { settlingRef.current = settlingDots; }, [settlingDots]);
 
   const getSensitivity = () =>
     (fineTuneRef.current || shiftRef.current) ? SENSITIVITY_FINE : SENSITIVITY_NORMAL;
@@ -1867,6 +2404,49 @@ function FrequencySpectrumBar({
     setGrabbedOscs((prev) => (prev.size === 0 ? prev : new Set()));
   };
 
+  // Start the release settle for the given indices: the .settling class turns
+  // on the left/top transition, and a timer strips it once the ease lands.
+  // Safe to capture in mount-time handlers — touches only setters and refs.
+  const beginSettle = (indices) => {
+    if (!indices.length) return;
+    setSettlingDots((prev) => {
+      const next = new Set(prev);
+      for (const i of indices) next.add(i);
+      return next;
+    });
+    for (const i of indices) {
+      clearTimeout(settleTimersRef.current.get(i));
+      settleTimersRef.current.set(i, setTimeout(() => {
+        settleTimersRef.current.delete(i);
+        setSettlingDots((prev) => {
+          if (!prev.has(i)) return prev;
+          const next = new Set(prev);
+          next.delete(i);
+          return next;
+        });
+      }, ORB_SETTLE_MS));
+    }
+  };
+  // A re-grab mid-settle takes the orb back under the finger immediately: the
+  // transition class must go in the same commit that repositions the orb, or
+  // drag-follow would ease instead of tracking.
+  const cancelSettle = (index) => {
+    const t = settleTimersRef.current.get(index);
+    if (t !== undefined) {
+      clearTimeout(t);
+      settleTimersRef.current.delete(index);
+    }
+    setSettlingDots((prev) => {
+      if (!prev.has(index)) return prev;
+      const next = new Set(prev);
+      next.delete(index);
+      return next;
+    });
+  };
+  useEffect(() => () => {
+    for (const t of settleTimersRef.current.values()) clearTimeout(t);
+  }, []);
+
   const handlePointerDown = (e, index) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1881,24 +2461,35 @@ function FrequencySpectrumBar({
       audioEngine.unmuteOscillator(index);
     }
     const rect = containerRef.current.getBoundingClientRect();
+    // Anchor at the orb's RENDERED center (iOS's dragStartRestingX): the orb
+    // never jumps to the pointer, and re-grabbing one mid-settle picks it up
+    // exactly where the transition has it right now.
+    const el = dotElsRef.current[index];
+    let anchorX = dotXsRef.current[index] ?? 0;
+    let anchorY = geo.dotCenterY;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      anchorX = r.left + r.width / 2 - rect.left;
+      anchorY = r.top + r.height / 2 - rect.top;
+    }
+    cancelSettle(index);
     dragRef.current[e.pointerId] = {
       index,
-      containerLeft: rect.left,
-      containerTop: rect.top,
       startX: e.clientX,
       startY: e.clientY,
       lastX: e.clientX,
-      lastY: e.clientY,
       didDrag: false,
+      anchorX,
+      anchorY,
     };
     setDraggingDots((prev) => {
       const next = new Set(prev);
       next.add(index);
       return next;
     });
-    setGhosts((prev) => ({
+    setDragOrbs((prev) => ({
       ...prev,
-      [e.pointerId]: { index, x: e.clientX - rect.left, y: e.clientY - rect.top, edgeRate: 0 },
+      [e.pointerId]: { index, x: anchorX, y: anchorY, edgeRate: 0, confirmed: false },
     }));
   };
 
@@ -1921,43 +2512,80 @@ function FrequencySpectrumBar({
     }
     if (drag.didDrag) {
       const deltaX = e.clientX - drag.lastX;
-      const deltaY = e.clientY - drag.lastY;
       drag.lastX = e.clientX;
-      drag.lastY = e.clientY;
-      if (deltaX !== 0 || deltaY !== 0) {
+      // Vertical travel from the grab sets the horizontal tuning rate: the
+      // precision tiers, the iOS ramp, or nothing at all in linear mode.
+      // Volume is never on this axis during a drag — the faders own it.
+      const mode = orbDragModeRef.current;
+      const scrub = mode === 'precision'
+        ? scrubScale(e.clientY - drag.startY)
+        : mode === 'ios'
+          ? scrubRatio(e.clientY, drag.startY)
+          : 1;
+      drag.rate = scrub;   // read by the `< 1x >` tag over the Hz readout
+      if (deltaX !== 0) {
         const sens = getSensitivity();
-        if (deltaX !== 0) {
-          const r = rangeRef.current;
-          const curFreq = audioEngine.getFrequency(drag.index);
-          const slow = consonanceSlowdown(curFreq);
-          const logDelta =
-            (deltaX / barWidthRef.current) * (r.logMax - r.logMin) * sens * slow;
-          audioEngine.setFrequency(
-            drag.index,
-            Math.max(FREQ_MIN, Math.min(FREQ_MAX, curFreq * 2 ** logDelta))
-          );
-        }
-        if (deltaY !== 0) {
-          const volDelta = (-deltaY / window.innerHeight) * GRAB_VOL_SCALAR * sens;
-          const curVol = audioEngine.getVolume(drag.index);
-          audioEngine.setVolume(
-            drag.index,
-            Math.max(0, Math.min(1, curVol + volDelta))
-          );
-        }
+        const r = rangeRef.current;
+        const curFreq = audioEngine.getFrequency(drag.index);
+        const slow = consonanceSlowdown(curFreq);
+        const logDelta =
+          (deltaX / barWidthRef.current) * (r.logMax - r.logMin) * sens * slow * scrub;
+        audioEngine.setFrequency(
+          drag.index,
+          Math.max(FREQ_MIN, Math.min(FREQ_MAX, curFreq * 2 ** logDelta))
+        );
       }
-      drag.edgeRate = computeEdgeRate(e.clientX);
+      // Edge auto-pan rides the ramp too, but the ramp may only ever SLOW the
+      // climb (iOS `min(1, edgePushRatio)`): unclamped, a pointer parked deep
+      // below the orb makes the edge sweep lurch. The arrow drawn on the orb
+      // reads this value, so it visualizes the effective rate. Only the iOS
+      // mode does this — precision-mode tiers leave the sweep at full speed,
+      // as they shipped.
+      drag.edgeRate = computeEdgeRate(e.clientX)
+        * (mode === 'ios' ? Math.min(1, scrub) : 1);
       // Edge-pan needs the auto-zoom loop alive even on frames where
       // setFrequency above didn't fire (e.g., orb already at FREQ_MIN/MAX).
       if (drag.edgeRate) wakeRef.current?.();
     } else {
       drag.edgeRate = 0;
     }
-    const x = e.clientX - drag.containerLeft;
-    const y = e.clientY - drag.containerTop;
-    setGhosts((prev) => ({
+    // Anchor + total delta (not the raw pointer): live frequency-driven
+    // position changes never double-count, and edge-pan zooming under a
+    // stationary finger doesn't drift the orb.
+    const x = drag.anchorX + (e.clientX - drag.startX);
+    const y = drag.anchorY + (e.clientY - drag.startY);
+    // Above-the-bar crossing (flipped layout, iOS parity): ±3px hysteresis
+    // on the orb's center against the TOP OF THE CONSONANCE CURVE under the
+    // orb (Dan, 2026-08-04) — not the bar's bottom edge, which flipped the
+    // readout the moment the orb left its rest row, ~36px before it had
+    // cleared anything. The orb has to rise past the graph line it's
+    // sitting under; that's also where the position-line stem locks to the
+    // indicator's tip, so the readout hands off from the frequency to the
+    // orb in one motion. Purely visual — tuning math is untouched.
+    if (geo.flipped && drag.didDrag) {
+      const crossY = _curveSurfaceAtX(x);
+      if (y < crossY - 3) {
+        setOrbsAbove((prev) => {
+          if (prev.has(drag.index)) return prev;
+          const next = new Set(prev);
+          next.add(drag.index);
+          return next;
+        });
+      } else if (y > crossY + 3) {
+        setOrbsAbove((prev) => {
+          if (!prev.has(drag.index)) return prev;
+          const next = new Set(prev);
+          next.delete(drag.index);
+          return next;
+        });
+      }
+    }
+    setDragOrbs((prev) => ({
       ...prev,
-      [e.pointerId]: { index: drag.index, x, y, edgeRate: drag.edgeRate || 0 },
+      [e.pointerId]: {
+        index: drag.index, x, y, edgeRate: drag.edgeRate || 0, confirmed: drag.didDrag,
+        rate: drag.rate ?? 1,
+      },
     }));
   };
 
@@ -1986,14 +2614,26 @@ function FrequencySpectrumBar({
       } catch { /* no-op */ }
     }
 
+    // A confirmed drag settles home: the .settling transition lands in the
+    // same commit that hands the orb's position back to dotXs, so it eases
+    // from the finger to the resolved spot in one motion (iOS spring parity).
+    if (didDrag) beginSettle([index]);
     setDraggingDots((prev) => {
       const next = new Set(prev);
       next.delete(index);
       return next;
     });
-    setGhosts((prev) => {
+    setDragOrbs((prev) => {
       const next = { ...prev };
       delete next[e.pointerId];
+      return next;
+    });
+    // iOS clears orbsAboveBar unconditionally on release — the stem and
+    // labels derive from the orb's position, so they settle home with it.
+    setOrbsAbove((prev) => {
+      if (!prev.has(index)) return prev;
+      const next = new Set(prev);
+      next.delete(index);
       return next;
     });
   };
@@ -2113,7 +2753,7 @@ function FrequencySpectrumBar({
       const next = prev.filter((i) => i < oscillatorCount);
       return next.length === prev.length ? prev : next;
     });
-    setGhosts((prev) => {
+    setDragOrbs((prev) => {
       let changed = false;
       const next = {};
       for (const pid in prev) {
@@ -2175,16 +2815,20 @@ function FrequencySpectrumBar({
   // pointer leaving the window, Cmd/Alt-Tab, tab switch, minimize, etc).
   useEffect(() => {
     const resetDragOnly = () => {
-      const anyDrag = Object.keys(dragRef.current).length > 0;
-      if (!anyDrag) return;
+      const drags = Object.values(dragRef.current);
+      if (drags.length === 0) return;
       dragRef.current = {};
+      // A lost pointerup still settles home instead of teleporting.
+      beginSettle(drags.filter((d) => d.didDrag).map((d) => d.index));
       setDraggingDots((prev) => (prev.size === 0 ? prev : new Set()));
-      setGhosts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      setDragOrbs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     };
     const releaseAll = () => {
+      const drags = Object.values(dragRef.current);
       dragRef.current = {};
+      beginSettle(drags.filter((d) => d.didDrag).map((d) => d.index));
       setDraggingDots((prev) => (prev.size === 0 ? prev : new Set()));
-      setGhosts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      setDragOrbs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       setGrabbedOscs((prev) => (prev.size === 0 ? prev : new Set()));
       setShiftHeld(false);
     };
@@ -2229,10 +2873,12 @@ function FrequencySpectrumBar({
       if (e.key === 'Escape') {
         releaseAllGrabs();
         // Also force-reset any stuck drag state.
-        if (Object.keys(dragRef.current).length > 0) {
+        const drags = Object.values(dragRef.current);
+        if (drags.length > 0) {
           dragRef.current = {};
+          beginSettle(drags.filter((d) => d.didDrag).map((d) => d.index));
           setDraggingDots((prev) => (prev.size === 0 ? prev : new Set()));
-          setGhosts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+          setDragOrbs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
         }
         return;
       }
@@ -2274,10 +2920,26 @@ function FrequencySpectrumBar({
     () => computeTicks(range.logMin + tickLogShift, range.logMax + tickLogShift),
     [range.logMin, range.logMax, tickLogShift]
   );
+  // Ridges between the numbers. They subdivide the dominant level's lattice
+  // (padded 2 octaves so edge gaps whose bounding mark sits off-screen still
+  // get ridges); any ridge landing under a visible label is dropped — that
+  // label already draws a full-height line there.
+  const minorTicks = useMemo(() => {
+    const lo = range.logMin + tickLogShift;
+    const hi = range.logMax + tickLogShift;
+    // Only a label that's actually READABLE displaces a ridge. A level at
+    // 0.2 opacity is a ghost line — dropping ridges under it would leave
+    // visibly empty stretches of ruler (the 60/70/80/90 gap at full zoom).
+    const majorXs = visibleTicks
+      .filter((t) => t.opacity >= 0.5)
+      .map((t) => freqToFraction(t.freq, lo, hi) * barWidth);
+    return computeMinorTicks(latticeTickFreqs(lo, hi, 2), lo, hi, barWidth)
+      .filter((m) => !majorXs.some((mx) => Math.abs(mx - m.x) < 1.5));
+  }, [range.logMin, range.logMax, tickLogShift, barWidth, visibleTicks]);
 
   return (
     <>
-      <div className="orb-backdrop" />
+      <div className={`orb-backdrop${geo.flipped ? ' flipped' : ''}`} />
       {/* Viewport-spanning dotted lines marking where edge auto-pan engages.
           Only shown during an active drag or grab — otherwise they're visual
           noise. CSS positions them at the 1200px canvas inset (matching the
@@ -2288,8 +2950,8 @@ function FrequencySpectrumBar({
           <div className="fsb-edge-zone-line fsb-edge-zone-line-right" aria-hidden="true" />
         </>
       )}
-      <div className="fsb-row" style={{ height: TOTAL_HEIGHT }}>
-      <div className="fsb-side fsb-side-left">
+      <div className="fsb-row" style={{ height: geo.totalHeight }}>
+      <div className="fsb-side fsb-side-left" style={{ marginBottom: geo.sideMarginBottom }}>
         {/* DEBUG: overall consonance (0–100) from audioFeatures.consonance —
             the FFT-measured Sethares value, so it reflects the full mix
             (keyboard, folding, saturation), not just the drone orbs. */}
@@ -2302,7 +2964,7 @@ function FrequencySpectrumBar({
         onPointerDown={beginTransposeDrag}
         onPointerMove={updateTransposeCursor}
         onDoubleClick={resetTranspose}
-        style={{ height: TOTAL_HEIGHT }}
+        style={{ height: geo.totalHeight }}
       >
         {/* Dissonance HUD — sits behind the orbs, rising up from the spectrum
             line and bleeding DISS_CURVE_DOWN px down into the spectrogram.
@@ -2312,7 +2974,7 @@ function FrequencySpectrumBar({
           className="fsb-diss-curve"
           style={{
             left: BAR_H_PADDING,
-            top: BAR_TOP_Y - DISS_CURVE_HEIGHT - DISS_LINE_LIFT,
+            top: geo.barTopY - DISS_CURVE_HEIGHT - DISS_LINE_LIFT,
             width: barWidth,
             height: DISS_CURVE_HEIGHT + DISS_LINE_LIFT + DISS_CURVE_DOWN,
           }}
@@ -2322,7 +2984,7 @@ function FrequencySpectrumBar({
           className="fsb-track"
         style={{
           left: BAR_H_PADDING,
-          top: BAR_TOP_Y,
+          top: geo.barTopY,
           width: barWidth,
           height: BAR_LINE_HEIGHT,
         }}
@@ -2338,24 +3000,35 @@ function FrequencySpectrumBar({
             </div>
           );
         })}
+        {/* Minor ridges rising from the bar's floor between the labels (iOS
+            parity) — on round sub-increments of each gap, see
+            computeMinorTicks. */}
+        {minorTicks.map(({ freq, x, tall }) => (
+          <div
+            key={`minor-${freq}`}
+            className={`fsb-tick-minor${tall ? ' tall' : ''}`}
+            style={{ left: x }}
+            aria-hidden="true"
+          />
+        ))}
       </div>
 
 
       {(() => {
-        const homeY = DOT_CENTER_Y;
+        const homeY = geo.dotCenterY;
         const homeR = DOT_SIZE / 2;
         const ghostYOffset = 0;
         const ghostR = DOT_SIZE / 2;
         return (
-          <svg className="fsb-lines" width="100%" height={TOTAL_HEIGHT} style={{ overflow: 'visible' }}>
+          <svg className="fsb-lines" width="100%" height={geo.totalHeight} style={{ overflow: 'visible' }}>
             {/* Occlusion mask: white shows, black hides. Black discs at every
                 orb punch holes so the staged tether lines/dots read as passing
                 BEHIND the orbs — which are translucent hollow rings that would
                 otherwise let the lines bleed through them. */}
             <defs>
               <mask id="fsb-staged-occlude" maskUnits="userSpaceOnUse"
-                    x={-200} y={homeY - 100} width={8000} height={340}>
-                <rect x={-200} y={homeY - 100} width={8000} height={340} fill="white" />
+                    x={-200} y={Math.min(geo.stagedDotY, homeY) - 100} width={8000} height={440}>
+                <rect x={-200} y={Math.min(geo.stagedDotY, homeY) - 100} width={8000} height={440} fill="white" />
                 {dotXs.map((ox, oi) => (
                   <circle key={`occ-${oi}`} cx={ox} cy={homeY} r={DOT_SIZE / 2 + 2} fill="black" />
                 ))}
@@ -2392,9 +3065,9 @@ function FrequencySpectrumBar({
                 >
                   <line
                     x1={0}
-                    y1={POS_LINE_BOTTOM_Y}
+                    y1={geo.posLineBottomY}
                     x2={0}
-                    y2={POS_LINE_BOTTOM_Y}
+                    y2={geo.posLineBottomY}
                     stroke={color}
                     strokeWidth={2}
                     strokeLinecap="round"
@@ -2402,7 +3075,7 @@ function FrequencySpectrumBar({
                   />
                   <circle
                     cx={0}
-                    cy={NOTE_DOT_Y}
+                    cy={geo.noteDotY}
                     r={NOTE_DOT_R}
                     fill={color}
                     style={{ filter: `drop-shadow(0 0 3px ${color})` }}
@@ -2413,7 +3086,7 @@ function FrequencySpectrumBar({
                   <circle
                     className="fsb-note-dot"
                     cx={0}
-                    cy={NOTE_DOT_Y}
+                    cy={geo.noteDotY}
                     r={NOTE_DOT_HIT_R}
                     fill="transparent"
                     onPointerDown={(e) => {
@@ -2454,10 +3127,34 @@ function FrequencySpectrumBar({
                 />
               );
             })}
+            {/* Readout stems (flipped layout): one per readout in the top
+                strip (see hzFloats), tying it down to the curve surface at
+                that voice's true frequency — where its position line begins.
+                Fades with its label (`.showing`), so the whole strip comes up
+                and goes down as one. Only the foot is written per frame
+                (_updateHzStems); the rest is layout. */}
+            {hzFloats.map(({ index: i, x, shown }) => {
+              const color = palette.oscColor(i, oscillatorCount);
+              return (
+                <line
+                  key={`hz-stem-${i}`}
+                  ref={(el) => { hzStemRefs.current[i] = el; }}
+                  className={`fsb-hz-stem${shown ? ' showing' : ''}`}
+                  x1={x}
+                  y1={FLIPPED_HZ_STEM_TOP_Y}
+                  x2={freqXs[i]}
+                  y2={_hzStemFootY(freqXs[i])}
+                  stroke={color}
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                  style={{ filter: `drop-shadow(0 0 3px ${color})` }}
+                />
+              );
+            })}
             {/* Staged-slot targets: a floating dot STAGED_DOT_LIFT above each
                 orb (tethered by a dotted line) marks where that voice will glide
                 to; on launch the dot slides down to meet the orb as it lands. An
-                upward triangle just above the tick tops marks the same target
+                upward triangle at the bar's bottom edge marks the same target
                 frequency down on the spectrum. The whole group fades
                 with the orb's horizontal proximity (also Heuristic 2 — hidden
                 when the orb is already on target, fading back in as it drifts, so
@@ -2483,18 +3180,22 @@ function FrequencySpectrumBar({
               if (triOpacity <= 0.02) return null;   // voice on-spot — nothing to show
               const color = palette.oscColor(i, oscillatorCount);
               // Descent is driven by that gap, not launch progress: the dot HOLDS
-              // its target x and lowers toward the orb as the orb nears the target,
-              // and rises back to full lift as the orb moves away. So it animates
+              // its target x and lowers toward its landing spot as the orb nears
+              // the target, and rises back to full lift as the orb moves away.
+              // The landing spot is the orb itself in the classic layout; in the
+              // flipped layout the orbs hang on the far side of the bar, so the
+              // handle instead lands on the target frequency's position at the
+              // spectrum's TOP edge (where the triangle marks it). It animates
               // both ways — a launch lowers it, an undo/return raises it — with no
               // snap when a launch is aborted mid-flight. Cubing the linear falloff
               // makes the dot rise FAST as the orb first moves off target (so it
-              // clears the orb top and fades in sooner), then eases toward full lift.
+              // clears the landing spot and fades in sooner), then eases to full lift.
               //
               // EXCEPT during a step transition: there the descent runs on the
               // step-time CLOCK — the orb is holding its old spot while the
-              // incoming note (this dot) sinks to the orb row; the orb relocates
-              // to it on landing. Smoothstepped so it eases in and out but still
-              // lands exactly when the overlap window closes.
+              // incoming note (this dot) sinks to its landing spot; the orb
+              // relocates on landing. Smoothstepped so it eases in and out but
+              // still lands exactly when the overlap window closes.
               const stepAnim = stepAnims[i];
               // Dot landed: the marker's job is done — hide it while the orb
               // finishes its slide. (During the pre-landing lead the dot is
@@ -2507,24 +3208,31 @@ function FrequencySpectrumBar({
                   Math.max(0, Math.min(1, 1 - gap / STAGED_DESCENT_RANGE_PX)),
                   STAGED_DESCENT_EASE
                 );
-              const dotY = STAGED_DOT_Y + (homeY - STAGED_DOT_Y) * descent;
+              const dotY = geo.stagedDotY + (geo.stagedLandY - geo.stagedDotY) * descent;
               // The dot + tether fade continuously with the dot's height: full
-              // opacity once it's a fade-range clear of the orb top, then tapering
-              // to 0 as it sinks all the way to the orb's center (homeY) — so it
-              // dissolves INTO the orb instead of blinking out at the top edge.
+              // opacity once it's a fade-range clear of its landing spot, then
+              // tapering to 0 as it sinks all the way there — so it dissolves
+              // INTO the orb (classic) / INTO the bar's top edge (flipped)
+              // instead of blinking out partway down.
               //
               // During a step transition the dot does NOT fade: it rides at full
-              // opacity all the way to the orb row, and the whole marker simply
-              // unmounts at the instant it lands (p=1 → the orb jumps over and
-              // the on-target gap hides the marker). The tether is hidden for
-              // the ride — just the incoming note descending, no leash.
+              // opacity all the way down, and the whole marker simply unmounts
+              // at the instant it lands (p=1 → the orb jumps over and the
+              // on-target gap hides the marker). The tether is hidden for the
+              // ride — just the incoming note descending, no leash.
               const stepping = !!stepAnim;
               const orbTop = homeY - DOT_SIZE / 2;
               const dotLineOpacity = stepping ? 1 : Math.min(1, Math.max(0,
-                (homeY - dotY) / (DOT_LINE_FADE_RANGE_PX + (homeY - orbTop))));
+                geo.flipped
+                  ? (geo.stagedLandY - dotY) / (DOT_LINE_FADE_RANGE_PX + STAGED_DOT_R)
+                  : (homeY - dotY) / (DOT_LINE_FADE_RANGE_PX + (homeY - orbTop))));
               const showDot = !isLaunching && dotLineOpacity > 0.1;
-              // Dotted tether: dot → orb edge (trimmed both ends, like the ghosts).
-              const seg = offsetLine(tx, dotY, dotXs[i], homeY, STAGED_DOT_R, DOT_SIZE / 2);
+              // Dotted tether: dot → orb edge (classic, trimmed both ends like
+              // the ghosts) / dot → the freq marker at the spectrum's top edge
+              // (flipped — a short vertical leash that never crosses the bar).
+              const seg = geo.flipped
+                ? offsetLine(tx, dotY, tx, geo.stagedLandY, STAGED_DOT_R, 0)
+                : offsetLine(tx, dotY, dotXs[i], homeY, STAGED_DOT_R, DOT_SIZE / 2);
               // The transition mode decides how a launch travels (glide tween
               // vs step retrigger — both step flavors count as step for a
               // single-dot gesture); holding shift inverts it for this
@@ -2546,10 +3254,9 @@ function FrequencySpectrumBar({
               // Swipe: crossing a pending line/dot with the button/finger held
               // launches that voice — drag across several for a cascade.
               const swipeOver = (e) => { if (e.buttons & 1) launchWith(e.shiftKey); };
-              const pts = `${tx - TRIANGLE_TOP_W / 2},${TRIANGLE_APEX_Y} `
-                + `${tx + TRIANGLE_TOP_W / 2},${TRIANGLE_APEX_Y} `
-                + `${tx + TRIANGLE_W / 2},${TRIANGLE_BASE_Y} `
-                + `${tx - TRIANGLE_W / 2},${TRIANGLE_BASE_Y}`;
+              const pts = `${tx},${geo.triangleApexY} `
+                + `${tx + TRIANGLE_W / 2},${geo.triangleBaseY} `
+                + `${tx - TRIANGLE_W / 2},${geo.triangleBaseY}`;
               return (
                 <g key={`staged-${i}`} opacity={stageFade}>
                   {!stepping && seg && (
@@ -2591,7 +3298,7 @@ function FrequencySpectrumBar({
                   {!isLaunching && triOpacity > 0.1 && (
                     <rect
                       x={tx - TRIANGLE_W / 2 - TRIANGLE_HIT_PAD}
-                      y={TRIANGLE_APEX_Y - TRIANGLE_HIT_PAD}
+                      y={geo.triangleApexY - TRIANGLE_HIT_PAD}
                       width={TRIANGLE_W + 2 * TRIANGLE_HIT_PAD}
                       height={TRIANGLE_H + 2 * TRIANGLE_HIT_PAD}
                       fill="transparent"
@@ -2623,7 +3330,8 @@ function FrequencySpectrumBar({
                       onPointerEnter={swipeOver}
                     />
                   )}
-                  {/* Floating target dot above the orb. */}
+                  {/* Floating target dot (above the orb classic / above the
+                      freq marker flipped). */}
                   <circle
                     cx={tx}
                     cy={dotY}
@@ -2641,27 +3349,9 @@ function FrequencySpectrumBar({
               })}
               </g>
             )}
-            {Object.entries(ghosts).map(([pid, g]) => {
-              const color = palette.oscColor(g.index, oscillatorCount);
-              const seg = offsetLine(
-                dotXs[g.index], homeY,
-                g.x, g.y + ghostYOffset,
-                homeR, ghostR
-              );
-              if (!seg) return null;
-              return (
-                <line
-                  key={`ghost-${pid}`}
-                  x1={seg.x1}
-                  y1={seg.y1}
-                  x2={seg.x2}
-                  y2={seg.y2}
-                  stroke={color}
-                  strokeOpacity={0.5}
-                  strokeWidth={1}
-                />
-              );
-            })}
+            {/* No drag tether: the real orb rides the pointer (iOS parity),
+                and its position line above doubles as the stem back to the
+                true frequency x. Grab mode below keeps its cursor tethers. */}
             {grabCursor &&
               Array.from(grabbedOscs).map((idx, i, arr) => {
                 const color = palette.oscColor(idx, oscillatorCount);
@@ -2685,7 +3375,7 @@ function FrequencySpectrumBar({
                   />
                 );
               })}
-            {Object.entries(ghosts).map(([pid, g]) =>
+            {Object.entries(dragOrbs).map(([pid, g]) =>
               renderEdgeArrow(
                 `drag-arrow-${pid}`,
                 g.x,
@@ -2719,19 +3409,28 @@ function FrequencySpectrumBar({
         // the drag ghost has — so the user can see which osc they're
         // affecting from another control.
         const isBoosted = !isDragging && !isGrabbed && extraActive?.has(i);
+        // While a pointer holds this orb it rides the finger directly (no
+        // ghost — iOS parity); on release the .settling transition eases it
+        // back onto its resolved dotXs spot.
+        const dragPos = dragPosByIndex.get(i);
         const classes = ['fsb-dot'];
         if (muted[i]) classes.push('muted');
         if (isDragging) classes.push('dragging');
         else if (isGrabbed) classes.push('grabbed');
         if (isBoosted) classes.push('boosted');
+        if (settlingDots.has(i)) classes.push('settling');
+        // The frequency panel's subject. The ring itself is drawn by the
+        // .fsb-sel-ring layer below, not here; the class stays as the
+        // state hook on the orb.
+        if (selectedVoice === i) classes.push('selected');
         return (
           <div
             key={i}
             ref={(el) => { dotElsRef.current[i] = el; }}
             className={classes.join(' ')}
             style={{
-              left: dotXs[i] - DOT_SIZE / 2,
-              top: DOT_CENTER_Y - DOT_SIZE / 2,
+              left: (dragPos ? dragPos.x : dotXs[i]) - DOT_SIZE / 2,
+              top: (dragPos ? dragPos.y : geo.dotCenterY) - DOT_SIZE / 2,
               width: DOT_SIZE,
               height: DOT_SIZE,
               '--dot-color': color,
@@ -2744,6 +3443,33 @@ function FrequencySpectrumBar({
         );
       })}
 
+      {/* Selection ring — the frequency panel's subject, matching the
+          corner brackets its note cell wears in the console. Its OWN layer
+          rather than an outline on the orb: the orb dims itself with
+          element opacity (muted 0.4, paused 0.42), and an outline is part
+          of the element, so the mark faded out on exactly the voices you
+          most need to pick out of the row (Dan, 2026-08-04). Here it stays
+          full white whatever the orb is doing. Rides the orb through a
+          drag/settle the way the pinned pan dot does. Exactly one is ever
+          mounted — the CSS hover rule depends on that. */}
+      {selectedVoice != null && selectedVoice >= 0 && selectedVoice < frequencies.length && (() => {
+        const dragPos = dragPosByIndex.get(selectedVoice);
+        return (
+          <div
+            className={`fsb-sel-ring${grabbedOscs.has(selectedVoice) ? ' ghosted' : ''}${settlingDots.has(selectedVoice) ? ' settling' : ''}`}
+            style={{
+              left: dragPos ? dragPos.x : dotXs[selectedVoice],
+              top: dragPos ? dragPos.y : geo.dotCenterY,
+              // Border-box, so the ring's 1.5px stroke lands entirely in
+              // the 3px it adds over the orb: flush against the rim, no air
+              // (iOS parity).
+              width: DOT_SIZE + 3,
+              height: DOT_SIZE + 3,
+            }}
+          />
+        );
+      })()}
+
       {/* Same-octave keyboard indicator: a dot floating above each orb,
           shown (`.active`) by the glow rAF loop when a note at this slot's
           exact octave is sounding — instead of lighting the orb itself. */}
@@ -2754,21 +3480,41 @@ function FrequencySpectrumBar({
           className="fsb-kbd-dot"
           style={{
             left: dotXs[i],
-            top: KBD_DOT_CENTER_Y,
+            top: geo.kbdDotCenterY,
             '--dot-color': palette.oscColor(i, oscillatorCount),
           }}
         />
       ))}
 
+      {/* Voice-number label. Classic: above the orb, swapping to a live Hz
+          readout while dragged. Flipped: BELOW the orb (iOS parity) and it
+          stays the number — the live Hz readout instead rides the strip at
+          the row's top (see fsb-hz-float below), where the dragging finger
+          can't cover it. */}
       {frequencies.map((f, i) => {
         const color = palette.oscColor(i, oscillatorCount);
-        const isActive = draggingDots.has(i) || grabbedOscs.has(i);
+        const isActive = !geo.flipped && (draggingDots.has(i) || grabbedOscs.has(i));
+        // The label rides the orb: at the finger during a drag, easing home
+        // with it during the release settle (same .settling transition).
+        const dragPos = dragPosByIndex.get(i);
+        const lx = dragPos ? dragPos.x : dotXs[i];
+        const lyCenter = dragPos ? dragPos.y : geo.dotCenterY;
+        // Orb pulled above the spectrum: the number would trail it up over the
+        // curve, doubling with the Hz float that's now glued to the orb — so
+        // the raised orb carries the readout ALONE (Dan, 2026-08-04).
+        const raised = geo.flipped && orbsAbove.has(i) && dragPos;
         return (
           <div
             key={`label-${i}`}
             ref={(el) => { labelElsRef.current[i] = el; }}
-            className={`fsb-dot-label ${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''} ${statusReadoutShown(i) ? 'status-hidden' : ''}`}
-            style={{ left: dotXs[i], top: DOT_CENTER_Y - DOT_SIZE / 2 - 2, color }}
+            className={`fsb-dot-label ${geo.flipped ? 'below ' : ''}${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''} ${statusReadoutShown(i) ? 'status-hidden' : ''} ${settlingDots.has(i) ? 'settling' : ''} ${raised ? 'raised-hidden' : ''}`}
+            style={{
+              left: lx,
+              top: geo.flipped
+                ? lyCenter + DOT_SIZE / 2 + 2
+                : lyCenter - DOT_SIZE / 2 - 2,
+              color,
+            }}
           >
             {/* Octave columns flanking the number. Vertical stacks of
                 up to 5 bubbles per side. Looked up by `data-octave`
@@ -2797,12 +3543,115 @@ function FrequencySpectrumBar({
         );
       })}
 
+      {/* Flipped-mode Hz readouts: the strip at the top of the row (above the
+          curve) — iOS's instrument-bar drag readout. Touching any orb raises
+          the WHOLE chord's frequencies, each planted over its own pitch, so a
+          drag is read against every other voice and not just the one moving.
+          They do NOT track the orb: the finger can pull an orb anywhere and
+          the numbers stay put over the pitches they read out, stepping aside
+          only for each other (see hzFloats' collision pass). The stems drawn
+          in the SVG layer above are what tie them back to their markers. */}
+      {hzFloats.map(({ index: i, text, x, shown }) => (
+        <div
+          key={`hz-float-${i}`}
+          className={`fsb-hz-float${shown ? ' showing' : ''}`}
+          style={{ left: x, top: 0, color: palette.oscColor(i, oscillatorCount) }}
+        >
+          {text}
+        </div>
+      ))}
+      {/* …except once the orb is dragged ABOVE the bar, where it would cover
+          the strip: there the readout leaves the strip (and the collision
+          pass) to glue itself just above the raised orb, riding it as iOS's
+          floating Hz label does. */}
+      {geo.flipped && frequencies.map((f, i) => {
+        if (!(draggingDots.has(i) || grabbedOscs.has(i))) return null;
+        const dragPos = dragPosByIndex.get(i);
+        if (!dragPos || !orbsAbove.has(i)) return null;
+        return (
+          <div
+            key={`hz-raised-${i}`}
+            className="fsb-hz-float above-orb showing"
+            style={{
+              left: dragPos.x,
+              top: dragPos.y - DOT_SIZE / 2 - 4,
+              color: palette.oscColor(i, oscillatorCount),
+            }}
+          >
+            {formatActiveFreq(f)}
+          </div>
+        );
+      })}
+
+      {/* Drag-rate tag (Dan, 2026-08-04, with the directional ramp): a
+          small `< 1x >` centered ABOVE the dragged voice's Hz readout —
+          wherever that readout currently is (the strip, or glued to a
+          raised orb) — reading out the vertical axis: climbs past 1x as
+          the orb rises, drops toward 1/20x as it's pulled down. The
+          chevrons are the affordance ("this changes"); dim white so the
+          Hz digits stay the loud element. Never mounted in linear mode
+          (no rate to read); replaces the iOS calipers, which Dan found
+          confusing. HIDDEN for now via SHOW_SCRUB_RATE_TAG. */}
+      {SHOW_SCRUB_RATE_TAG && geo.flipped && orbDragMode !== 'linear' && frequencies.map((_, i) => {
+        const dragPos = dragPosByIndex.get(i);
+        if (!dragPos || !dragPos.confirmed) return null;
+        const raised = orbsAbove.has(i);
+        const strip = !raised && hzFloats.find((h) => h.index === i);
+        // Strip readout tops the row (top 0, height FLIPPED_HZ_FLOAT_H);
+        // the raised float hangs off the orb bottom-anchored, so clear its
+        // full height too.
+        const left = strip ? strip.x : dragPos.x;
+        const top = raised
+          ? dragPos.y - DOT_SIZE / 2 - 4 - FLIPPED_HZ_FLOAT_H - 3
+          : -3;
+        return (
+          <div
+            key={`rate-${i}`}
+            className="fsb-rate-tag"
+            style={{ left, top }}
+          >
+            <span className="fsb-rate-chev">&lt;</span>
+            {formatScrubRate(dragPos.rate ?? 1)}
+            <span className="fsb-rate-chev">&gt;</span>
+          </div>
+        );
+      })}
+
+      {/* Pinned pan dots (Settings → "Pan dots", on by default — iOS
+          panDotAlwaysOn). The same rim indicator the pan flash draws, but
+          mounted full-time on every orb and reading the LIVE pan, so each
+          orb wears its stereo placement at a glance. It rides the orb
+          through a drag/settle (the flash layer below stays parked on the
+          resolved spot, as it always has); while it's on, the flash hands
+          this layer the pan dot so there's never a doubled indicator. */}
+      {panDots && frequencies.map((_, i) => {
+        const dragPos = dragPosByIndex.get(i);
+        const pan = Math.max(-1, Math.min(1, voicePans[i] ?? audioEngine.getVoicePan(i)));
+        return (
+          <div
+            key={`pan-dot-${i}`}
+            className={`fsb-status pinned${geo.flipped ? ' flipped' : ''}${muted[i] ? ' muted' : ''}${dragPos ? ' dragging' : ''}${grabbedOscs.has(i) ? ' ghosted' : ''}${settlingDots.has(i) ? ' settling' : ''}`}
+            style={{
+              left: dragPos ? dragPos.x : dotXs[i],
+              top: dragPos ? dragPos.y : geo.dotCenterY,
+              '--dot-color': palette.oscColor(i, oscillatorCount),
+              '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
+            }}
+          >
+            <div className="fsb-status-arc" style={{ transform: `rotate(${pan * 90}deg)` }}>
+              <span className="fsb-status-arc-dot" />
+            </div>
+          </div>
+        );
+      })}
+
       {/* Orb status flash — the orb parameter-display language. Every orb
           gets a brightened indicator on its INNER radius, but only voices
           BEING EDITED swap their number for the text readout — the rest
           keep their numbers so the bar stays legible.
             pan     one dot at the pan position (−1 → left horizon,
-                    0 → top, +1 → right); readout "L 100%" / "R 45%".
+                    0 → top, +1 → right); readout "45%", or "L"/"R"
+                    at a hard pan (formatPanFlash).
                     Centered shows no text — the 12-o'clock dot alone
                     says "center".
             detune  two SMALLER dots spreading symmetrically from
@@ -2823,31 +3672,41 @@ function FrequencySpectrumBar({
         return (
           <div
             key={`status-${i}`}
-            className={`fsb-status${statusFlash.leaving ? ' leaving' : ''}${muted[i] ? ' muted' : ''}`}
+            className={`fsb-status${geo.flipped ? ' flipped' : ''}${statusFlash.leaving ? ' leaving' : ''}${muted[i] ? ' muted' : ''}`}
             style={{
               left: dotXs[i],
-              top: DOT_CENTER_Y,
+              top: geo.dotCenterY,
               '--dot-color': color,
               '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
             }}
           >
             {/* Same offset as .fsb-dot-label so the readout lands exactly
-                where the voice number sits. Kept mounted while at rest so
-                the opacity fade can animate both ways during a drag. */}
+                where the voice number sits (below the orb in flipped mode).
+                Kept mounted while at rest so the opacity fade can animate
+                both ways during a drag.
+                Terse pan grammar, iOS parity (FrequencySpectrumBar.swift's
+                readoutFlashes, Dan 2026-08-04): a BARE percentage — the rim
+                dot's side already says which way it's panned, so "L 50%"
+                was saying it twice — and a full pan drops the number for
+                the bare side letter, since 100% is the only value the
+                letter alone can mean. Center shows nothing (`atRest` fades
+                the head out; the 12-o'clock dot is the readout). */}
             {isEdited && (
               <div
                 className={`fsb-status-head${atRest ? ' centered' : ''}`}
-                style={{ top: -(DOT_SIZE / 2 + 2), color }}
+                style={{ top: (DOT_SIZE / 2 + 2) * (geo.flipped ? 1 : -1), color }}
               >
-                {isPan
-                  ? `${pan < 0 ? 'L' : 'R'} ${Math.round(Math.abs(pan) * 100)}%`
-                  : `${det.toFixed(1)}Hz`}
+                {isPan ? formatPanFlash(pan) : `${det.toFixed(1)}Hz`}
               </div>
             )}
             {isPan ? (
-              <div className="fsb-status-arc" style={{ transform: `rotate(${pan * 90}deg)` }}>
-                <span className="fsb-status-arc-dot" />
-              </div>
+              // Skipped when the pinned layer is up: it already draws this
+              // dot, live and unfading, on every orb.
+              !panDots && (
+                <div className="fsb-status-arc" style={{ transform: `rotate(${pan * 90}deg)` }}>
+                  <span className="fsb-status-arc-dot" />
+                </div>
+              )
             ) : (
               <>
                 <div className="fsb-status-arc" style={{ transform: `rotate(${-spreadDeg}deg)` }}>
@@ -2859,23 +3718,6 @@ function FrequencySpectrumBar({
               </>
             )}
           </div>
-        );
-      })}
-
-      {Object.entries(ghosts).map(([pid, g]) => {
-        const color = palette.oscColor(g.index, oscillatorCount);
-        return (
-          <div
-            key={`ghost-${pid}`}
-            className="fsb-ghost fsb-ghost-drag"
-            style={{
-              left: g.x - DOT_SIZE / 2,
-              top: g.y - DOT_SIZE / 2,
-              width: DOT_SIZE,
-              height: DOT_SIZE,
-              '--dot-color': color,
-            }}
-          />
         );
       })}
 
@@ -2898,8 +3740,52 @@ function FrequencySpectrumBar({
           );
         })}
 
+      {/* Transpose readout — iOS parity (transposeReadout in
+          FrequencySpectrumBar.swift), parked at the bar's TOP-RIGHT in the
+          orb row's airspace (Dan 2026-08-03: was top-left; iOS puts it at
+          the right edge, with the left edge reserved for the zoom
+          readout's mirror). Two stacked lines — the concrete "how far did
+          the tuning move" numbers: the root (lowest active) drone's Hz
+          shift `root × (ratio − 1)`, and the offset in cents. Clicking it
+          glides the transpose home over the SAME window recalls use, so
+          the return matches the app's glide feel. Always in the tree
+          (opacity-gated, not conditionally mounted) so it fades in/out.
+          Last sibling so it wins hit-testing over the transpose-drag
+          background. */}
+      {(() => {
+        const offCenter = Math.abs(transpose) > 0.05;
+        const root = frequencies.reduce(
+          (m, f) => (f > 0 && f < m ? f : m), Infinity);
+        const ratio = audioEngine.getTransposeRatio() || 1;
+        const hzDelta = (Number.isFinite(root) ? root : 0) * (ratio - 1);
+        // Whole Hz once the shift is big, one decimal while it's small so
+        // sub-semitone nudges don't read as "+0hz".
+        const signed = (v, digits) => (v >= 0 ? '+' : '') + v.toFixed(digits);
+        const hzText = `${signed(hzDelta, Math.abs(hzDelta) >= 10 ? 0 : 1)}hz`;
+        const centsText = `${signed(transpose * 100, 0)}c`;
+        return (
+          <button
+            type="button"
+            className="fsb-transpose-readout"
+            style={{
+              right: BAR_H_PADDING,
+              top: geo.transposeReadoutY,
+              opacity: offCenter ? 1 : 0,
+              pointerEvents: offCenter ? 'auto' : 'none',
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => audioEngine.glideTranspose(0, frequencyManager.recallGlideMs)}
+            title="Reset transpose"
+            aria-label={`Transpose ${hzText} ${centsText} — click to reset`}
+          >
+            <span>{hzText}</span>
+            <span className="fsb-transpose-cents">{centsText}</span>
+          </button>
+        );
+      })()}
+
       </div>
-      <div className="fsb-side fsb-side-right">
+      <div className="fsb-side fsb-side-right" style={{ marginBottom: geo.sideMarginBottom }}>
         <div className="fsb-count-row">
           <button
             type="button"

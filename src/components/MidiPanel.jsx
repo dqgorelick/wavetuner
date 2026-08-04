@@ -26,7 +26,7 @@ function formatTargetLabel(target) {
   return target.kind;
 }
 
-function MidiPanel({ isOpen, onClose, oscillatorCount }) {
+function MidiPanel({ isOpen, onClose, oscillatorCount, velocityCurve, onVelocityCurveChange }) {
   useTheme();
   // Bump on every midiCCMap change. We don't need the values — we read
   // them straight from the singleton on render. This avoids holding a
@@ -190,6 +190,19 @@ function MidiPanel({ isOpen, onClose, oscillatorCount }) {
             })}
           </select>
         )}
+        {/* How incoming note-on velocity maps to voice level. Moved here from
+            the Settings panel — it only shapes MIDI input. */}
+        <label className="settings-sublabel">Velocity curve</label>
+        <select
+          className="settings-select"
+          value={velocityCurve || 'linear'}
+          onChange={(e) => onVelocityCurveChange?.(e.target.value)}
+        >
+          <option value="linear">Linear (default)</option>
+          <option value="soft">Soft — quieter touches feel quieter</option>
+          <option value="hard">Hard — flatten dynamics</option>
+          <option value="fixed">Fixed — ignore velocity</option>
+        </select>
       </div>
 
       <div className="midi-panel-header">

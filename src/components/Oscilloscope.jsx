@@ -192,6 +192,41 @@ function ensureHilbertScratch(n) {
   return { mono: _hilbertMono, imag: _hilbertImag };
 }
 
+// ── Viz-only saturation replica ───────────────────────────────────────
+// The analysers tap pre-master while the saturator sits post-master, so
+// the audible squash never reaches the scope. When the "show in
+// oscilloscope" option is on we replay the same memoryless curves
+// (mirror of public/soft-limiter-worklet.js — keep in sync) over the
+// scope's window here instead of re-plumbing the audio graph. Drive
+// matches the audible drive; the master fader stays excluded (the scope
+// deliberately never scales with the final fader), so the tap's hotter
+// signal makes the squash read somewhat harder than what's audible at
+// low master volumes.
+const SAT_HALF_PI = Math.PI / 2;
+function saturateInto(dst, src, curve, drive) {
+  for (let i = 0; i < src.length; i++) {
+    const x = src[i] * drive;
+    let y;
+    if (curve === 1) y = Math.tanh(x); // tanh
+    else if (curve === 2) y = x >= 1 ? 1 : x <= -1 ? -1 : 1.5 * x - 0.5 * x * x * x; // cubic
+    else if (curve === 3) y = x >= 1 ? 1 : x <= -1 ? -1 : Math.sin(x * SAT_HALF_PI); // sine
+    else if (curve === 4) y = x > 1 ? 1 : x < -1 ? -1 : x; // hard clip
+    else y = src[i]; // off / unknown — pass through undriven
+    dst[i] = y;
+  }
+}
+
+// Reusable scratch pair so the per-frame saturation pass doesn't allocate.
+let _satL = null;
+let _satR = null;
+function ensureSatScratch(n) {
+  if (!_satL || _satL.length !== n) {
+    _satL = new Float32Array(n);
+    _satR = new Float32Array(n);
+  }
+  return { L: _satL, R: _satR };
+}
+
 // Window function that ramps amplitude to 0 at the left/right edges so
 // traces terminate at a single point on the center axis rather than
 // hard-cutting. `p` is the sample's normalized position in [0, 1].
@@ -1339,6 +1374,10 @@ export default function Oscilloscope({
   // active mode doesn't consume + half-rate features), 'off' (blank the
   // scope, skip the loop). See drawScope for what each tier gates.
   vizQuality = 'pretty',
+  // Replay the master saturator's curve over the audio-source scope
+  // window (the analysers tap pre-master, so the audible saturation is
+  // otherwise invisible here). See saturateInto.
+  scopeSaturation = false,
   // True when something actually reads window.audio this frame (Hydra
   // running or the settings DissonanceMeter open). In performance mode
   // the per-frame audio-feature FFT is skipped entirely when false.
@@ -1402,6 +1441,8 @@ export default function Oscilloscope({
   useEffect(() => { vizRotationRef.current = vizRotation; }, [vizRotation]);
   const vizQualityRef = useRef(vizQuality);
   useEffect(() => { vizQualityRef.current = vizQuality; }, [vizQuality]);
+  const scopeSaturationRef = useRef(scopeSaturation);
+  useEffect(() => { scopeSaturationRef.current = scopeSaturation; }, [scopeSaturation]);
   const featuresActiveRef = useRef(featuresActive);
   useEffect(() => { featuresActiveRef.current = featuresActive; }, [featuresActive]);
   // Tracks whether the scope has already been blanked once for the 'off'
@@ -1453,10 +1494,27 @@ export default function Oscilloscope({
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     
+    // Mixer-console + knob-band heights (--console-h / --knob-band-h on
+    // #wrapper). Read on resize — they only change via media query —
+    // and cached so the draw loop never forces a style recalc.
+    let consoleH = 210;
+    let knobBandH = 72;
+    const readConsoleH = () => {
+      const wrapper = document.getElementById('wrapper');
+      if (!wrapper) return;
+      const style = getComputedStyle(wrapper);
+      const v = parseFloat(style.getPropertyValue('--console-h'));
+      if (Number.isFinite(v) && v > 0) consoleH = v;
+      const b = parseFloat(style.getPropertyValue('--knob-band-h'));
+      if (Number.isFinite(b) && b >= 0) knobBandH = b;
+    };
+    readConsoleH();
+
     // Resize handler. Sizes the backing store at devicePixelRatio so the
     // render stays crisp on HiDPI / Retina displays, while keeping the CSS
     // size and all drawing coordinates in CSS pixels via setTransform.
     const resizeCanvas = () => {
+      readConsoleH();
       const cssWidth = window.innerWidth;
       const cssHeight = window.innerHeight;
       const dpr = window.devicePixelRatio || 1;
@@ -1549,9 +1607,14 @@ export default function Oscilloscope({
       const b = Math.sin(angle + PHASE_OFFSET * 2) * 127 + 128;
       const lineScale = Math.min(scaleX, scaleY);
 
-      // Bottom-reserved strip = ~top-of-orbs (135 px). The expanded and
-      // fullscreen UI modes were removed, so this is a constant.
-      const BOTTOM_RESERVED = 135;
+      // Bottom-reserved strip = ~top-of-orbs. Derived from the mixer
+      // console's height (--console-h, cached in resizeCanvas) so the
+      // CSS layout and this opaque band can't drift apart: 20px of
+      // bottom chrome under the console (panel inset + gaps — the
+      // play/save row is gone, transport lives beside the console now)
+      // + the console itself + 18px of overlap into the spectrum-bar
+      // row (same relationship the old fixed 135px had).
+      const BOTTOM_RESERVED = 38 + consoleH + knobBandH;
       // Keyboard tray, when open, occludes another --kbd-tray-h (120 px)
       // below that. Read from the #wrapper class so we don't have to
       // thread a prop through every Oscilloscope ancestor. Subtract
@@ -1615,7 +1678,22 @@ export default function Oscilloscope({
           // figure holds still instead of flickering. Same start index for
           // both channels so the X/Y correspondence is preserved.
           const start = triggeredStart(L, synthN, lowestActiveFreq(), sampleRate);
-          return { L: L.subarray(start, start + synthN), R: R.subarray(start, start + synthN) };
+          const Lw = L.subarray(start, start + synthN);
+          const Rw = R.subarray(start, start + synthN);
+          // Optionally replay the master saturator over the window (into
+          // scratch — the subarrays are views into the engine's analyser
+          // buffers, which other readers consume this frame).
+          const satCurve = scopeSaturationRef.current
+            ? audioEngine.getSaturationCurve()
+            : 0;
+          if (satCurve) {
+            const drive = audioEngine.getSaturationDrive();
+            const scratch = ensureSatScratch(Lw.length);
+            saturateInto(scratch.L, Lw, satCurve, drive);
+            saturateInto(scratch.R, Rw, satCurve, drive);
+            return { L: scratch.L, R: scratch.R };
+          }
+          return { L: Lw, R: Rw };
         }
         return synthStereoData(synthN, sampleRate);
       };

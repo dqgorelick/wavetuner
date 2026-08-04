@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
+import { DetuneScale, MAX_DETUNE_HZ } from '../audio/StereoMode';
 
 /**
  * CurveEditor — per-slot detune curve, X-band-EQ style.
@@ -10,9 +11,10 @@ import { useEffect, useRef, useState, useMemo } from 'react';
  * line; node Y values are still the source of truth used by the
  * audio engine.
  *
- * Y axis: 0 (bottom) → master detune Hz (top, settable via the slider
- * elsewhere in the panel). The component just renders 0..1 and labels
- * the ceiling with the master Hz scale.
+ * Y axis: 0 Hz (bottom) → MAX_DETUNE_HZ (top), on the shared log-ish
+ * DetuneScale — the bottom half is 0–1 Hz, so slow beating gets half
+ * the travel instead of the bottom 10%. Node Y is the display position;
+ * the stored value is always the [0, 1] curve weight.
  */
 
 const W = 280;
@@ -56,8 +58,9 @@ export default function CurveEditor({ stereoMode, slotCount, label = 'Detune cur
     if (slotCount <= 1) return PAD_X + innerW / 2;
     return PAD_X + (i / (slotCount - 1)) * innerW;
   }, [slotCount, innerW]);
-  const yForValue = (v) => PAD_Y + (1 - v) * innerH;
-  const valueForY = (y) => Math.max(0, Math.min(1, 1 - (y - PAD_Y) / innerH));
+  const yForValue = (v) => PAD_Y + (1 - DetuneScale.curveNorm(v)) * innerH;
+  const valueForY = (y) => DetuneScale.curveValue(
+    Math.max(0, Math.min(1, 1 - (y - PAD_Y) / innerH)));
   const slotForX = (x) => {
     if (slotCount <= 1) return 0;
     return Math.max(0, Math.min(slotCount - 1,
@@ -108,7 +111,7 @@ export default function CurveEditor({ stereoMode, slotCount, label = 'Detune cur
     draggingRef.current = null;
   };
 
-  const ceilingHz = stereoMode.detuneHz.toFixed(1);
+  const ceilingHz = MAX_DETUNE_HZ;
 
   return (
     <div className="curve-editor">
@@ -143,7 +146,7 @@ export default function CurveEditor({ stereoMode, slotCount, label = 'Detune cur
           height={innerH}
           className="curve-editor-frame"
         />
-        {/* Mid gridline at y=0.5 for orientation */}
+        {/* Mid gridline — the DetuneScale hinge, i.e. exactly 1 Hz */}
         <line
           x1={PAD_X}
           x2={PAD_X + innerW}

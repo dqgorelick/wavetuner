@@ -8,7 +8,7 @@ import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import { PATCH_SCHEMA, genId, nowIso, patchFrequencies } from './schema.js';
 import { droneEnvelope, keyboardEnvelope } from '../audio/Envelope';
-import { droneStereo, keyboardStereo } from '../audio/StereoMode';
+import { droneStereo, keyboardStereo, foldLegacyCeiling } from '../audio/StereoMode';
 
 // Headroom cap for any drone the patch loader puts into a "playing"
 // state. Stacking 4-12 sine drones at full volume clips the master
@@ -240,15 +240,20 @@ function snapshotStereo(s) {
 // the live oscillator count — too short pads with 0, too long truncates
 // — so a snapshot saved with N oscillators still applies cleanly when
 // loaded after a count change.
+//
+// The ceiling is pinned at MAX_DETUNE_HZ, so a stored `detuneHz` is
+// treated as a LEGACY ceiling and folded into the curve: effective
+// per-slot Hz is unchanged, and a re-save writes the folded curve with
+// detuneHz = 10. The fold reads only the stored values, so re-loading
+// the same patch is idempotent.
 function applyStereo(s, data, expectedCount) {
   if (!data || typeof data !== 'object') return;
   if (data.mode === 'lr' || data.mode === 'stereo') s.setMode(data.mode);
-  if (Number.isFinite(data.detuneHz)) s.setDetuneHz(data.detuneHz);
   if (Array.isArray(data.curve) && Number.isFinite(expectedCount)) {
+    const folded = foldLegacyCeiling(data.curve, data.detuneHz);
     const next = new Array(expectedCount).fill(0);
-    for (let i = 0; i < Math.min(data.curve.length, expectedCount); i++) {
-      const v = +data.curve[i];
-      next[i] = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+    for (let i = 0; i < Math.min(folded.length, expectedCount); i++) {
+      next[i] = Number.isFinite(folded[i]) ? folded[i] : 0;
     }
     // setDetuneCurve requires same length; pre-resize then assign.
     s.resizeCurve(expectedCount);

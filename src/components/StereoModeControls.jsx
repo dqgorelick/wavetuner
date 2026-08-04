@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import CurveEditor from './CurveEditor';
 
 /**
- * StereoModeControls — pan-mode toggle, master detune slider, and
- * per-slot detune curve editor for one pool.
+ * StereoModeControls — pan-mode toggle and per-slot detune curve editor
+ * for one pool. The master detune-ceiling slider is gone (2026-08-04):
+ * the ceiling is pinned at MAX_DETUNE_HZ and per-voice detune is set
+ * from the frequency panels (DetuneSlider) or the curve editor below.
  *
  * Used twice in SettingsPanel: once bound to droneStereo, once to
  * keyboardStereo. The two pools have independent state.
@@ -48,23 +50,6 @@ export default function StereoModeControls({ title, stereoMode, slotCount }) {
         >
           Stereo
         </button>
-      </div>
-
-      <div
-        className="tune-slider-row"
-        title="Master detune scale in Hz. Curve nodes are relative [0..1] — actual detune per slot = node × this slider."
-      >
-        <span className="tune-slider-label">Detune</span>
-        <input
-          type="range"
-          min="0"
-          max="10"
-          step="0.1"
-          value={stereoMode.detuneHz}
-          onChange={(e) => stereoMode.setDetuneHz(parseFloat(e.target.value))}
-          className="tune-slider"
-        />
-        <span className="tune-slider-value">{stereoMode.detuneHz.toFixed(1)} Hz</span>
       </div>
 
       <CurveEditor stereoMode={stereoMode} slotCount={slotCount} label="Per-slot curve" />

@@ -6,24 +6,7 @@ import { keyboardEnvelope } from '../audio/Envelope';
 import { droneStereo, keyboardStereo, midiStereo } from '../audio/StereoMode';
 import midiCCMap from '../audio/MidiCCMap';
 import palette, { useTheme } from '../theme/palette';
-
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-
-function freqToNote(freq) {
-  if (freq <= 0) return { note: '--', octave: 0, cents: 0 };
-  const semitonesFromA4 = 12 * Math.log2(freq / 440);
-  const midiNote = Math.round(69 + semitonesFromA4);
-  const cents = Math.round((semitonesFromA4 - (midiNote - 69)) * 100);
-  const noteIndex = ((midiNote % 12) + 12) % 12;
-  const octave = Math.floor(midiNote / 12) - 1;
-  return { note: NOTE_NAMES[noteIndex], octave, cents };
-}
-
-function formatFreq(freq) {
-  if (freq >= 10000) return `${(freq / 1000).toFixed(1)}k`;
-  if (freq >= 1000) return `${(freq / 1000).toFixed(2)}k`;
-  return freq.toFixed(2);
-}
+import { freqToNote, formatFreq } from '../ui/noteFormat';
 
 // Pretty-print a partial's ratio. Integer multipliers read "×N",
 // reciprocals of integers read "÷N", anything else falls back to a
@@ -411,8 +394,13 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
   //         DOM order: per audible slot, partials first then primary.
   //         column-reverse in CSS flips this so primary visually sits on
   //         top of its partials, newest partial right beneath it.
-  //   voices: separate list, appended after rows in DOM (voices appear
-  //           at the visual top of the mixer).
+  //   voices: separate list, appended after rows in DOM and rendered
+  //           newest-first, so with column-reverse the list reads like a
+  //           chat log: the newest note lands at the visual bottom (just
+  //           above the pinned bus strip) and older/fading notes drift
+  //           upward out of the scroll viewport. scrollTop 0 is the
+  //           visual bottom in column-reverse, so the view stays pinned
+  //           on the newest notes with no scroll management.
   const [rows, setRows] = useState([]);
   const [voices, setVoices] = useState([]);
   // Bus + master fader values (kept in state so React redraws when the
@@ -498,6 +486,10 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
           const isMuted = !!muted[i];
           const audible = !droneBusOff && !isMuted;
           if (!audible && !midiLearnOn) continue;
+          // Drone primary rows live in the centered mixer console now —
+          // this panel only shows them in MIDI-learn mode, where every
+          // slot must be a visible CC-arming target. Partials keep their
+          // rows here (they have no other home yet).
           // Partials first in DOM so column-reverse puts the primary
           // on top of its partials. Muted partials hide when learn
           // mode is off (matches the drone-row rule — anything not
@@ -521,6 +513,7 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
               });
             }
           }
+          if (!midiLearnOn) continue;
           nextRows.push({
             type: 'drone',
             slot: i,
@@ -673,7 +666,7 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
             </div>
           );
         })}
-        {voices.map(({ id, slot, freq, amp, target, midiNote, source, released }) => {
+        {[...voices].reverse().map(({ id, slot, freq, amp, target, midiNote, source, released }) => {
           const color = palette.oscColor(slot, oscillatorCount);
           const note = freqToNote(freq);
           const cents = note.cents >= 0 ? `+${note.cents}` : `${note.cents}`;

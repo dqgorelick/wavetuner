@@ -1,3 +1,35 @@
+/* ─── Desktop stage ──────────────────────────────────────────────────
+   The app is a full-bleed canvas app, so there's no single content
+   column to cap — instead we define a centered "stage" and measure
+   every edge-anchored piece of chrome (corner toggles, side panels,
+   bottom-corner stacks) from the stage edge rather than the viewport
+   edge. On anything ≤ --stage-max the gutter is 0 and nothing moves;
+   on a wide display the UI stops sprawling into the far corners while
+   the visualizer stays full-bleed behind it.
+
+   1200px is the width the app already used for its two widest
+   surfaces — the orb-drag canvas (CANVAS_MAX_WIDTH in
+   FrequencySpectrumBar.jsx) and the keyboard tray — so it's the
+   established frame here, not a new number. */
+:root {
+  --stage-max: 1200px;
+  --stage-gutter: max(0px, (100vw - var(--stage-max)) / 2);
+  /* Edge rails (TransportRail left, NavRail right) — in-flow columns
+     flanking the console row (.osc-controls-panel), spanning the area
+     below the spectrum bar. Width still drives the console/knob-band
+     width math. */
+  --rail-w: 44px;
+  /* The seam line: the hairline the side-menu column draws against the
+     console (.side-menu-stack), reused by the edge rails and the master
+     play/pause box so every console-facing edge is the same line. */
+  --seam-w: 1px;
+  --seam-c: rgba(255, 255, 255, 0.14);
+  /* Corner rows (help / patches / … left, settings / share / … right)
+     measure from the stage edge — the rails no longer reach the top of
+     the screen, so they need no clearance term. */
+  --corner-inset: calc(var(--stage-gutter) + 16px);
+}
+
 html,
 body {
   font-size: 16px;
@@ -5,7 +37,11 @@ body {
   margin: 0;
   background-color: #000;
   transition: background-color 0.5s ease;
-  /* Match the iOS app: system monospaced as the global default. */
+  /* Match the iOS app: system monospaced as the global default. The
+     narrow face stands in for iOS SF Compressed on surfaces that got
+     the compressed treatment there (mixer console first); Plex
+     Condensed's default figures are tabular, so readouts don't jitter. */
+  --font-narrow: 'IBM Plex Sans Condensed', 'Arial Narrow', system-ui, sans-serif;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: #fff;
   overflow: hidden;
@@ -78,54 +114,20 @@ p {
    and later keyboard/MIDI voices. Builds upward from the viewport bottom
    via flex-direction: column-reverse so the newest entry appears on top
    and the stack is naturally bottom-anchored regardless of length. */
-/* Bottom-corner panel stacks — fixed wrappers that host the tuning
-   panel (bottom-left) and the mixer (bottom-right). Each stack is
-   bottom-anchored so it grows upward as its panel expands. Splitting
-   the two corners means tuning + mixer can both be open without
-   stealing each other's vertical space. */
-.left-stack,
-.right-stack {
-  position: fixed;
-  /* +20px above the standard 16px gutter so the stack's bottom edge
-     clears the centered play/pause button. */
-  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 20px);
-  z-index: 340;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.left-stack {
-  left: 16px;
-  align-items: flex-start;
-}
-.right-stack {
-  right: 16px;
-  align-items: flex-end;
-}
-.left-stack > *,
-.right-stack > * { pointer-events: auto; }
+/* (The .right-stack / .right-toggles panel-toggle strip that was parked
+   top-right is retired as of 2026-08-04 — the last two toggles it held,
+   KBD and MIXER, moved into the right edge rail under the dice, so every
+   panel toggle now lives in one column. See .rail-tab.) */
 
-/* Always-visible panel toggles (KBD / drone / MIXER / TUNING) sitting beneath
-   the mixer at the bottom of the right stack. */
-.right-toggles {
-  display: flex;
-  gap: 6px;
-  align-items: stretch;
-}
-
-#wrapper.kbd-tray-open .left-stack,
-#wrapper.kbd-tray-open .right-stack {
-  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 20px + var(--kbd-tray-h));
-}
-
+/* Side-menu panel chassis. Solid black (like the iOS panel surfaces and
+   the source trays) — these now sit over the spectrum orbs, which bleed
+   through anything translucent. */
 .mixer-panel,
 .tuning-panel {
   padding: 9px 10px 9px 10px;
-  background: rgba(0, 0, 0, 0.5);
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
-  backdrop-filter: blur(10px);
 }
 .mixer-panel { width: 275px; }
 .tuning-panel { width: 280px; }
@@ -138,9 +140,10 @@ p {
    controls off-panel. Mutually exclusive with Settings (App.jsx). */
 .settings-panel.midi-menu {
   right: auto;
-  left: 16px;
-  /* Closed: parked off the left edge (base panel parks off the right). */
-  transform: translateX(calc(-100% - 24px));
+  left: var(--corner-inset);
+  /* Closed: parked off the left edge (base panel parks off the right).
+     Absorbs --stage-gutter for the same reason the base panel does. */
+  transform: translateX(calc(-100% - 24px - var(--stage-gutter)));
   display: flex;
   flex-direction: column;
   overflow: hidden;            /* the mappings body scrolls, not the panel */
@@ -615,17 +618,6 @@ p {
    Breakpoint at 1250px — below that the panels start to encroach on
    the spectrum / center UI on typical laptop widths. */
 @media (max-width: 1250px) {
-  .left-stack,
-  .right-stack {
-    bottom: calc(220px + env(safe-area-inset-bottom));
-    z-index: 360;
-  }
-  .left-stack { left: 8px; }
-  .right-stack { right: 8px; }
-  #wrapper.kbd-tray-open .left-stack,
-  #wrapper.kbd-tray-open .right-stack {
-    bottom: calc(220px + env(safe-area-inset-bottom) + var(--kbd-tray-h));
-  }
   .mixer-panel { width: min(275px, calc(100vw - 16px)); }
   .tuning-panel { width: min(310px, calc(100vw - 16px)); }
   /* Pull the wide system dropdown in ~5px at the narrow panel width so the
@@ -1445,7 +1437,7 @@ kbd {
 .settings-panel {
   position: fixed;
   top: 64px;
-  right: 16px;
+  right: var(--corner-inset);
   bottom: 16px;
   width: 320px;
   max-width: calc(100vw - 32px);
@@ -1457,7 +1449,11 @@ kbd {
      occluded by an orb being detuned mid-edit. */
   z-index: 1100;
   overflow-y: auto;
-  transform: translateX(calc(100% + 24px));
+  /* Parked off the RIGHT edge of the viewport, not the stage — the
+     panel's open position is inset by --stage-gutter, so the park
+     distance has to absorb that gutter or a wide display leaves the
+     closed panel sitting visibly on screen. */
+  transform: translateX(calc(100% + 24px + var(--stage-gutter)));
   opacity: 0;
   pointer-events: none;
   transition:
@@ -2051,18 +2047,459 @@ kbd {
   display: none; /* Hidden since sliders now show frequencies */
 }
 
-/* Oscillator Controls Panel - Bottom Left */
+/* Mixer-console height — the single knob the whole bottom layout hangs
+   off: the console itself, the spectrum-bar lift (--fsb-lift below) and
+   the oscilloscope's opaque bottom band (read from this var in
+   Oscilloscope.jsx) all derive from it. */
+#wrapper {
+  --console-h: 210px;
+  /* Source knob band (wave·noise·saturate | drone·kbd·midi) between
+     the console and the play/save row: 66px of band + 6px gap. The
+     oscilloscope reads this too (Oscilloscope.jsx) so its opaque
+     bottom strip tracks the taller panel. */
+  --knob-band-h: 72px;
+  /* Bottom offset of the spectrum-bar row: 8px panel inset + 6px console
+     margin = 14px of chrome under the console, + 6px of head above it
+     (the rails' top edge sits there; stripGeometry.CONSOLE_HEAD must
+     match, since the console now grows up into it) = 20px, plus the knob
+     band. (The play/save row is gone — play/undo/redo live in the
+     console's transport rail now; save slots are hidden until they
+     return as a side-menu panel.) */
+  --fsb-lift: calc(20px + var(--knob-band-h) + var(--console-h));
+  /* Side-menu column reveal duration — shared by the column's own
+     open/close animation, the console's --side-w hand-off, and
+     SIDE_MENU_MS in App.jsx (which holds the column mounted this long so
+     the close can play). Change it in both places. */
+  --side-menu-ms: 340ms;
+  /* Even in-out rather than the snappy ease-out the trays use — the
+     column should read as an unhurried reveal, not a snap. */
+  --side-menu-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (max-height: 640px) {
+  #wrapper { --console-h: 170px; }
+  /* The right rail is exactly --fsb-lift tall, so the 40px the console
+     gives up here comes straight off the rail — and its tabs are
+     flex-shrink: 0 over overflow: visible, so a rail that can't fit its
+     content doesn't clip, it spills the undo/redo chips off the bottom
+     of the viewport. Five tabs (KBD and MIXER joined the column on
+     2026-08-04) need all 302px at the full height, so compact the tabs
+     and close up the gaps to buy back the 40px. */
+  .edge-rail { gap: 5px; padding-bottom: 8px; }
+  .rail-tab { height: 30px; }
+  .rail-tab-face { width: 30px; height: 30px; }
+}
+
+/* Registered so it can be TRANSITIONED (an unregistered custom property
+   jumps): the console's width formula reads --side-w, so declaring it a
+   <length> lets the console give up / take back its width on the same
+   curve as the side column's reveal instead of snapping a frame early. */
+@property --side-w {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 0px;
+}
+
+/* Oscillator Controls Panel - Bottom Center */
 .osc-controls-panel {
   position: fixed;
   bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
-  max-width: calc(100vw - 40px);
+  /* The edge rails are in-flow flanks of this row now — only the 24px
+     of viewport breathing room stays outside it. */
+  max-width: calc(100vw - 24px);
   z-index: 100;
+  /* Row: [console column][side-menu stack]. The whole row is centered
+     (left:50% + translateX), so opening a side menu shifts the console
+     left and the pair stays centered — the iPad side-by-side behavior.
+     No gap: the console hugs the menu column's seam (its own 8px
+     trailing inset is the only air between the ALL lane and the panel). */
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
   /* Slide in step with the keyboard tray when it opens/closes. The
-     freq-spectrum-bar carries the same easing so they rise together. */
-  transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+     freq-spectrum-bar carries the same easing so they rise together.
+     --side-w rides the side column's reveal curve (see @property above). */
+  transition:
+    bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    --side-w var(--side-menu-ms) var(--side-menu-ease);
+  /* The rails stretch the row's box to the spectrum bar's underside, so
+     the empty air above the console (scope scrub area) must stay
+     click-through — children re-enable their own hits. */
+  pointer-events: none;
 }
+.osc-controls-panel > * { pointer-events: auto; }
+/* Console column: mixer console on top, knob band beneath — both
+   centered regardless of which is wider. position:relative so the
+   source trays (absolute, bottom:100%) anchor to the console column,
+   not the whole row. */
+.console-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+/* While a side menu is open (mixer / tuning / perform, a source tray, a
+   frequency panel) it reaches up over the spectrum-bar row (orbs z 200,
+   bar z 300) — hoist the panel's stacking context just for that state so
+   the column actually covers the orbs. Scoped via :has so orb dragging
+   near the console seam is untouched the rest of the time. */
+.osc-controls-panel:has(.side-menu-stack) {
+  z-index: 400;
+}
+/* …except the frequency panels (per-voice + ALL): the orbs stay on top of
+   those (user 2026-08-04). They're the surface you edit the orbs FROM, so
+   whenever the two boxes do meet — the mobile sheet hangs from 100dvh while
+   the bar row hangs from the layout viewport's bottom, so a visible URL bar
+   rides the sheet up over the orb row — the orbs must win. Dropping back to
+   the panel's base z (100) puts it under .fsb-row (300) again. The column is
+   a radio, so no other menu is mounted alongside to want the higher z. */
+.osc-controls-panel:has(.side-menu-stack .voice-panel) {
+  z-index: 100;
+}
+/* When a side menu is open the console gives up its width (--side-w is
+   read by .mixer-console's width formula — the 310px panel, no gap) and
+   the console column right-aligns so the mixer group and knob band both
+   sit flush against the menu column's seam. */
+.osc-controls-panel:has(.side-menu-stack) {
+  --side-w: 310px;
+}
+/* Closing: hand the width back on the column's own curve. The column
+   stays mounted through the collapse (App.jsx), so without this the
+   console would sit narrow until the unmount and then jump. */
+.osc-controls-panel:has(.side-menu-stack.is-closing) {
+  --side-w: 0px;
+}
+.osc-controls-panel:has(.side-menu-stack) .console-main {
+  align-items: flex-end;
+}
+
+/* Side-menu column — open menus stack to the right of the console,
+   bottom-aligned with it (align-items:flex-end on the row) and growing
+   upward. Stack order top → bottom: mixer, tuning, perform; settings
+   and the save states will join this stack later. Taller than the
+   viewport → the column scrolls internally. */
+.side-menu-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  flex: 0 0 auto;
+  /* 310 (not the panels' standalone 280) — the mixer's Main-row meter and
+     the tuning rows' octave chips clip at anything narrower. The inner
+     width (minus the seam hairline) is what every panel inside is pinned
+     to, so the reveal below uncovers them at full size. */
+  --side-menu-w: 310px;
+  --side-menu-inner-w: calc(var(--side-menu-w) - var(--seam-w));
+  width: var(--side-menu-w);
+  /* Reveal: the column opens and closes by animating its OWN width while
+     the content inside keeps its full width — the panel is uncovered /
+     covered, never squeezed. overflow-x clips the part not yet revealed
+     (overflow-y:auto already made it non-visible; this just spells it
+     out so no horizontal scrollbar flickers mid-animation). */
+  overflow-x: hidden;
+  animation: side-menu-reveal var(--side-menu-ms) var(--side-menu-ease) both;
+  /* The column occupies the full area below the spectrum bar: stretch to
+     the console row's height (short content top-aligns inside the chassis,
+     iPad-style), capped so the top edge stops at the bar's bottom edge
+     (--fsb-lift is the bar's offset from the viewport bottom; the row sits
+     8px up). Taller content scrolls. */
+  align-self: stretch;
+  box-sizing: border-box;
+  max-height: calc(var(--fsb-lift) - 8px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  /* The stack owns the chassis (title bar + panel read as one surface);
+     the panels inside drop their standalone borders below. No rounded box
+     — the column is flush with the console/spectrum edges; a single light
+     hairline on the leading edge marks the console seam. */
+  background: #000;
+  border: none;
+  border-left: var(--seam-w) solid var(--seam-c);
+  border-radius: 0;
+}
+/* Closing — same curve, run backwards. App.jsx keeps the column and its
+   contents mounted for --side-menu-ms so this can play out. */
+.side-menu-stack.is-closing {
+  animation-name: side-menu-conceal;
+}
+/* Boot: a column restored from localStorage skips the OPENING reveal
+   (App.jsx arms it on the first close) — but not the closing one, or the
+   console would animate its width back against a panel that had already
+   blinked out. */
+.side-menu-stack.no-reveal:not(.is-closing) {
+  animation: none;
+}
+@keyframes side-menu-reveal {
+  from { width: 0; }
+}
+@keyframes side-menu-conceal {
+  to { width: 0; }
+}
+/* Every surface in the column is pinned to the full inner width so the
+   animation above slides a window across finished content instead of
+   reflowing it a frame at a time. */
+.side-menu-stack > * {
+  /* border-box so the pinned width lands exactly where align-items:stretch
+     used to put these (a padded panel would otherwise measure 20px wider
+     and lose its trailing edge to the clip). */
+  box-sizing: border-box;
+  width: var(--side-menu-inner-w);
+}
+/* Reduced motion: no reveal, no width hand-off — the column and the
+   console just take their new sizes. (The mount still lingers for
+   --side-menu-ms on close; at width 0 there's nothing to see.) */
+@media (prefers-reduced-motion: reduce) {
+  .side-menu-stack { animation-duration: 1ms; }
+  .osc-controls-panel { transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1); }
+}
+/* Title bar — iOS-iPhone menu grammar: menu name + ✕. Sticky so it stays
+   put when a tall panel scrolls the stack. Shape comes from the shared
+   .menu-head grammar below (source trays wear the same one). */
+.side-menu-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #000;
+}
+
+/* ── Shared menu header grammar ────────────────────────────────────
+   Every surface in the side-menu column (mixer / tuning / perform, the
+   source trays) wears the same title bar: 36px tall — the play/pause button's height (.bottom-cell)
+   — with the label centered in the full width and the ✕ pinned
+   trailing so the centering is true center, not "center of what's left
+   over". The ✕ matches the frequency panel's .vp-close
+   (src/styles/freqPanels.css) so every close button reads the same. */
+.side-menu-head {
+  /* No `position: relative` here — it would cancel the sticky above (the
+     ✕ still anchors to this box, since sticky IS a positioned context). */
+  box-sizing: border-box;
+  /* Never shrink: the bar is a flex item of the column, so an overflowing
+     panel underneath would otherwise squash the 36px to nothing. */
+  flex: 0 0 auto;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 44px;
+}
+.side-menu-title {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: lowercase;
+  color: rgba(255, 255, 255, 0.75);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.75);
+  padding-bottom: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.side-menu-close {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  transform: translateY(-50%);
+  height: 36px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.side-menu-close:hover { color: rgba(255, 255, 255, 1); }
+/* Panels stretch to the stack's width (their standalone fixed widths
+   would leave the mixer 5px narrower than its neighbors) and hand their
+   chassis to the stack. */
+.side-menu-stack .mixer-panel,
+.side-menu-stack .tuning-panel,
+.side-menu-stack .perform-panel {
+  width: var(--side-menu-inner-w);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+/* Mixer menu: the panel fills the column and splits — the dynamic rows
+   (keys flowing in from kbd/MIDI, plus drones) scroll in their own
+   region while the bus strip (drone / kbd / midi + Main) stays pinned
+   at the column's bottom edge, always visible. */
+.side-menu-stack .mixer-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-menu-stack .mixer-panel .mixer-stack {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.side-menu-stack .mixer-panel .mixer-bus-stack {
+  flex: 0 0 auto;
+  /* Bottom-aligned when the rows don't fill the space (margin-top:auto
+     eats the slack; the 10px row gap moves into min spacing via the
+     border-top padding it already carries). */
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+/* ── Source knob band ──────────────────────────────────────────────
+   waves ‒ shape ‒ fold · noise · saturate | drone · kbd · midi. Flat
+   row (no iOS-style paging — the web console is wide enough), hairline
+   rule at the group seam, link lines joining the wave-engine trio,
+   per-source tray floats above the band. */
+.source-knob-band-wrap {
+  position: relative;
+  /* Stretch to the console column's width — that measured width is the
+     dials' size budget (SourceKnobBand.dialGeometry), so the row fills
+     the lane on a wide screen and shrinks with it on a narrow one. The
+     row itself is absolutely positioned inside, so the band contributes
+     NO intrinsic width to .console-main: the mixer alone decides the
+     column width and there's no measure → grow → measure loop. */
+  align-self: stretch;
+  height: calc(var(--knob-band-h) - 6px);
+  margin-top: 6px;
+}
+.source-knob-band {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  /* No flex gap — each dial owns a slot wider than its circle and the
+     leftover IS the gap, so the spacing scales with the dials. */
+  gap: 0;
+  /* The row spans the full column, so its empty flanks must not eat
+     clicks meant for the scope area behind the panel. */
+  pointer-events: none;
+}
+.source-knob-face,
+.source-knob-label { pointer-events: auto; }
+/* Short line between the waves / shape / fold circles — same wave
+   engine. Absolutely placed by SourceKnob from the live dial geometry:
+   it sits at circle-center height and spans the gap to the next
+   circle, minus a few px of air at each end. */
+.source-knob-link {
+  position: absolute;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 0.5px;
+}
+.source-knob {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.source-knob.dimmed { color: rgba(255, 255, 255, 0.3); }
+.source-knob.tracking { color: rgba(255, 255, 255, 1); }
+.source-knob-face {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  touch-action: none;
+}
+.source-knob-arc { opacity: 0.85; }
+.source-knob.tracking .source-knob-arc { opacity: 1; }
+.source-knob-readout {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Type rides with the dial size — both vars are set on the band from
+     the measured geometry (fallbacks = the old fixed pair). */
+  font-size: var(--knob-readout-font, 10px);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  color: inherit;
+  pointer-events: none;
+}
+.source-knob-label {
+  max-width: 100%;
+  padding: 1px 2px;
+  border: none;
+  background: none;
+  font-size: var(--knob-label-font, 10px);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  text-transform: lowercase;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  /* Reserve the underline slot so selection doesn't shift the row. */
+  border-bottom: 1px solid transparent;
+}
+.source-knob.dimmed .source-knob-label { color: rgba(255, 255, 255, 0.28); }
+.source-knob.selected .source-knob-label {
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom-color: rgba(255, 255, 255, 0.9);
+}
+.source-knob-label:hover { color: rgba(255, 255, 255, 0.85); }
+
+/* Per-source tray — no longer a box floating over the console: it opens
+   in the side-menu column beside it (radio with mixer / tuning / perform
+   and the frequency panels), so it's a plain column resident that wears
+   the stack's chassis and the shared .side-menu-head title bar. */
+.source-tray-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* The column scrolls, not the body — same as the frequency panels, with
+   the shared .side-menu-head staying pinned on top of it. */
+.source-tray-body {
+  padding: 0 10px 10px;
+}
+.source-tray-cols {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.source-tray-cols > * { flex: 1 1 180px; min-width: 0; }
+
+/* Source tabs inside the waves tray — drone / kbd / midi, one envelope
+   mounted at a time. Same caps-underline word grammar as the knob
+   labels and the tray title: dim white, the open one brightens and
+   wears the underline. */
+.source-tab-row {
+  display: flex;
+  gap: 14px;
+  margin: 12px 0 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 6px;
+}
+.source-tab {
+  border: none;
+  background: none;
+  padding: 0 0 1px;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: lowercase;
+  color: rgba(255, 255, 255, 0.45);
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+}
+.source-tab:hover { color: rgba(255, 255, 255, 0.85); }
+.source-tab.active {
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom-color: rgba(255, 255, 255, 0.9);
+}
+/* The tab body carries its own sections; the envelope panel inside
+   already brings its own top margin, so only the level row needs air. */
+.source-tab-body .envelope-section { margin-top: 4px; }
 
 /* Top-row toggles — always-visible corner buttons. Right cluster:
    settings (16px), share (58px), scope-mode (100px). Left cluster: help
@@ -2099,17 +2536,19 @@ kbd {
 .midi-toggle {
   position: fixed;
   top: 16px;
-  /* Above .right-stack (340) and other floating panels so a tall
-     MIDI mappings list or mixer can never visually overlap the
-     corner controls. */
+  /* Above the floating panels so a tall MIDI mappings list or mixer can
+     never visually overlap the corner controls. */
   z-index: 700;
 }
 
-.settings-toggle { right: 16px; }
-.share-toggle    { right: 58px; }
-.patches-toggle  { left: 58px; }
-.hydra-toggle    { left: 100px; }
-.midi-toggle     { left: 142px; }
+/* Corner rows measured from the stage edge (see :root --corner-inset —
+   stage boundary, floored at the edge rails): the 42px steps between
+   siblings are unchanged. */
+.settings-toggle { right: var(--corner-inset); }
+.share-toggle    { right: calc(var(--corner-inset) + 42px); }
+.patches-toggle  { left: calc(var(--corner-inset) + 42px); }
+.hydra-toggle    { left: calc(var(--corner-inset) + 84px); }
+.midi-toggle     { left: calc(var(--corner-inset) + 126px); }
 .patches-toggle:hover,
 .settings-toggle:hover,
 .share-toggle:hover,
@@ -2160,7 +2599,7 @@ kbd {
   background: rgba(255, 255, 255, 0.16);
   color: #fff;
 }
-.help-toggle { left: 16px; }
+.help-toggle { left: var(--corner-inset); }
 
 /* The on/off toggle inside the Hydra panel header. Same neutral gray
    on/off treatment as the keyboard tray's MIDI button — lighter when
@@ -2188,13 +2627,13 @@ kbd {
 .scope-mode-buttons {
   position: fixed;
   top: 16px;
-  right: 100px;
+  right: calc(var(--corner-inset) + 84px);
   /* Two radio buttons side by side: audio (with the expand fan) + pianoroll. */
   display: flex;
   gap: 4px;
   align-items: center;
-  /* Matches the other top-row toggles so a tall .right-stack panel
-     can't visually overlap. */
+  /* Matches the other top-row toggles so a tall floating panel can't
+     visually overlap. */
   z-index: 700;
 }
 
@@ -2316,7 +2755,7 @@ kbd {
 }
 
 /* Bottom-row grid: PLAY | KBD | DRONE | MIXER | TUNING.
-   Per-osc mute squares live in the drone-tray above this row. */
+   Per-osc mute squares live in the mixer console above this row. */
 .osc-grid-wrap {
   display: flex;
   flex-direction: column;
@@ -2538,159 +2977,435 @@ kbd {
 .cap-x:hover:not(:disabled) { color: #c96f6f; background: rgba(201, 111, 111, 0.16); }
 .cap-x:disabled { opacity: 0.3; cursor: not-allowed; }
 
-.bottom-cell {
-  box-sizing: border-box;
-  width: 50px;
-  height: 36px;
+/* (.bottom-cell retired 2026-08-04 with the .right-toggles strip — its
+   last users were the KBD / MIXER buttons, now rail tabs. The 36px cell
+   height it defined is still quoted as the title-bar reference above.) */
+
+/* ─── Mixer console ──────────────────────────────────────────────────
+   iOS-style column mixer (port of HomeMixerSection.swift): a centered
+   group of [label rail][voice columns][ALL lane] filling --console-h,
+   replacing the old pan + drone trays. All geometry (column pitch,
+   gutter positions, paging offsets) is computed in JS by
+   src/ui/stripGeometry.js and applied inline; the --console-* vars
+   carry the two scale channels — `scale` for type, height-capped
+   `control` for control rows — plus the shared row heights, so the
+   label rail and every lane use one skeleton and never shear. */
+.mixer-console {
+  position: relative;
+  /* --side-w (set on .osc-controls-panel while a side menu is open)
+     carves the menu column's width out of the console's viewport share
+     so the centered row still fits on narrow screens. */
+  width: min(calc(100vw - 40px - var(--side-w, 0px)), 720px);
+  min-width: 240px;
+  /* --console-head (set inline from stripGeometry.CONSOLE_HEAD) is the
+     air that used to sit between the console's top edge and the tops of
+     the edge rails. The box claims it — growing upward, since the panel
+     is bottom-anchored — and the NOTE row spends it, so the frequency
+     buttons start level with the rails' play/pause box. */
+  height: calc(var(--console-h) + var(--console-head, 0px));
+  margin-bottom: 6px;
+  font-family: var(--font-narrow);
+}
+.console-strip-clip {
+  position: absolute;
+  inset: 0;
+}
+/* Overflowing strip pans by drag (iOS VoiceStripPan): the readouts and
+   mute cells are the drag surface. pan-y keeps vertical page scroll
+   alive on touch — a vertical move cancels the pan either way. */
+.console-strip-clip.pannable {
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.console-strip-clip.panning,
+.console-strip-clip.panning * {
+  cursor: grabbing;
+}
+.console-strip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.console-lane {
+  display: flex;
+  justify-content: center;
+  height: 100%;
+  flex-shrink: 0;
+}
+.console-lane-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--console-row-gap);
+  height: 100%;
+}
+
+/* NOTE row — two-line freq/note readout; tap selects the voice (the
+   per-voice frequency panel hangs off this in a later pass). */
+.console-note {
+  position: relative;
+  width: 100%;
+  height: var(--console-note-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
   padding: 0;
   border: none;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.95);
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+.console-note-freq {
+  /* iOS uses 14pt in the compressed SF face. Plex Condensed is a touch
+     wider than SF Compressed, so 12px overshot the lane's proportions
+     (Dan, 2026-08-04 — the readout dwarfed the controls under it); 11px
+     brings the rendered digits back in line with the mute cell. */
+  font-size: calc(11px * var(--console-scale, 1));
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  font-variant-numeric: tabular-nums;
+  color: var(--osc-color);
+  opacity: 0.95;
+  white-space: nowrap;
+}
+.console-note-name {
+  font-size: calc(10px * var(--console-scale, 1));
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--osc-color), transparent 30%);
+  white-space: nowrap;
+}
+.console-note-name em {
+  font-style: normal;
+  opacity: 0.75;
+}
+.console-note.muted .console-note-freq { opacity: 0.5; }
+.console-note.muted .console-note-name {
+  color: color-mix(in srgb, var(--osc-color), transparent 60%);
+}
+
+/* Corner-bracket selection marker — four sharp white L corners (the
+   iOS SelectionCornersShape). */
+.console-corners {
+  position: absolute;
+  inset: 0.75px;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.console-corners i {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 0 solid rgba(255, 255, 255, 0.9);
+}
+.console-corners i:nth-child(1) { top: 0; left: 0; border-top-width: 1.5px; border-left-width: 1.5px; }
+.console-corners i:nth-child(2) { top: 0; right: 0; border-top-width: 1.5px; border-right-width: 1.5px; }
+.console-corners i:nth-child(3) { bottom: 0; left: 0; border-bottom-width: 1.5px; border-left-width: 1.5px; }
+.console-corners i:nth-child(4) { bottom: 0; right: 0; border-bottom-width: 1.5px; border-right-width: 1.5px; }
+.console-corners.dimmed { opacity: 0.5; }
+
+/* MUTE row — numbered cell, same grammar as the old drone-tray squares
+   (solid = sounding, hollow = muted). --cell-color aliases the lane
+   color so the shared pending/pulse rules further down apply as-is. */
+.console-mute-slot {
+  height: var(--console-mute-h);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: monospace;
-  font-size: 16px;
-  font-weight: 700;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s, color 0.15s, transform 0.25s;
 }
-
-.bottom-cell:hover { background: rgba(255, 255, 255, 0.2); }
-.bottom-cell .button-icon { width: 22px; height: 22px; fill: currentColor; }
-
-/* Drone tray — small square mute buttons sitting above the bottom row.
-   Always open now (the drone menu toggle is gone); the collapsed state
-   below is kept for the slide-in on mount.
-   Off state: transparent fill with a low-opacity osc-color outline. On
-   state: filled with the osc color, subtle glow. The whole tray is
-   pointer-events: none when closed so collapsed squares aren't
-   click-targets. */
-.drone-tray {
-  /* 3-column layout: left spacer (1fr) | cells (auto, content-sized) |
-     right slot (1fr). Equal flex on the side columns keeps the cells
-     centered whether or not the × button is present in the right slot. */
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  max-height: 0;
-  margin: 0;
-  padding: 0;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(6px);
-  overflow: hidden;
-  transition:
-    max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s ease,
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    padding 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.drone-tray-cells {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-.drone-tray-slot {
-  display: flex;
-  align-items: center;
-}
-.drone-tray-slot-right {
-  justify-content: flex-start;
-  padding-left: 8px;
-}
-.drone-tray-slot-left {
-  justify-content: flex-end;
-  padding-right: 8px;
-}
-.drone-tray.open {
-  max-height: 40px;
-  padding: 4px 0 6px;
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-.drone-tray-cell {
+.console-mute {
+  --cell-color: var(--osc-color);
   box-sizing: border-box;
-  width: 28px;
-  height: 28px;
+  /* One side from cellGeometry (stripGeometry.js) — the cell is always
+     square; aspect-ratio backstops the var if it ever goes missing. */
+  width: var(--console-cell, 32px);
+  height: var(--console-cell, 32px);
+  aspect-ratio: 1 / 1;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: rgba(255, 255, 255, 0.85);
-  font-family: monospace;
-  font-size: 12px;
+  font-family: inherit;
+  font-size: calc(13px * var(--console-control, 1));
   font-weight: 700;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  /* Opacity transitions LONGER than the background drain: when the pending
-     flip lands (.mute-pending/.pulsing removed), opacity eases up from
-     whatever the pulse left it at while the solid fill empties first — the
-     cell settles into its next look without flashing back to full
-     brightness. */
+  /* Opacity transitions LONGER than the background drain: when a
+     pending flip lands, opacity eases up from wherever the pulse left
+     it while the solid fill empties first — no flash back to full
+     brightness (see the pending/pulse rules). */
   transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s,
     opacity 0.4s ease;
 }
-.drone-tray-cell.off {
+.console-mute.off {
   background: transparent;
   border-color: color-mix(in srgb, var(--cell-color), transparent 70%);
   color: color-mix(in srgb, var(--cell-color), transparent 30%);
 }
-.drone-tray-cell.off:hover {
+.console-mute.off:hover {
   border-color: color-mix(in srgb, var(--cell-color), transparent 40%);
   color: color-mix(in srgb, var(--cell-color), transparent 10%);
 }
-.drone-tray-cell.on {
+.console-mute.on {
   background: var(--cell-color);
   border-color: var(--cell-color);
   color: #000;
   box-shadow: 0 0 6px color-mix(in srgb, var(--cell-color), transparent 55%);
 }
-.drone-tray-cell.on:hover {
+.console-mute.on:hover {
   background: color-mix(in srgb, var(--cell-color), white 15%);
 }
 
-/* × button — one-click silence-all. Lives in the right-side slot of
-   the drone-tray's 3-column grid, so it appears "after" the cells
-   without affecting their centered position. Small square button with
-   a faint outline so it reads as a separate action from the per-osc
-   color squares. */
-.drone-tray-all-off {
-  box-sizing: border-box;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 4px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.55);
-  font-family: monospace;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1;
-  cursor: pointer;
-  display: inline-flex;
+/* PAN row — the rotary PanPot (SVG arcs drawn by PanPot.jsx). */
+.console-pan-slot {
+  height: var(--console-pan-h);
+  display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.drone-tray-all-off:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.4);
+.panpot {
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panpot svg { display: block; }
+/* Mute/tracking dim is a fill shift (see PanPot.jsx) so the track ring
+   never shows through the orb — transition the fill, not opacity. */
+.panpot-orb { transition: fill 0.15s ease; }
+.panpot.tracking .panpot-orb {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--panpot-color), transparent 15%));
 }
 
-/* Keyboard/MIDI play-pause — left-slot twin of the × button. Same small
-   outlined chassis; shows a pause glyph while notes play and a play glyph
-   once they're paused. */
-.drone-tray-kbd-play {
+/* LEVEL row — vertical fader, takes the remaining lane height. */
+.console-fader-slot {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 5px;
+  display: flex;
+  justify-content: center;
+}
+.vfader {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: pointer;
+}
+.vfader-track,
+.vfader-fill {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 7px;
+  border-radius: 3.5px;
+}
+.vfader-track {
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.1);
+}
+.vfader-fill {
+  bottom: 0;
+  background: var(--vfader-color);
+  opacity: 0.7;
+}
+.vfader.muted .vfader-fill { opacity: 0.25; }
+.vfader-unity {
+  position: absolute;
+  left: 50%;
+  bottom: 50%;
+  transform: translate(-50%, 50%);
+  width: 13px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.25);
+}
+.vfader-ball-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--vfader-ball, 20px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.vfader-ball {
+  width: var(--vfader-ball, 20px);
+  height: var(--vfader-ball, 20px);
+  border-radius: 50%;
+  /* Colored ball painted over an opaque black backing (the iOS black
+     backing circle) so the track never shows through — the tint goes in
+     as a background-IMAGE over a black background-COLOR. color-mix alone
+     isn't enough: the ALL lane's color is rgba(255,255,255,0.55) and
+     that alpha survives the mix. Muting shifts the tint darker rather
+     than fading it, keeping the hue and the opaque backing. */
+  background-color: #000;
+  background-image: linear-gradient(var(--vfader-ball-tint), var(--vfader-ball-tint));
+  --vfader-ball-tint: color-mix(in srgb, var(--vfader-color) 90%, black);
+}
+.vfader.muted .vfader-ball {
+  --vfader-ball-tint: color-mix(in srgb, var(--vfader-color) 50%, black);
+}
+.vfader.active .vfader-ball { --vfader-ball-tint: var(--vfader-color); }
+/* XY affordance — chevrons hugging the ball advertise the horizontal
+   frequency fine-tune axis. */
+.vfader-chevron {
+  /* iOS: SF chevron.left/right at size 8 medium, HStack spacing 28 —
+     inner edges ~14pt off center, 4pt clear of the 20pt ball. */
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 13px;
+  color: var(--vfader-color);
+  opacity: 0.3;
+}
+.vfader-chevron.left { right: calc(50% + 14px); }
+.vfader-chevron.right { left: calc(50% + 14px); }
+
+/* Label rail — NOTE / MUTE / PAN / LEVEL down the left gutter; the
+   LEVEL slot swaps to ‹ › whole-column paging when the strip
+   overflows. */
+.console-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--console-row-gap);
+  pointer-events: none;
+  /* Opaque like every other console surface — the lane strip pans
+     underneath this column, so anything translucent lets voices ghost
+     through the labels. Same for the ALL lane below. */
+  background: #000;
+}
+.console-rail-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.console-rail-note { height: var(--console-note-h); }
+.console-rail-mute { height: var(--console-mute-h); }
+.console-rail-pan { height: var(--console-pan-h); }
+.console-rail-level {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.console-pager {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+.console-pager button {
+  /* The rail is only GUTTER_WIDTH (32px) wide, so the button fills it
+     and the chevron fills the button — this is the page control for a
+     strip that's hiding voices, it has to be findable. */
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.console-pager button svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.console-pager button:hover:not(:disabled) { color: #fff; }
+.console-pager button:disabled {
+  color: rgba(255, 255, 255, 0.22);
+  cursor: default;
+}
+
+/* ALL lane — pinned right of the columns: caption, mute-all speaker,
+   ⊙/LR stereo-mode toggle, drone-bus gain fader (0..2 with unity at
+   the half-track tick). Gray bus styling, not a voice color. */
+.console-all {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--console-row-gap);
+  background: #000;
+}
+.console-all-caption {
+  height: var(--console-note-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+.console-all .console-note-name { color: rgba(255, 255, 255, 0.7); }
+.console-all-kill,
+.console-all-stereo {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+.console-all-kill:hover,
+.console-all-stereo:hover { color: rgba(255, 255, 255, 0.95); }
+.console-all-kill .button-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.console-all-kill.all-muted { color: rgba(255, 255, 255, 0.35); }
+.console-all-stereo {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* Drone-only play/pause — floats left of the master play button in the
+   bottom row (same 20px outlined chassis as the old drone-tray twin). */
+.console-drone-play {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
   box-sizing: border-box;
   width: 20px;
   height: 20px;
@@ -2705,147 +3420,218 @@ kbd {
   justify-content: center;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.drone-tray-kbd-play:hover {
+.console-drone-play:hover {
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
   border-color: rgba(255, 255, 255, 0.4);
 }
-.drone-tray-kbd-play.paused {
+.console-drone-play.paused {
   color: #fff;
   border-color: rgba(255, 255, 255, 0.5);
 }
-.drone-tray-kbd-play .button-icon {
+.console-drone-play .button-icon {
   width: 12px;
   height: 12px;
   fill: currentColor;
 }
 
-/* Pan tray — per-voice L/R/⊙ toggles. Same 3-column grid as the drone
-   tray so each cell sits directly above its mute square and the reset
-   lines up above the mute-all ×. Cells match the 28px drone-cell width +
-   4px gap so the columns align. Subtle by default (faint gray), lighting
-   to bright white with a soft glow on hover. */
-.pan-tray {
+/* ── Edge rails ──────────────────────────────────────────────────────
+   The iOS master/right rails on the web (ContentView.masterRail /
+   rightRail): opaque columns flanking the console row — in-flow flex
+   items at either end of .osc-controls-panel ([left rail][console]
+   [side menus][right rail]) so they hug the section's outer edges and
+   follow it as it widens (more voices, side menus opening). Vertically
+   they own the area below the spectrum bar + orb row: the top edge
+   lands at the bar row's underside (--fsb-lift above the viewport
+   bottom) and the foot bleeds past the panel's 8px inset to the true
+   screen bottom. */
+.edge-rail {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-end;
+  width: var(--rail-w);
+  height: var(--fsb-lift);
+  margin-bottom: -8px;
+  /* Above the mobile side-menu sheet (z 10), below the source trays /
+     voice panels (z 120). */
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  /* True black; the line lands on the INNER edge only — the foot sits at
+     the screen bottom and the outer flank is the stage edge, so neither
+     takes a line. */
+  background: #000;
+  border: var(--seam-w) solid var(--seam-c);
+  border-bottom: none;
+}
+/* Only the INNER flank is drawn (Dan, 2026-08-04): the outer flank is the
+   stage edge, the foot is the screen bottom, and the top line came off
+   with the play button's frame — it read as the lid of a box around the
+   glyph, which is exactly what we were removing. Matches the right rail,
+   which already drew its inner flank alone. */
+.edge-rail-left { border-left: none; border-top: none; }
+.edge-rail-right {
+  border-right: none;
+  border-top: none;
+  padding: 0 0 12px;
+  gap: 8px;
+}
+
+/* Master play/pause — the rail-top slot: the WHOLE slot is the button,
+   glyph brightens while paused (iOS playPauseButton). Frameless as of
+   2026-08-04 (Dan) — it draws NO lines of its own, neither the outer
+   flank nor the divider that used to run under it, so the glyph reads
+   as sitting in the rail rather than in a box. The rail's own seam (its
+   inner flank + top) is untouched and still draws the clean edge.
+   Because the box no longer has borders to align, it also drops the
+   one-line overhang it used to carry: it sits INSIDE the rail's lines
+   so the hover wash can't paint over that inner seam. */
+.rail-play {
+  box-sizing: border-box;
+  width: 100%;
+  height: 48px;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  max-height: 0;
-  margin: 0;
-  padding: 0;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(6px);
-  overflow: hidden;
-  transition:
-    max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s ease,
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    padding 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  place-items: center;
+  transition: color 0.15s, background 0.15s;
 }
-.pan-tray.open {
-  max-height: 32px;
-  padding: 2px 0 0;
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-/* Nudge the L/R/⊙ row (and its reset) down 2px — purely visual, so the
-   panel heights and the separately-fixed spectrum bar (.fsb-row) stay put.
-   The 4px gap to the drone squares below absorbs it without collision. */
-.pan-tray-cells {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  transform: translateY(2px);
-}
-.pan-tray-slot {
-  display: flex;
-  align-items: center;
-  transform: translateY(2px);
-}
-.pan-tray-slot-right {
-  justify-content: flex-start;
-  padding-left: 8px;
+.rail-play:hover { background: rgba(255, 255, 255, 0.08); }
+.rail-play.paused { color: #fff; }
+/* Big glyph — with the frame gone the icon carries the slot on its own.
+   The 24-unit viewBox is mostly padding (the pause bars span 6→18), so
+   the drawn ink is ~half this figure. */
+.rail-play .button-icon { width: 30px; height: 30px; fill: currentColor; }
+
+/* Drone-only play — rides under the master play in the rail flow,
+   keeping the console drone chip's 20px outlined look
+   (.console-drone-play) minus its floating position. */
+.rail-drone-play {
+  position: static;
+  transform: none;
+  margin-top: 8px;
+  flex: 0 0 auto;
 }
 
-.pan-tray-cell {
-  box-sizing: border-box;
-  width: 28px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.32);
-  font-family: monospace;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: color 0.15s, text-shadow 0.15s, background 0.15s;
-}
-.pan-tray-cell:hover,
-.pan-tray-cell:focus-visible {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.06);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.85);
-  outline: none;
-}
-/* Underline voices whose routing differs from the mode origin, so the
-   "out of place" ones are visible at a glance. */
-.pan-tray-cell.moved {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-thickness: 1.5px;
-}
-
-/* Continuous pan dial: cells drag on both axes (right/up → R,
-   left/down → L). touch-action none so a touch drag pans the voice
-   instead of scrolling the page. Pointer cursor — the cell reads as a
-   button (click bounces side ↔ center); the drag is a bonus gesture. */
-.pan-tray-cell {
+/* Master meter fader — the vertical L/R meter + volume crossbar
+   (MasterMeterRail.jsx), filling the lane to the rail's foot. */
+.master-meter-rail {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 60px;
+  margin: 12px 0 14px;
+  cursor: ns-resize;
   touch-action: none;
-  cursor: pointer;
 }
-/* Between detents the cell keeps the coarse side letter, italicized —
-   the precise position shows on the orb's status flash instead. */
-.pan-tray-cell.partial {
-  font-style: italic;
+.master-meter-bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+}
+.master-meter-bar {
+  position: relative;
+  width: 4px;
+  height: 100%;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.master-meter-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+.master-meter-hold {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+.master-meter-cross {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 3px;
+  border-radius: 1.5px;
+  background: rgba(255, 255, 255, 0.9);
+  pointer-events: none;
 }
 
-/* ↵ reset — sits in the right slot above the drone-tray's × so the two
-   stack vertically. Kept to the cell height so it never grows the row.
-   Same faint-to-bright treatment as the pan cells. */
-.pan-tray-reset {
-  box-sizing: border-box;
-  width: 20px;
-  height: 20px;
+/* Right rail tabs — dim white, brighten while open; corner brackets
+   mark the open tab (iOS railTab + SelectionCornersShape). */
+.rail-tab {
+  width: 100%;
+  height: 36px;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.55);
-  font-family: monospace;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1;
+  color: rgba(255, 255, 255, 0.45);
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, text-shadow 0.15s, background 0.15s;
+  display: grid;
+  place-items: center;
+  transition: color 0.15s;
 }
-.pan-tray-reset:hover,
-.pan-tray-reset:focus-visible {
+.rail-tab:hover { color: rgba(255, 255, 255, 0.8); }
+.rail-tab.active { color: rgba(255, 255, 255, 0.95); }
+.rail-tab-face {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+}
+.rail-tab-hz {
+  font: 500 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* KBD is a 3-glyph all-caps word where Hz is 2 mixed-case — a step down
+   in size keeps the two text tabs optically equal in the 36px face. */
+.rail-tab-kbd {
+  font: 500 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+}
+.rail-tab-brackets {
+  position: absolute;
+  inset: 0;
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+/* Spacer pushes the history cluster to the rail's foot (the gear's
+   future slot sits below it, per the iOS right rail). */
+.rail-spacer { flex: 1 1 auto; }
+
+/* Undo / redo — the iOS rail's history chips (32×27 rounded). */
+.rail-history-btn {
+  width: 32px;
+  height: 27px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+  transition: background 0.14s, color 0.14s;
+}
+.rail-history-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
   color: #fff;
-  background: rgba(255, 255, 255, 0.06);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.85);
-  outline: none;
 }
+.rail-history-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* Left "ALL" column — mirrors .osc-col layout so the per-row slots
    (readout / octave buttons / fader / mute) line up with the per-osc cols. */
@@ -2873,39 +3659,10 @@ kbd {
 .kbd-fader.disabled {
   opacity: 0.45;
 }
-/* KBD / drone toggle buttons live in the bottom row as text with a thin
-   underline below the label. The underline lights blue when the toggle
-   is active (KBD tray open, drones playing) and stays transparent
-   otherwise. */
-.bottom-toggle {
-  font-size: 11px;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-}
-.bottom-toggle-label {
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  transition: color 0.15s;
-}
-.bottom-toggle.on {
-  color: rgba(255, 255, 255, 0.95);
-  background: rgba(255, 255, 255, 0.26);
-}
-.bottom-toggle.off {
-  opacity: 0.78;
-}
-
-/* Bottom-cell wrapper — was previously a stacked button + caption pair;
-   now the cells just hold a single button (captions moved inside the
-   KBD/drone toggles as text). Kept as a wrapper so per-cell color vars
-   and the existing grid-cell sizing still apply. */
-.bottom-cell-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-}
+/* (.bottom-toggle / .bottom-toggle-label / .bottom-cell-wrap retired
+   2026-08-04 with .bottom-cell and the .right-toggles strip — the KBD
+   and MIXER buttons that used them are rail tabs now, styled by
+   .rail-tab / .rail-tab-kbd.) */
 
 /* Keyboard "hold" button — in the readout-row at osc-kbd-col, sits
    directly above the keys "more / less" tray-toggle. Toggle: green
@@ -2955,8 +3712,15 @@ kbd {
 #wrapper.paused .fsb-dot-label:not(.muted):not(.kbd-active):not(.active-freq) {
   opacity: 0.55;
 }
-/* When paused, the drone-tray squares dim to reflect "drones silent." */
-#wrapper.paused .drone-tray-cell.on {
+/* The always-on pan dots ride the orbs, so they go silent with them —
+   same 0.42 as .fsb-dot above, and the same exclusions: muted (already
+   dimmer at 0.45), ghosted (dimmer still at 0.25), and the orb under the
+   finger, which stays bright exactly as .fsb-dot.dragging does. */
+#wrapper.paused .fsb-status.pinned:not(.muted):not(.ghosted):not(.dragging) {
+  opacity: 0.42;
+}
+/* When paused, the console mute cells dim to reflect "drones silent." */
+#wrapper.paused .console-mute.on {
   opacity: 0.6;
   filter: brightness(0.7);
 }
@@ -3562,46 +4326,120 @@ kbd {
 
 /* Mobile responsive styles */
 @media (max-width: 768px) {
+  /* Slimmer edge rails on phones — the iOS rails are effectively ~32pt
+     of visible column (44 minus the 12pt gutter bleed); 36px keeps the
+     lane usable without starving the console between them. */
+  :root { --rail-w: 36px; }
+
   /* Mobile stack (top → bottom): spectrum bar, faders, control buttons.
      Use dvh-safe positioning (fixed bottom values), so the mobile browser
      URL bar appearing/disappearing keeps everything anchored at the true bottom. */
   .osc-controls-panel {
-    /* Lifted 44px (toggle row 36px + 8px gap) so the KBD/DRONE/MIXER/TUNING
-       strip below can sit directly under the play/save controls. */
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 44px);
+    bottom: max(8px, env(safe-area-inset-bottom));
     left: 0;
     right: 0;
     transform: none;
     max-width: 100%;
-    padding: 0 8px;
     box-sizing: border-box;
+    /* Phones pin the rails to the SCREEN edges (they don't hug the
+       console's flanks the way they do on desktop): no side padding, and
+       the rails sit at the row's two ends with the console column
+       filling everything between them. The lane between the rails is the
+       full content area — console, knob band and the side-menu sheet all
+       live inside it. */
+    padding: 0;
+    justify-content: space-between;
   }
+  /* Console column takes the whole lane between the rails and centers
+     the mixer + knob band inside it. */
+  .console-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* Only 8px of air between the console group and the rails on phones
+     (the desktop 24px was viewport breathing room — the rails now draw
+     the edge, so the console can run right up to them). Read by
+     .mixer-console's inline width formula. */
+  .mixer-console { --console-air: 8px; }
+  /* Rails run to the true screen bottom whatever the safe-area inset is
+     (the panel's own bottom offset is rebated here, not a flat 8px), and
+     grow by the same amount so their top edge still lands on the
+     spectrum bar's underside — which is exactly where the side-menu
+     sheet hangs from, so the three edges line up. */
+  .edge-rail {
+    height: calc(var(--fsb-lift) + env(safe-area-inset-bottom));
+    margin-bottom: calc(-1 * max(8px, env(safe-area-inset-bottom)));
+  }
+  /* (No source-tray width override any more — the trays ride in the
+     side-menu column, so on phones they're the same full-width sheet
+     between the rails as every other menu.) */
+  /* (Nothing to say about the panel toggles here any more: the KBD and
+     MIXER surfaces don't ship on mobile at all, so NavRail omits both
+     tabs — see App.jsx's showKbdMixer.) */
 
-  /* Pull the KBD / DRONE / MIXER / TUNING toggles out of the right stack and
-     center them in a strip pinned to the very bottom, under the play/save row.
-     left:50% + translateX shrink-wraps to the buttons so the empty flanks
-     don't capture taps meant for the visualizer behind them. */
-  .right-toggles {
+  /* Side menus are covering sheets on mobile (iOS-iPhone behavior), not a
+     side column: full-width, pinned to the bottom of the viewport, closed
+     via the title bar's ✕ (or the toggle). The console underneath keeps
+     its full width — no --side-w carve-out, no left shift. */
+  .osc-controls-panel:has(.side-menu-stack) { --side-w: 0px; }
+  .osc-controls-panel:has(.side-menu-stack) .console-main {
+    align-items: center;
+  }
+  .side-menu-stack {
     position: fixed;
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
-    bottom: max(8px, env(safe-area-inset-bottom));
-    justify-content: center;
-    transition: bottom 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    /* Full width BETWEEN the edge rails (they're opaque and above). */
+    left: var(--rail-w);
+    right: var(--rail-w);
+    width: auto;
+    /* Hang from just under the spectrum bar (its bottom edge sits at
+       --fsb-lift + safe-inset above the viewport bottom): the title bar
+       lands in a fixed spot and short content stays top-aligned, with the
+       console peeking out underneath. Content taller than the area below
+       the bar scrolls inside. */
+    top: calc(100dvh - var(--fsb-lift) - env(safe-area-inset-bottom));
+    align-self: auto;
+    max-height: calc(var(--fsb-lift) + env(safe-area-inset-bottom));
+    /* Full-bleed sheet between the rails: no chassis outline, and no
+       leading hairline either (nothing sits beside it here). */
+    border: none;
+    border-radius: 0;
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    /* Above the transport rail (z 6) — the sheet covers the console. */
+    z-index: 10;
+    /* No reveal on the phone sheet (user 2026-08-04): the column
+       animation is a desktop/tablet affordance — here the sheet just
+       appears and disappears. App.jsx skips the close lag to match. */
+    animation: none;
+  }
+  /* …except the frequency panels (per-voice + ALL), which follow iOS's
+     iPhone placement: the sheet tops at the NOTE row's bottom edge, so the
+     freq buttons (and the ALL word) stay visible above it and the selected
+     readout's corner brackets mark whose panel is open. The console's top
+     edge sits exactly on the --fsb-lift line, so the drop is one NOTE row.
+     Runs to the screen bottom from there (opaque, covering the rest of the
+     console) rather than shrink-wrapping like the other sheets. */
+  .side-menu-stack:has(.voice-panel) {
+    top: calc(100dvh - var(--fsb-lift) - env(safe-area-inset-bottom)
+             + var(--console-note-h, 51px));
+    bottom: 0;
+    max-height: none;
+  }
+  /* Sheet children take the sheet's own (viewport-derived) width back. */
+  .side-menu-stack > *,
+  .side-menu-stack .mixer-panel,
+  .side-menu-stack .tuning-panel,
+  .side-menu-stack .perform-panel {
+    width: auto;
+  }
+  /* Height stays at the shared 36px; only the side air widens. */
+  .side-menu-head {
+    padding: 0 44px;
   }
 
-  /* Tunings (left stack) and Mixer (right stack) ride 80px higher (220 → 300)
-     so they clear the lifted spectrum/controls and the centered toggle strip
-     now pinned at the bottom. Overrides the ≤1250 rules by source order. */
-  .left-stack,
-  .right-stack {
-    bottom: calc(300px + env(safe-area-inset-bottom));
-  }
-  #wrapper.kbd-tray-open .left-stack,
-  #wrapper.kbd-tray-open .right-stack {
-    bottom: calc(300px + env(safe-area-inset-bottom) + var(--kbd-tray-h));
-  }
+  /* No knob-band overrides here any more: the band measures the lane
+     between the edge rails and sizes its dials, gaps and type from it
+     (SourceKnobBand.dialGeometry), so the phone row falls out of the
+     same math as the desktop one instead of a breakpoint jump. */
 
   .osc-count-bar {
     top: max(16px, env(safe-area-inset-top));
@@ -3742,6 +4580,12 @@ kbd {
   z-index: 90;
   transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
+/* Flipped (iOS-style) orb row: the fsb row is ~71px taller (orbs hang below
+   the bar instead of overflowing above it), so the backdrop grows to keep
+   the gradient shoulder above the spectrum's top strip. */
+.orb-backdrop.flipped {
+  height: calc(215px + env(safe-area-inset-bottom));
+}
 
 /* Frequency Spectrum Bar — centered above the controls panel at every width.
    The outer .fsb-row is the fixed-positioned wrapper hosting the "all" orb
@@ -3749,9 +4593,9 @@ kbd {
    the right. The bar itself is the natural-flow flex item in the middle. */
 .fsb-row {
   position: fixed;
-  /* 73px lifts the spectrum bar + orb row above the controls panel, opening
-     up space between the spectrum and the pan-tray (L/R/⊙) buttons below. */
-  bottom: calc(73px + env(safe-area-inset-bottom));
+  /* --fsb-lift places the spectrum bar + orb row directly above the
+     mixer console (it tracks --console-h). */
+  bottom: calc(var(--fsb-lift) + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -3800,6 +4644,40 @@ kbd {
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
+}
+/* Transpose readout — iOS parity: two stacked monospace lines (root Hz
+   shift + cents offset) floating in the orb row at the bar's top-left.
+   Fades with the off-center state (opacity set inline); click glides the
+   transpose home. */
+.fsb-transpose-readout {
+  position: absolute;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  /* iOS VStack(alignment: .trailing) — both lines flush to the bar's
+     right edge, so the numbers stay put as the Hz line changes width. */
+  align-items: flex-end;
+  text-align: right;
+  gap: 1px;
+  margin: 0;
+  padding: 2px;
+  background: none;
+  border: none;
+  /* iOS uses design: .monospaced here (not the compressed face) — the
+     digits change live under the drag, so tabular width matters more
+     than narrowness. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.2s ease-out;
+}
+.fsb-transpose-readout .fsb-transpose-cents {
+  opacity: 0.75;
 }
 .fsb-side-right {
   flex-direction: column;
@@ -3909,6 +4787,21 @@ kbd {
   pointer-events: none;
 }
 
+/* Minor ruler ridges between the labeled ticks (iOS parity): short lines
+   rising from the bar's floor, dimmer than the full-height marks. Every 5th
+   is the taller one — the standard ruler cadence. */
+.fsb-tick-minor {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  pointer-events: none;
+}
+.fsb-tick-minor.tall {
+  height: 5px;
+}
+
 .fsb-tick-label {
   position: absolute;
   left: 1px;
@@ -3917,7 +4810,8 @@ kbd {
   transform-origin: left bottom;
   font-family: monospace;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
+  /* matches iOS FrequencySpectrumBar tick labels: .white.opacity(0.65) */
+  color: rgba(255, 255, 255, 0.65);
   white-space: nowrap;
   letter-spacing: 0;
 }
@@ -3957,20 +4851,31 @@ kbd {
   z-index: 200;
 }
 
-/* Canvas inset = half the gutter outside the centered 1200px canvas, plus
-   10% of the canvas width (capped at 120px). The `max(0px, …)` keeps it from
-   going negative on narrow viewports. Mirrors the math in computeEdgeRate(). */
+/* Canvas inset = the stage gutter outside the centered canvas, plus 10% of
+   the canvas width (capped at 120px). Mirrors the math in computeEdgeRate()
+   — CANVAS_MAX_WIDTH there must stay in step with --stage-max. */
 .fsb-edge-zone-line-left {
-  left: calc(max(0px, (100vw - 1200px) / 2) + min(10vw, 120px));
+  left: calc(var(--stage-gutter) + min(10vw, 120px));
 }
 
 .fsb-edge-zone-line-right {
-  right: calc(max(0px, (100vw - 1200px) / 2) + min(10vw, 120px));
+  right: calc(var(--stage-gutter) + min(10vw, 120px));
 }
 
-/* Ghost at the cursor — fully colored for both drag AND grab, so the orb feels
-   like it's following your mouse/finger. The real dot on the bar (outlined)
-   stays at its freq position. */
+/* On phones the zone eats most of a narrow screen, so the hint lines read as
+   two hard dividers through the whole UI instead of a subtle edge marker.
+   Auto-pan still works — only the visual is dropped. */
+@media (max-width: 768px) {
+  .fsb-edge-zone-line {
+    display: none;
+  }
+}
+
+/* Ghost at the cursor — GRAB mode (and the global detune orb) only. A grab
+   can hold several orbs at one cursor, so colored ghost copies ride the
+   cursor while the real dots stay dimmed at their freq positions. Pointer
+   DRAGS no longer ghost: the real orb itself rides the finger (iOS parity,
+   see .fsb-dot.dragging below). */
 .fsb-ghost {
   position: absolute;
   border-radius: 50%;
@@ -4004,9 +4909,8 @@ kbd {
   z-index: 20;
 }
 
-/* While dragging OR grabbed, the real dot on the bar dims (similar to muted)
-   while the filled, color-saturated orb follows the cursor via the ghost. */
-.fsb-dot.dragging,
+/* Grabbed (sticky grab mode): the real dot dims (similar to muted) while
+   the filled, color-saturated ghosts follow the free cursor. */
 .fsb-dot.grabbed {
   opacity: 0.25;
   box-shadow: none;
@@ -4014,8 +4918,27 @@ kbd {
   z-index: 10;
 }
 
+/* Dragging: no ghost — the real orb IS under the finger (iOS parity), so it
+   takes the ghost's saturated, glowing look. */
 .fsb-dot.dragging {
+  opacity: 0.95;
+  box-shadow: 0 0 24px var(--dot-color), 0 0 10px var(--dot-color);
+  transform: none;
+  z-index: 30;
   cursor: grabbing;
+}
+
+/* Release settle: ~0.4s left/top overshoot ease from the finger back to the
+   collision-resolved spot — approximates iOS's spring(response 0.4,
+   damping 0.7). The class is stripped by a timer (ORB_SETTLE_MS) so left/top
+   are never transitioned outside this window: live drag-follow and the rAF
+   zoom loop's position updates must stay instant. Keeps the base rule's
+   transform/box-shadow/opacity eases so the glow fades smoothly too. */
+.fsb-dot.settling,
+.fsb-dot-label.settling {
+  transition: left 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+              top 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+              transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 
 /* Boosted = externally "active" (fader fine-tune, fullscreen selection)
@@ -4026,6 +4949,51 @@ kbd {
   opacity: 0.95;
   box-shadow: 0 0 24px var(--dot-color), 0 0 10px var(--dot-color);
   z-index: 20;
+}
+
+/* Selected voice (the frequency panel's subject): a white ring around the
+   orb — the orb-row half of the same mark the console's note cell wears as
+   corner brackets (.console-corners), so the two surfaces agree on which
+   voice is being edited.
+   Its OWN layer, not an outline on .fsb-dot (Dan, 2026-08-04): element
+   opacity is how the orb dims itself (muted 0.4, paused 0.42), and an
+   outline belongs to the element, so the mark went pale on exactly the
+   voices that are hardest to find in the row. Sized DOT_SIZE + 3 and
+   border-box, so the 1.5px stroke sits FLUSH on the orb's rim with no air
+   (iOS parity — a +4pt ring laid on its 3pt rim). Above the dragged orb's
+   z-index 30. Near-white voice colors nearly swallow it, the same trade
+   iOS took. */
+.fsb-sel-ring {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 31;
+  transition: transform 0.15s ease;
+}
+/* Grabbed: the home orb ghosts to 0.25 while the ghost carries the drag,
+   and a bright ring on a ghosted orb reads as the wrong voice being live —
+   the same call .fsb-status.pinned.ghosted makes for the pan dot. Mute and
+   pause deliberately do NOT dim it: those describe the audio, the ring
+   describes what the panel is editing. */
+.fsb-sel-ring.ghosted { opacity: 0.3; }
+/* Release settle: travel home on the same curve as .fsb-dot.settling (the
+   class is stripped by the same timer). */
+.fsb-sel-ring.settling {
+  transition: left 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+              top 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+              transform 0.15s ease;
+}
+/* Hover grows the orb 1.15× — the ring has to grow with it or the orb
+   swells straight through it. General sibling combinator: every orb
+   precedes the ring in the DOM, and only ONE ring is ever mounted (see
+   FrequencySpectrumBar.jsx), so this can only ever match its own orb.
+   Drag and grab both reset the orb's transform (above) while the pointer
+   is still over it, so they sit this out too. */
+.fsb-dot.selected:hover:not(.dragging):not(.grabbed) ~ .fsb-sel-ring {
+  transform: translate(-50%, -50%) scale(1.15);
 }
 
 /* Muted oscillators: hide both the orb and its number label entirely.
@@ -4046,22 +5014,11 @@ kbd {
   opacity: 0.6;
 }
 /* NOTE: the orbs deliberately carry NO staged on/off preview — no ring for
-   an arrival, no dim for a departure (user 2026-07-06). That preview lives
-   on the drone-tray cells / rail markers (.unmute-pending / .mute-pending)
-   so the orb row stays calm; the only orb motion during a transition is the
-   release pulse below. */
-/* Note-off in progress: the slot is muted but its envelope release is
-   still audible — the orb pulses through the tail and only settles into
-   the plain muted look once the envelope completes (the rAF loop drops
-   the class when isSlotReleasing turns false). */
-@keyframes fsb-orb-release {
-  0%, 100% { opacity: 0.55; }
-  50%      { opacity: 0.22; }
-}
-.fsb-dot.muted.releasing {
-  animation: fsb-orb-release 0.9s ease-in-out infinite;
-  box-shadow: 0 0 6px var(--dot-color);
-}
+   an arrival, no dim for a departure (user 2026-07-06), and no release
+   pulse while the envelope tail finishes (user 2026-08-04): a mute reads
+   as muted the instant it is toggled. That preview lives on the
+   drone-tray cells / rail markers (.unmute-pending / .mute-pending) so
+   the orb row stays calm. */
 .fsb-dot-label.muted {
   opacity: 0.5;
 }
@@ -4210,6 +5167,81 @@ kbd {
 }
 .fsb-label-text { /* the number itself sits in the flex row's center */ }
 
+/* Flipped (iOS-style) row: the label hangs BELOW the orb, so it grows
+   downward from its inline top instead of upward. */
+.fsb-dot-label.below {
+  transform: translate(-50%, 0);
+}
+
+/* Flipped-mode Hz readouts — the strip at the row's very top (above the
+   consonance curve), iOS's instrument-bar drag readout. Type matches
+   .fsb-dot-label.active-freq so the readout reads as the same language.
+   Every unmuted voice keeps one mounted and `.showing` raises the whole
+   strip while an orb is held, so both edges of the gesture fade (iOS
+   animates the same way off its `dragReadout` flag). */
+.fsb-hz-float {
+  position: absolute;
+  transform: translate(-50%, 0);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.3px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
+  z-index: 40;
+}
+.fsb-hz-float.showing {
+  opacity: 1;
+  transition-duration: 0.12s;
+}
+/* Orb raised above the bar: the float leaves the strip and hangs off the
+   orb's top edge, so it anchors from its bottom instead of its top. */
+.fsb-hz-float.above-orb {
+  transform: translate(-50%, -100%);
+}
+/* Each readout's stem down to the curve. Fades with its label — the
+   readout and its tether are one mark. */
+.fsb-hz-stem {
+  stroke-opacity: 0;
+  transition: stroke-opacity 0.15s ease-out;
+}
+.fsb-hz-stem.showing {
+  stroke-opacity: 0.6;
+  transition-duration: 0.12s;
+}
+
+/* Drag-rate tag: `< 1x >` centered ABOVE the dragged voice's Hz readout,
+   reading the vertical drag axis (directional ramp — up faster, down finer).
+   Successor to .fsb-scrub-tier, which rode BESIDE the readout and shoved the
+   digits sideways as it appeared (removed earlier 2026-08-04) — stacked on
+   its own line, nothing moves the digits or the stem's anchor. Bottom-
+   anchored so it hangs the same off the strip (top:-3) and off a raised
+   orb's float. Dim + small next to the 13px/800 Hz digits; the chevrons
+   are the "this changes" affordance, dimmer still. */
+.fsb-rate-tag {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
+  z-index: 40;
+}
+.fsb-rate-chev {
+  opacity: 0.45;
+  margin: 0 3px;
+}
+
 /* While a status flash is up, the voice-number label yields its spot to
    the flash's title/side block. !important outranks the equal-specificity
    muted/kbd-active opacity rules for the flash's short lifetime. */
@@ -4218,10 +5250,19 @@ kbd {
   transition: opacity 0.15s ease;
 }
 
+/* Flipped layout, orb dragged above the spectrum: the number under the orb
+   goes with it, so it's dropped for the crossing — the raised orb wears its
+   Hz float instead. Same !important reason as .status-hidden. */
+.fsb-dot-label.raised-hidden {
+  opacity: 0 !important;
+  transition: opacity 0.12s ease;
+}
+
 /* ── Orb status flash — the parameter-display design language ──────────
    One .fsb-status per orb, anchored (0×0) at the orb's CENTER via inline
    left/top. Children position off that anchor:
-     .fsb-status-head   one-line readout ("L 100%" / ⊙ / "R 45%") in the
+     .fsb-status-head   one-line readout ("45%", or a bare "L"/"R" at a
+                        hard pan — see formatPanFlash) in the
                         voice number's exact spot, color and type
      .fsb-status-arc    0×0 rotator; its child dot's center rides the
                         orb's circumference (top half) at the value
@@ -4237,16 +5278,36 @@ kbd {
   transition: opacity 0.35s ease;
 }
 .fsb-status.muted { opacity: 0.45; }
-/* Muted voice's indicator dot: dimmer still and no glow — a silent slot
-   shouldn't sparkle like a sounding one. */
+/* Muted voice's indicator dot: dimmer still — a silent slot shouldn't read
+   as loud as a sounding one. (The dot carries no glow at all now, so
+   there's nothing left to switch off here.) */
 .fsb-status.muted .fsb-status-arc-dot {
   opacity: 0.55;
-  box-shadow: none;
 }
 .fsb-status.leaving { opacity: 0; }
 @keyframes fsb-status-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+/* Pinned variant (Settings → "Pan dots"): the pan indicator lives on the
+   orb full-time instead of flashing, so it neither animates in nor fades
+   out. It rides the orb during a drag, which means clearing the dragged
+   orb's own z-index (.fsb-dot.dragging = 30) — otherwise the dot would
+   slip under the very orb it belongs to. */
+.fsb-status.pinned {
+  animation: none;
+  z-index: 31;
+}
+/* Grabbed voice: the home orb dims to 0.25 while the ghost carries the
+   drag, and its dot goes with it — a bright dot on a ghosted orb reads as
+   the wrong voice being live. */
+.fsb-status.pinned.ghosted { opacity: 0.25; }
+/* Release settle: match .fsb-dot.settling exactly so the dot and its orb
+   travel home together (the class is stripped by the same timer). */
+.fsb-status.pinned.settling {
+  transition: left 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+              top 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+              opacity 0.35s ease;
 }
 /* Type matches .fsb-dot-label exactly — the readout stands in for the
    voice number, so it must feel like the same text swapping content.
@@ -4275,6 +5336,11 @@ kbd {
 .fsb-status-head.centered {
   opacity: 0;
 }
+/* Flipped row: the readout stands in for the number BELOW the orb, so it
+   grows downward from its (positive) inline top. */
+.fsb-status.flipped .fsb-status-head {
+  transform: translate(-50%, 0);
+}
 /* Rotator: rotate() swings the child dot along the orb's INNER radius.
    −90° = left horizon, 0° = top, +90° = right horizon — mirroring the
    pan dial. Pure transform, so dragging the dial stays compositor-cheap
@@ -4291,7 +5357,10 @@ kbd {
    color mixed toward white so it always reads as a lit point on the
    body regardless of which voice color it sits on. --status-arc-r is
    the orb's edge radius; the +3px (this dot's own radius) pulls the
-   center in so the dot sits flush against the inside of the rim. */
+   center in so the dot sits flush against the inside of the rim.
+   NO glow (Dan, 2026-08-04): the orb already blooms, and a glowing dot
+   on top of it smeared into the rim instead of marking a point. Flat
+   fill only — the brightness against the orb body is the contrast. */
 .fsb-status-arc-dot {
   position: absolute;
   left: 0;
@@ -4301,7 +5370,6 @@ kbd {
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: color-mix(in srgb, var(--dot-color) 40%, #fff);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--dot-color) 30%, #fff);
 }
 /* Detune indicator: the same rim dot, smaller — its own 2px radius pulls
    it in, keeping it flush like the pan dot. Two of these ride mirrored
@@ -4363,24 +5431,9 @@ kbd {
   --kbd-tray-h: 140px;
 }
 
-/* Drone tray contributes its own height variable to bottom-anchored
-   elements above the controls panel (currently only the spectrum-bar
-   row). The tray itself sits inside .osc-controls-panel and grows the
-   panel upward naturally; --drone-tray-h is the lift for siblings that
-   need to slide above the now-taller panel. */
-#wrapper {
-  --drone-tray-h: 0px;
-}
-#wrapper.drone-tray-open {
-  /* Matches the tray's open max-height + padding (28 px cell + 4/6 px
-     padding rounds to ~40 px); a hair of slack keeps the spectrum bar
-     clear of the top row of squares. */
-  --drone-tray-h: 44px;
-}
-
 .kbd-tray-handle {
   position: fixed;
-  right: 16px;
+  right: var(--corner-inset);
   bottom: 16px;
   z-index: 600;
   background: rgba(20, 20, 20, 0.85);
@@ -4408,9 +5461,9 @@ kbd {
   bottom: 0;
   /* Cap the tray's horizontal span and center it. `left:0; right:0` +
      `margin: 0 auto` is the position:fixed equivalent of a centered
-     block — narrower viewports get the full width, wider viewports
-     anchor the tray at 1200px. */
-  max-width: 1200px;
+     block — the console (and its flanking rails) lifts above the open
+     tray, so the tray only needs viewport breathing room. */
+  max-width: min(var(--stage-max), calc(100vw - 16px));
   margin: 0 auto;
   /* Fixed visible height so we can slide via translateY rather than
      animating `height` (height transitions don't compose well with the
@@ -5068,13 +6121,7 @@ kbd {
    rather than via a wholesale `bottom += var(...)` because each element
    has its own bottom origin (some include safe-area inset, some don't). */
 #wrapper.kbd-tray-open .fsb-row {
-  bottom: calc(73px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
-}
-/* Drone tray opens above the controls panel — push the spectrum bar up
-   by --drone-tray-h so it sits clear of the new tray. Stacks additively
-   with the kbd-tray shift via the wrapper variable defaults. */
-#wrapper.drone-tray-open .fsb-row {
-  bottom: calc(73px + var(--kbd-tray-h) + var(--drone-tray-h) + env(safe-area-inset-bottom));
+  bottom: calc(var(--fsb-lift) + var(--kbd-tray-h) + env(safe-area-inset-bottom));
 }
 #wrapper.kbd-tray-open .osc-controls-panel {
   bottom: calc(8px + var(--kbd-tray-h));
@@ -5110,7 +6157,7 @@ kbd {
 .hydra-panel {
   position: fixed;
   top: 64px;
-  left: 16px;
+  left: var(--corner-inset);
   bottom: 16px;
   width: 360px;
   max-width: calc(100vw - 32px);
@@ -5125,7 +6172,7 @@ kbd {
      lists). Horizontal stays clipped so the rounded corners hold. */
   overflow: hidden auto;
   z-index: 1100;
-  transform: translateX(calc(-100% - 24px));
+  transform: translateX(calc(-100% - 24px - var(--stage-gutter)));
   opacity: 0;
   pointer-events: none;
   transition:
@@ -5350,7 +6397,7 @@ kbd {
 .patches-panel {
   position: fixed;
   top: 64px;
-  left: 16px;
+  left: var(--corner-inset);
   bottom: 16px;
   width: 320px;
   max-width: calc(100vw - 32px);
@@ -5364,7 +6411,7 @@ kbd {
   /* Above the dragging ghost-orb (z-index 1000) so the panel never gets
      occluded by an orb being detuned mid-edit. */
   z-index: 1100;
-  transform: translateX(calc(-100% - 24px));
+  transform: translateX(calc(-100% - 24px - var(--stage-gutter)));
   opacity: 0;
   pointer-events: none;
   transition:
@@ -5657,7 +6704,7 @@ kbd {
 }
 
 /* Tuning row — marker | Hz | Ratio | Note | Cents | rocker.
-   The marker square toggles mute (mirrors .drone-tray-cell). The root
+   The marker square toggles mute (mirrors .console-mute). The root
    selector lives OUTSIDE the grid, absolutely positioned in the left
    gutter (see .freq-rail-root-radio), so it never shifts these columns.
    Column 6 is the rocker pill: ‹ › chevrons on non-root rows (candidate
@@ -5772,7 +6819,7 @@ kbd {
   box-shadow: 0 0 5px color-mix(in srgb, var(--osc-color, #fff), transparent 50%);
 }
 
-/* Row marker — small colored square mirroring .drone-tray-cell. The
+/* Row marker — small colored square mirroring .console-mute. The
    anchor row gets the "on" treatment (filled with slot color, dark
    text); non-anchor rows get the "off" outline (transparent fill,
    faded color border + text). Clicking sets that slot as the anchor.
@@ -5797,7 +6844,7 @@ kbd {
   flex-shrink: 0;
   cursor: pointer;
   /* Opacity eases slower than the fill drain — same no-flash-on-flip
-     treatment as .drone-tray-cell above. */
+     treatment as .console-mute above. */
   transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s,
     opacity 0.4s ease;
 }
@@ -5828,16 +6875,16 @@ kbd {
      .mute-pending   — sounding now, goes OFF on GO → dimmed, no outline
    Both keep their TRUE current fill (solid = on, hollow = off) underneath
    so the live state is never falsified. */
-.drone-tray-cell.unmute-pending,
-.drone-tray-cell.unmute-pending:hover,
+.console-mute.unmute-pending,
+.console-mute.unmute-pending:hover,
 .freq-rail-marker.unmute-pending,
 .freq-rail-marker.unmute-pending:hover {
   /* Flush against the cell edge (no offset gap). */
   outline: 1.5px solid var(--cell-color);
   outline-offset: 0;
 }
-.drone-tray-cell.mute-pending,
-.drone-tray-cell.mute-pending:hover,
+.console-mute.mute-pending,
+.console-mute.mute-pending:hover,
 .freq-rail-marker.mute-pending,
 .freq-rail-marker.mute-pending:hover {
   opacity: 0.45;
@@ -5852,14 +6899,14 @@ kbd {
   0%, 100% { outline-color: var(--cell-color); }
   50%      { outline-color: color-mix(in srgb, var(--cell-color), transparent 75%); }
 }
-.drone-tray-cell.unmute-pending.pulsing {
+.console-mute.unmute-pending.pulsing {
   animation: drone-cell-unmute-pulse 1s ease-in-out infinite;
 }
 @keyframes drone-cell-mute-pulse {
   0%, 100% { opacity: 0.45; }
   50%      { opacity: 0.18; }
 }
-.drone-tray-cell.mute-pending.pulsing {
+.console-mute.mute-pending.pulsing {
   animation: drone-cell-mute-pulse 1s ease-in-out infinite;
 }
 /* Leaving the dimmed pending-off look (mute landed, or the save was
@@ -5873,7 +6920,7 @@ kbd {
   from { opacity: 0.3; }
   to   { opacity: 1; }
 }
-.drone-tray-cell.pulse-exit {
+.console-mute.pulse-exit {
   animation: drone-cell-pulse-exit 1s ease both;
 }
 
@@ -6238,9 +7285,9 @@ kbd {
 .perform-panel {
   width: 280px;
   padding: 9px 10px;
-  background: rgba(0, 0, 0, 0.5);
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
-  backdrop-filter: blur(10px);
 }
 .perform-panel .scope-panel { margin-top: 0; }
 .scope-panel {
@@ -6393,29 +7440,40 @@ kbd {
 @media (max-width: 768px) {
   .freq-rail { display: none; }
 
-  /* The whole bottom cluster (spectrum + controls) rides 44px higher on mobile
-     to clear the centered toggle strip now pinned at the very bottom. These
-     .fsb-row overrides are placed after the desktop rules so they win by source
-     order (same specificity); +44 keeps the spectrum's spacing above the lifted
-     controls panel identical to desktop. */
+  /* Mobile keeps the desktop bottom offsets (the bottom toggle strip is
+     gone — panel toggles live in the top-right stack now); only the
+     safe-area inset differs from desktop. */
   .fsb-row {
-    bottom: calc(73px + 44px + env(safe-area-inset-bottom));
+    bottom: calc(var(--fsb-lift) + env(safe-area-inset-bottom));
   }
   #wrapper.kbd-tray-open .fsb-row {
-    bottom: calc(73px + 44px + var(--kbd-tray-h) + env(safe-area-inset-bottom));
+    bottom: calc(var(--fsb-lift) + var(--kbd-tray-h) + env(safe-area-inset-bottom));
   }
-  #wrapper.drone-tray-open .fsb-row {
-    bottom: calc(73px + 44px + var(--kbd-tray-h) + var(--drone-tray-h) + env(safe-area-inset-bottom));
-  }
-
-  /* Keyboard tray open: lift both the centered toggle strip and the play/save
-     panel above it by the tray height. Placed after the desktop kbd-tray rules
-     so these win by source order (same specificity). */
-  #wrapper.kbd-tray-open .right-toggles {
+  /* Phones drop both side adornments — the "move all" orb (with its
+     consonance debug readout) on the left and the +/- voice-count buttons
+     on the right — and give the whole width to the spectrum instead.
+     Voice count is still reachable from the ALL panel's [−][+] header.
+     The bar keeps its BAR_H_PADDING (16px) inset on each flank, so the
+     outermost orbs still sit fully on screen. */
+  .fsb-side-left,
+  .fsb-side-right { display: none; }
+  .fsb-row { gap: 0; }
+  .freq-spectrum-bar { width: 100vw; }
+  #wrapper.kbd-tray-open .osc-controls-panel {
     bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
   }
-  #wrapper.kbd-tray-open .osc-controls-panel {
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 44px + var(--kbd-tray-h));
+  /* The sheet rides up with the console + rails so its top edge stays
+     glued to the rail tops (it hangs from the bar, not the viewport). */
+  #wrapper.kbd-tray-open .side-menu-stack {
+    top: calc(100dvh - var(--fsb-lift) - var(--kbd-tray-h) - env(safe-area-inset-bottom));
+  }
+  /* Frequency panels keep their NOTE-row drop with the tray open, and
+     stop at the tray's top edge instead of the screen bottom (the other
+     sheets do the same via their max-height). */
+  #wrapper.kbd-tray-open .side-menu-stack:has(.voice-panel) {
+    top: calc(100dvh - var(--fsb-lift) - var(--kbd-tray-h)
+             - env(safe-area-inset-bottom) + var(--console-note-h, 51px));
+    bottom: var(--kbd-tray-h);
   }
 }
 

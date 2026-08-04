@@ -408,6 +408,15 @@ export default function SettingsPanel({
           >
             ios scaling
           </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${orbDragMode === 'zoom' ? 'on' : 'off'}`}
+            onClick={() => onOrbDragModeChange?.('zoom')}
+            aria-pressed={orbDragMode === 'zoom'}
+            title="Zoom: the view is the speed dial — grabbing zooms out a touch, raising the pointer zooms out for coarse sweeps, pulling below zooms in around the voice for fine tuning. The ruler's tick spacing shows the current rate."
+          >
+            zoom
+          </button>
         </div>
         {/* Grab mode (click an orb so it follows the cursor) sits out of all
             three — its vertical axis still rides the voice's level. */}

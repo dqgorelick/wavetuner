@@ -706,7 +706,7 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('panDots', panDots ? '1' : '0'); } catch { /* ignore */ }
   }, [panDots]);
-  // Orb drag feel — three ways the vertical axis can read during a DRAG (the
+  // Orb drag feel — four ways the vertical axis can read during a DRAG (the
   // grab gesture is unaffected by all of them and keeps its volume drag):
   //   'linear'    — one pixel of horizontal drag is worth the same amount of
   //                 pitch wherever the pointer is.
@@ -716,13 +716,20 @@ function App() {
   //   'ios'       — the iOS "linear scaling" ramp (scrubSettings.js): fine at
   //                 the grab point, accelerating to a coarse sweep as you pull
   //                 away in EITHER direction. Its own sliders live in Settings.
+  //   'zoom'      — zoom-as-gain (FrequencySpectrumBar's tier notes): vertical
+  //                 pull re-zooms the spectrum view around the dragged voice,
+  //                 and the visible span IS the drag gain — the ruler's tick
+  //                 density is the rate readout. The default for fresh
+  //                 profiles (Dan, 2026-08-04).
   // Persisted under "orbDragMode", migrating the older boolean "scrubPrecision".
   const [orbDragMode, setOrbDragMode] = useState(() => {
     try {
       const saved = localStorage.getItem('orbDragMode');
-      if (saved === 'linear' || saved === 'precision' || saved === 'ios') return saved;
-      return localStorage.getItem('scrubPrecision') === '1' ? 'precision' : 'linear';
-    } catch { return 'linear'; }
+      if (saved === 'linear' || saved === 'precision' || saved === 'ios' || saved === 'zoom') {
+        return saved;
+      }
+      return localStorage.getItem('scrubPrecision') === '1' ? 'precision' : 'zoom';
+    } catch { return 'zoom'; }
   });
   useEffect(() => {
     try { localStorage.setItem('orbDragMode', orbDragMode); } catch { /* ignore */ }

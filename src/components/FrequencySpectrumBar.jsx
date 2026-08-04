@@ -31,7 +31,7 @@ const SENSITIVITY_NORMAL = 0.5;
 const SENSITIVITY_FINE = 0.1;
 
 // ── Orb-DRAG vertical axis (Settings → Orb drag) ────────────────────────
-// Three modes, all of them owning the vertical axis of a drag; none of them
+// Four modes, all of them owning the vertical axis of a drag; none of them
 // touch the GRAB gesture, which keeps its volume drag (Dan, 2026-08-04).
 // Vertical no longer sets the dragged voice's level in any mode — that job
 // moved to the mixer console's faders.
@@ -44,6 +44,18 @@ const SENSITIVITY_FINE = 0.1;
 //                 precision (to the fine limit). One gesture covers both
 //                 reach and resolution; a `< 1x >` rate tag over the dragged
 //                 voice's Hz readout makes the invisible axis legible.
+//   'zoom'      — zoom-as-gain (Dan, 2026-08-04): the vertical axis drives
+//                 the VIEW SPAN instead of an invisible rate multiplier, and
+//                 the span already IS the drag gain (the px→log conversion in
+//                 handlePointerMove divides by it). Confirming a drag zooms
+//                 out a touch (breathing room + "the view is yours" signal);
+//                 raising the pointer zooms out further for coarse sweeps;
+//                 pulling below zooms in around the dragged voice until only
+//                 its neighborhood is visible. The rate needs no tag: the
+//                 ruler's tick density is the readout, and on-screen orb
+//                 motion stays proportional to finger motion at every tier.
+//                 Multi-voice GRAB moves keep the stock auto-framing — you
+//                 fine-tune one voice, you transport a chord.
 //
 // "Pull for precision" inverts the linear feel the way a video scrubber does:
 // the further the pointer is pulled AWAY from where it grabbed the orb
@@ -65,6 +77,70 @@ function scrubScale(dy) {
     if (d >= t.dist) scale = t.scale;
   }
   return scale;
+}
+
+// ── 'zoom' mode ─────────────────────────────────────────────────────────
+// Span multipliers relative to the range CAPTURED AT DRAG-CONFIRM (so
+// whatever framing — or, on iOS, manual pinch — you start from is the 1x
+// baseline). Discrete tiers rather than a continuous curve for the same
+// reason as SCRUB_TIERS: a resolution you can find again and hold, and a
+// ruler that re-scales in legible steps instead of breathing with every
+// vertical wobble; ZOOM_TAU_MS eases each step. Depths are fractions of the
+// pull direction's own viewport headroom (the ios ramp's normalization —
+// the orb row sits near the screen bottom, so raw px would starve one side).
+const ZOOM_GRAB_BREATHE = 1.15;  // the immediate zoom-out on drag-confirm
+const ZOOM_TRAVEL = 0.75;        // full tier reached at 75% of the headroom
+const ZOOM_TIERS_UP = [          // raise the pointer → coarse, view widens
+  [0.15, 2],
+  [0.5, 4],
+];
+const ZOOM_TIERS_DOWN = [        // pull below → fine, view closes in
+  [0.12, 0.5],
+  [0.35, 0.2],
+  [0.65, 0.075],
+];
+// Hard floor on the zoomed-in span (log2 units): ~2.4 semitones around the
+// dragged voice — "only the frequencies near the one moving". Also the
+// effective fine limit: gain can't drop below MIN_ZOOM_SPAN / grabSpan.
+const MIN_ZOOM_SPAN = 0.2;
+
+function zoomSpanMult(pointerY, startY, viewportH) {
+  const below = pointerY >= startY;
+  const tiers = below ? ZOOM_TIERS_DOWN : ZOOM_TIERS_UP;
+  const headroom = below ? viewportH - startY : startY;
+  if (!(headroom > 0)) return ZOOM_GRAB_BREATHE;
+  const depth = Math.abs(pointerY - startY) / (headroom * ZOOM_TRAVEL);
+  let mult = ZOOM_GRAB_BREATHE;
+  for (const [d, m] of tiers) {
+    if (depth >= d) mult = m;
+  }
+  return mult;
+}
+
+// Target range for an active zoom-mode drag: the tier span, centered on the
+// dragged voice so the view travels WITH it (the voice holds mid-screen and
+// the ruler streams underneath), clamped by shifting at the absolute ends so
+// the span survives to the edge. Centering is also what makes deep zoom read
+// as "the neighborhood of this voice" rather than a lopsided window.
+function zoomDragTarget(drag) {
+  const f = audioEngine.getFrequency(drag.index);
+  const absSpan = ABSOLUTE_LOG_MAX - ABSOLUTE_LOG_MIN;
+  const grabSpan = drag.grabSpan || absSpan;
+  const span = Math.max(
+    MIN_ZOOM_SPAN,
+    Math.min(absSpan, grabSpan * (drag.spanMult ?? ZOOM_GRAB_BREATHE))
+  );
+  let logMin = Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, f))) - span / 2;
+  let logMax = logMin + span;
+  if (logMin < ABSOLUTE_LOG_MIN) {
+    logMax += ABSOLUTE_LOG_MIN - logMin;
+    logMin = ABSOLUTE_LOG_MIN;
+  }
+  if (logMax > ABSOLUTE_LOG_MAX) {
+    logMin = Math.max(ABSOLUTE_LOG_MIN, logMin - (logMax - ABSOLUTE_LOG_MAX));
+    logMax = ABSOLUTE_LOG_MAX;
+  }
+  return { logMin, logMax };
 }
 
 // `< 1x >` rate-tag visibility. OFF for now (Dan, 2026-08-04 late — a
@@ -1392,7 +1468,8 @@ const HZ_FLOAT_GAP = 6;
 function FrequencySpectrumBar({
   oscillatorCount = 4,
   fineTuneEnabled = false,
-  // 'linear' | 'precision' | 'ios' — see the Orb-DRAG vertical axis notes up top.
+  // 'linear' | 'precision' | 'ios' | 'zoom' — see the Orb-DRAG vertical axis
+  // notes up top.
   orbDragMode = 'linear',
   onActiveChange,
   extraActive,
@@ -2224,7 +2301,20 @@ function FrequencySpectrumBar({
             // line is on screen for as long as it exists.
             const noteVoices = noteVoicesRef.current;
             if (noteVoices.length) framed = framed.concat(noteVoices.map((n) => n.hz));
-            const target = computeTargetRange(framed);
+            // Range ownership: a confirmed zoom-mode drag owns the frame —
+            // its tier span, centered on the dragged voice — and the stock
+            // voice-framing yields until release. With two simultaneous
+            // zoom drags the first-started one steers (insertion order);
+            // both still tune fine, sharing whatever span it sets. GRAB
+            // moves (multi-voice transport) never take ownership.
+            let zoomTarget = null;
+            if (orbDragModeRef.current === 'zoom') {
+              for (const pid in dragRef.current) {
+                const d = dragRef.current[pid];
+                if (d.didDrag) { zoomTarget = zoomDragTarget(d); break; }
+              }
+            }
+            const target = zoomTarget ?? computeTargetRange(framed);
             // Tails expire silently (no engine event) — keep re-evaluating
             // while a ceremony is playing so the zoom-in starts on its own
             // the moment the hop completes.
@@ -2501,6 +2591,12 @@ function FrequencySpectrumBar({
     const totalDy = e.clientY - drag.startY;
     if (!drag.didDrag && (totalDx * totalDx + totalDy * totalDy) > 4) {
       drag.didDrag = true;
+      // Zoom mode's 1x baseline: whatever span the view had when the drag
+      // became real. Captured here (not pointerdown) so a tap never disturbs
+      // the framing, and on iOS a manual pinch composes naturally — a
+      // pre-pinched-in view means precision is already bought and the tiers
+      // multiply from there.
+      drag.grabSpan = rangeRef.current.logMax - rangeRef.current.logMin;
       // Confirmed drag: unmute the orb regardless of suppressAutoUnmute
       // (i.e. even when the keyboard tray is up), but ONLY while the drone
       // bus is playing — a drag with drones paused shouldn't surprise-restart
@@ -2516,13 +2612,25 @@ function FrequencySpectrumBar({
       // Vertical travel from the grab sets the horizontal tuning rate: the
       // precision tiers, the iOS ramp, or nothing at all in linear mode.
       // Volume is never on this axis during a drag — the faders own it.
+      // Zoom mode applies NO multiplier here: it retargets the view span
+      // instead (the auto-zoom loop reads drag.spanMult), and the span is
+      // already a factor of the logDelta below — folding it in twice would
+      // square the gain.
       const mode = orbDragModeRef.current;
+      if (mode === 'zoom') {
+        drag.spanMult = zoomSpanMult(e.clientY, drag.startY, window.innerHeight);
+        // Vertical-only moves change the span target without any frequency
+        // event, so kick the demand-driven zoom loop ourselves.
+        wakeRef.current?.();
+      }
       const scrub = mode === 'precision'
         ? scrubScale(e.clientY - drag.startY)
         : mode === 'ios'
           ? scrubRatio(e.clientY, drag.startY)
           : 1;
-      drag.rate = scrub;   // read by the `< 1x >` tag over the Hz readout
+      // Read by the `< 1x >` tag over the Hz readout (and the edge arrow).
+      // In zoom mode the effective rate is the span tier itself.
+      drag.rate = mode === 'zoom' ? drag.spanMult : scrub;
       if (deltaX !== 0) {
         const sens = getSensitivity();
         const r = rangeRef.current;
@@ -2538,11 +2646,12 @@ function FrequencySpectrumBar({
       // Edge auto-pan rides the ramp too, but the ramp may only ever SLOW the
       // climb (iOS `min(1, edgePushRatio)`): unclamped, a pointer parked deep
       // below the orb makes the edge sweep lurch. The arrow drawn on the orb
-      // reads this value, so it visualizes the effective rate. Only the iOS
-      // mode does this — precision-mode tiers leave the sweep at full speed,
-      // as they shipped.
+      // reads this value, so it visualizes the effective rate. Zoom mode
+      // clamps by its tier for the same reason — at a fine tier the view is
+      // tight, and a full-rate sweep would tear across it. Precision-mode
+      // tiers leave the sweep at full speed, as they shipped.
       drag.edgeRate = computeEdgeRate(e.clientX)
-        * (mode === 'ios' ? Math.min(1, scrub) : 1);
+        * (mode === 'ios' || mode === 'zoom' ? Math.min(1, drag.rate ?? 1) : 1);
       // Edge-pan needs the auto-zoom loop alive even on frames where
       // setFrequency above didn't fire (e.g., orb already at FREQ_MIN/MAX).
       if (drag.edgeRate) wakeRef.current?.();
@@ -2600,19 +2709,35 @@ function FrequencySpectrumBar({
       toggleGrab(index);
     } else if (didDrag && !cancelled) {
       releaseAllGrabs();
-      // Snap range to target instead of letting it ease over ~58 frames.
-      // The post-release ease was causing 1s of re-renders, which on cold JIT
-      // reads as a UI freeze.
-      try {
-        const f = audioEngine.getAllFrequencies();
-        const base = f.slice(0, oscillatorCount);
-        const staged = frequencyManager.getStagedFrequencies();
-        const stagedActive = staged ? staged.slice(0, base.length) : null;
-        const target = computeTargetRange(stagedActive && stagedActive.length ? base.concat(stagedActive) : base);
-        rangeRef.current = target;
-        setRange(target);
-      } catch { /* no-op */ }
+      if (orbDragModeRef.current === 'zoom') {
+        // Zoom mode releases from a deliberately foreign span (maybe a
+        // 2.4-semitone close-up) — snapping that to the full frame in one
+        // commit is a visual cut, so let the demand-driven loop ease home
+        // instead (woken below; the drag record is already gone, so the
+        // loop reads the stock voice framing). The cold-JIT re-render
+        // concern behind the snap in the other branch was measured on
+        // near-target releases; the ease is the point here. Revisit if
+        // release-lag reappears.
+      } else {
+        // Snap range to target instead of letting it ease over ~58 frames.
+        // The post-release ease was causing 1s of re-renders, which on cold JIT
+        // reads as a UI freeze.
+        try {
+          const f = audioEngine.getAllFrequencies();
+          const base = f.slice(0, oscillatorCount);
+          const staged = frequencyManager.getStagedFrequencies();
+          const stagedActive = staged ? staged.slice(0, base.length) : null;
+          const target = computeTargetRange(stagedActive && stagedActive.length ? base.concat(stagedActive) : base);
+          rangeRef.current = target;
+          setRange(target);
+        } catch { /* no-op */ }
+      }
     }
+
+    // Any ended zoom-mode drag — released OR cancelled — must hand the frame
+    // back: no frequency event fires here, and the loop may be asleep at the
+    // drag's foreign span.
+    if (didDrag && orbDragModeRef.current === 'zoom') wakeRef.current?.();
 
     // A confirmed drag settles home: the .settling transition lands in the
     // same commit that hands the orb's position back to dotXs, so it eases

@@ -449,8 +449,18 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
   useEffect(() => {
     let raf;
     let lastRowSig = '';
-    const tick = () => {
+    let lastVoiceSig = '';
+    // 30 Hz cap — everything here is fader/meter state; the setters all
+    // short-circuit, so the residual cost is the per-tick engine reads +
+    // array/signature churn, which at 120 Hz rAF (ProMotion) quadruples
+    // for no visual difference.
+    const MIXER_MIN_MS = 1000 / 30 - 1.5;
+    let lastTs = 0;
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < MIXER_MIN_MS) return;
+      lastTs = now;
       if (!audioEngine.isInitialized) return;
       try {
         // Sounding (post-transpose) freqs: the mixer is the one place that
@@ -551,7 +561,16 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
             released: v.released,
           });
         }
-        setVoices(nextVoices);
+        // Signature-guarded like the rows above — an unconditional
+        // setVoices with a fresh array re-rendered the whole mixer
+        // subtree every frame, voices or no voices.
+        const voiceSig = nextVoices.map(v =>
+          `${v.id}:${Math.round(v.freq * 20)}:${Math.round(v.amp * 200)}:${v.released ? 1 : 0}`
+        ).join('|');
+        if (voiceSig !== lastVoiceSig) {
+          lastVoiceSig = voiceSig;
+          setVoices(nextVoices);
+        }
 
         // Bus + master fader live values. Cheap reads; the setters
         // short-circuit React updates when the value is unchanged so
@@ -582,7 +601,7 @@ function Mixer({ oscillatorCount, midiLearnOn = false }) {
         const { peakL: pL, peakR: pR } = audioEngine.getMasterPeakLevels();
         setPeakL(prev => Math.abs(prev - pL) > 0.001 ? pL : prev);
         setPeakR(prev => Math.abs(prev - pR) > 0.001 ? pR : prev);
-        const decay = 0.97; // ~1s to fall ~50% at 60fps
+        const decay = 0.941; // 0.97/frame at 60fps ≈ 0.941 at this loop's 30 Hz — same fall time
         setPeakHoldL(prev => {
           const next = Math.max(prev * decay, pL);
           return Math.abs(next - prev) > 0.001 ? next : prev;

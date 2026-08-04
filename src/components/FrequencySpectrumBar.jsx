@@ -328,11 +328,16 @@ const DISS_LINE_LIFT = 15;
 // The transpose-drag band (just the frequency-number strip) is part of the
 // mode-dependent geometry — see geometryFor().
 // Horizontal sampling stride in CSS px. 1 = one column (and one field
-// evaluation) per pixel: the finest fill, so the column bars line up tightly
-// under the smooth curve stroke. 2 halves the per-frame cost at the expense of
-// chunkier bars. This also sets the curve-level lookup resolution used by the
-// position lines (smaller = more bars computed = more CPU per frame).
-const DISS_CURVE_STEP = 1;
+// evaluation) per pixel: 1 is the finest fill, so the column bars line up
+// tightly under the smooth curve stroke. 2 halves the per-frame cost at the
+// expense of chunkier bars. This also sets the curve-level lookup resolution
+// used by the position lines (smaller = more bars computed = more CPU per
+// frame). At 2 with the fill hidden (DISS_SHOW_FILL=false, the default) only
+// the [0.25,0.5,0.25]-smoothed curve stroke is visible, so the coarser
+// sampling is imperceptible — and the field probe is the single largest
+// continuous CPU sink on mobile (cols × profile × background pairDissonance
+// calls, each two Math.exp, every frame).
+const DISS_CURVE_STEP = 2;
 // Peak exponent applied to the displayed level. Higher = sharper contrast (the
 // consonant peaks tower while moderate-roughness regions collapse toward the
 // baseline). Live-tunable via window.__dissPeak(pow).
@@ -1794,9 +1799,17 @@ function FrequencySpectrumBar({
     // The re-arm now lives in `finally` so a bad frame costs one frame, and
     // the first failure is reported instead of vanishing.
     let loggedDrawError = false;
+    // The field recompute (_buildBackground + _drawDissonanceCurve — the
+    // pairDissonance sweep across every curve column) is the most expensive
+    // continuously running CPU work in the app, and its output is temporally
+    // eased anyway, so it runs at half the loop rate. The cheap DOM updates
+    // below (position lines, stems, note lines) stay at full rate so drags
+    // track the finger without lag.
+    let fieldTick = 0;
     const drawFrame = () => {
+      fieldTick ^= 1;
       const c = dissCanvasRef.current;
-      if (c) {
+      if (c && fieldTick === 0) {
         // Assumed spectral profile (timbreProfiles) — DECOUPLED from the synth
         // so it's correct for MIDI-out and inharmonic timbres. All voices and
         // the probe share it for now. Read each frame so a live timbre swap
@@ -1857,7 +1870,19 @@ function FrequencySpectrumBar({
         }
       }
     };
-    const draw = () => {
+    // 60 fps cap: on ProMotion phones rAF fires at 120 Hz, doubling the
+    // HUD's per-frame cost for no visible gain (the field is eased and the
+    // stems track sub-frame anyway). 1.5 ms tolerance so real 60 Hz
+    // displays don't drop frames to timer jitter.
+    const FRAME_MIN_MS = 1000 / 60 - 1.5;
+    let lastTs = 0;
+    const draw = (ts) => {
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < FRAME_MIN_MS) {
+        raf = requestAnimationFrame(draw);
+        return;
+      }
+      lastTs = now;
       try {
         drawFrame();
       } catch (err) {
@@ -1889,7 +1914,37 @@ function FrequencySpectrumBar({
   useEffect(() => {
     const ACTIVE_THRESHOLD = 0.05; // env amp below this counts as silent
     let raf = null;
-    const tick = () => {
+    // Octave-bubble element lookup cache: label element → { '+1': el, … }.
+    // The loop previously ran `label.querySelector('[data-octave=…]')` for
+    // every bubble of every slot every frame (MAX_OCT × 2 sides × N slots =
+    // up to 120 live selector queries per frame). The bubbles are static
+    // children of the label, so one lookup per label lifetime suffices;
+    // the WeakMap drops entries automatically when labels unmount.
+    const bubbleCache = new WeakMap();
+    const bubblesFor = (label) => {
+      let map = bubbleCache.get(label);
+      if (!map) {
+        map = {};
+        for (const el of label.querySelectorAll('[data-octave]')) {
+          map[el.dataset.octave] = el;
+        }
+        bubbleCache.set(label, map);
+      }
+      return map;
+    };
+    // 30 Hz is plenty for this loop — everything it writes is a binary
+    // class / attribute state, not a tweened value, and running at rAF
+    // rate (120 Hz on ProMotion phones) just multiplies the per-frame
+    // getActiveVoices() allocation churn and DOM writes.
+    const GLOW_MIN_MS = 1000 / 30 - 1.5;
+    let lastTs = 0;
+    const tick = (ts) => {
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < GLOW_MIN_MS) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      lastTs = now;
       const voices = keyboardVoiceManager.getActiveVoices();
       // Pending note marks from the staged save's held-note diff — the
       // outline language: a HOLLOW dot/bubble marks an octave where a saved
@@ -1991,19 +2046,20 @@ function FrequencySpectrumBar({
               if (n > maxActive) maxActive = n;
             }
           }
+          const bubbles = bubblesFor(label);
           for (let n = 1; n <= MAX_OCT; n++) {
             const oct = sign * n;
             const sel = oct > 0 ? `+${oct}` : `${oct}`;
-            const el = label.querySelector(`[data-octave="${sel}"]`);
+            const el = bubbles[sel];
             if (!el) continue;
-            if (active[n])       el.dataset.state = 'on';
-            else if (n < maxActive) el.dataset.state = 'dim';
-            else                 el.dataset.state = '';
+            const nextState = active[n] ? 'on' : (n < maxActive ? 'dim' : '');
+            // Guard the writes — an unconditional dataset assignment dirties
+            // style on every bubble every tick even when nothing changed.
+            if (el.dataset.state !== nextState) el.dataset.state = nextState;
             // Pending on/off preview rides an independent attribute so it
             // composes with (never falsifies) the live state.
-            const p = pend ? pend.get(oct) : undefined;
-            if (p) el.dataset.pending = p;
-            else if (el.dataset.pending) el.dataset.pending = '';
+            const p = (pend ? pend.get(oct) : undefined) || '';
+            if ((el.dataset.pending || '') !== p) el.dataset.pending = p;
           }
         };
         updateSide(-1);
@@ -2052,9 +2108,26 @@ function FrequencySpectrumBar({
     // instant it's released, but its stem lives on through the release tail —
     // and a released voice's pitch is frozen, so the last value stays true.
     const nominalById = new Map();
-    const tick = () => {
-      const ratio = audioEngine.getTransposeRatio() || 1;
+    // 30 Hz cap — stem opacity follows the envelope smoothly at 30 Hz, and
+    // the loop otherwise allocates arrays + a signature string per tick
+    // (120 of them per second on ProMotion) even when nothing is playing.
+    const NOTE_MIN_MS = 1000 / 30 - 1.5;
+    let lastTs = 0;
+    const tick = (ts) => {
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < NOTE_MIN_MS) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      lastTs = now;
       const voices = keyboardVoiceManager.getActiveVoices();
+      // Idle fast path: nothing sounding and nothing displayed — skip the
+      // signature build and DOM walk entirely (the common at-rest state).
+      if (voices.length === 0 && sig === '' && nominalById.size === 0) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const ratio = audioEngine.getTransposeRatio() || 1;
       for (const h of keyboardVoiceManager.getHeldNotesLive()) nominalById.set(h.id, h.hz);
       const next = [];
       const logs = [];

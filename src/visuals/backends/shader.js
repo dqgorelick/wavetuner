@@ -26,6 +26,13 @@
 // three fixed presets and exposes no editor.
 export const supportsLiveCode = false;
 
+// The fixed presets never read window.audio, so the per-frame FFT
+// feature pipeline (updateAudioFeatures — a 3×4096-bin walk plus a
+// pairwise dissonance pass) can stay off while this backend renders.
+// The hydra backend sets this true because user sketches may reference
+// `audio.dissonance` etc. as callback uniforms.
+export const consumesAudioFeatures = false;
+
 export const DEFAULT_SKETCH_ID = 'builtin_chromatic';
 
 // Sketch metadata. Order matters — the panel renders them in this order.
@@ -240,9 +247,19 @@ function ensureTexStorage(w, h) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 }
 
+// 60 fps cap, matching the iOS renderer's default preferredFramesPerSecond.
+// On ProMotion phones rAF fires at 120 Hz; every extra frame costs a full
+// s0 canvas texture upload + a full-canvas fragment pass + a feedback
+// copy, for no visible gain on these soft feedback effects. The 1.5 ms
+// tolerance keeps genuine 60 Hz displays from dropping frames to jitter.
+const FRAME_MIN_MS = 1000 / 60 - 1.5;
+let lastFrameMs = 0;
+
 function render(timeMs) {
   if (!gl || !canvasRef) return;
   rafHandle = requestAnimationFrame(render);
+  if (timeMs - lastFrameMs < FRAME_MIN_MS) return;
+  lastFrameMs = timeMs;
 
   const w = canvasRef.width;
   const h = canvasRef.height;

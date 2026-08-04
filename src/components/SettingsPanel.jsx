@@ -498,7 +498,7 @@ export default function SettingsPanel({
       </div>
 
       <div className="settings-section settings-section-analyzer">
-        <DissonanceMeter />
+        <DissonanceMeter active={isOpen} />
       </div>
     </div>
   );

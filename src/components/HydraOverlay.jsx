@@ -21,7 +21,11 @@ const HydraOverlay = forwardRef(function HydraOverlay({ visible }, ref) {
       const parent = canvas.parentElement;
       if (!parent) return;
       const rect = parent.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
+      // Cap DPR at 2 (mirrors the scope canvas + the iOS "medium" render
+      // scale). The visuals are soft feedback/chromatic effects, so the
+      // extra pixels of DPR 3 are invisible — but they cost ~2.25× the
+      // fragment work AND ~2.25× the per-frame s0 texture upload.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       // Backing-store size at DPR, CSS-displayed at the rect size.
       const w = Math.max(1, Math.round(rect.width * dpr));
       const h = Math.max(1, Math.round(rect.height * dpr));

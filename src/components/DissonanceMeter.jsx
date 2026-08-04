@@ -20,7 +20,7 @@ function _updateMeter(fillRef, labelRef, lastRef, pct, labelText) {
   }
 }
 
-export default function DissonanceMeter() {
+export default function DissonanceMeter({ active = true }) {
   // Refs for each meter row's fill + label, plus last-displayed values
   // so we skip DOM text writes when unchanged.
   const refs = {
@@ -71,11 +71,16 @@ export default function DissonanceMeter() {
         Math.round(audioFeatures.aura * 100));
       raf = requestAnimationFrame(tick);
     };
+    // Only tick while the hosting panel is actually visible — the settings
+    // panel stays mounted (it slides, not unmounts), so without this gate
+    // eight style writes per frame run forever behind a closed panel. The
+    // meters snap to current values the moment the panel reopens.
+    if (!active) return undefined;
     raf = requestAnimationFrame(tick);
     return () => { if (raf) cancelAnimationFrame(raf); };
     // refs is a stable object of useRef calls — no deps needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [active]);
 
   return (
     <div className="dissonance-meter">

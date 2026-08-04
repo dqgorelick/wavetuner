@@ -25,13 +25,22 @@ function TransportRail({ isPaused = false, onPausedChange }) {
 
   useEffect(() => {
     let animationId;
-    const sync = () => {
+    // ~15 Hz poll — this loop derives one boolean ("any un-released
+    // voice?"), and getActiveVoices() allocates a fresh object per voice
+    // per call. Polling it at rAF rate (120 Hz on ProMotion) was pure
+    // GC churn; a ≤66 ms latency on a play-button gate is imperceptible.
+    const SYNC_MIN_MS = 1000 / 15 - 1.5;
+    let lastTs = 0;
+    const sync = (ts) => {
+      animationId = requestAnimationFrame(sync);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < SYNC_MIN_MS) return;
+      lastTs = now;
       if (audioEngine.initialized) {
         // Released voices (in their fade-out tail) don't count as playing.
         const playing = keyboardVoiceManager.getActiveVoices().some((v) => !v.released);
         setHasPlayedNotes((prev) => (prev === playing ? prev : playing));
       }
-      animationId = requestAnimationFrame(sync);
     };
     sync();
     return () => cancelAnimationFrame(animationId);

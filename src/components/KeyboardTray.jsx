@@ -294,6 +294,7 @@ export default function KeyboardTray({
           octaveCount={keyboardZoom}
           showKeyLabels={showKeyLabels}
           keyMode={kbdKeyMode}
+          active={isOpen}
         />
       </div>
       <div className="kbd-tray-right">

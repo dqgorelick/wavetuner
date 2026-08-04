@@ -4,16 +4,25 @@
  * Used independently for the drone pool (`droneStereo`) and keyboard
  * pool (`keyboardStereo`).
  *
- * mode = 'lr'      Hard L/R panning. Drones route per the engine's
- *                   routing map; keyboard voices inherit the slot's
- *                   L/R routing. Detune curve is ignored in this mode
- *                   — drones play clean tuning.
+ * DRONES are mode-blind (iOS parity, 2026-08-04): every drone always
+ * renders as a detuned primary/partner pair under the collapse-pan law,
+ * with the detune offset and the partner's gain narrowing with pan
+ * width. `mode` is then just a pan PRESET — selecting one batch-glides
+ * the per-voice pan dials to that preset's origins:
  *
- * mode = 'stereo'  Each drone is split into two oscillators: primary
- *                   plays base + curve[i]·detuneHz/2 → L, partner
- *                   plays base − curve[i]·detuneHz/2 → R. Keyboard
- *                   voices inherit the same per-slot detune amount
- *                   (single osc, panned center).
+ * mode = 'lr'      Alternating hard pans (even → L, odd → R) — the
+ *                   classic routing. At a hard pan the pair degenerates
+ *                   to one clean in-tune oscillator, so the preset
+ *                   sounds exactly like the old single-osc L/R mode.
+ *
+ * mode = 'stereo'  All pans centered: each slot's pair splits hard
+ *                   L/R, primary at base + curve[i]·detuneHz/2,
+ *                   partner at base − curve[i]·detuneHz/2.
+ *
+ * KEYBOARD/MIDI voices still gate on the mode (single osc + panner in
+ * 'lr', dual-osc merger in 'stereo') — their mode-blind rework is a
+ * separate follow-up. That's why `detuneHzAt` keeps the mode gate while
+ * the drone engine reads `nominalDetuneHzAt`.
  *
  * detuneHz         Master scale in Hz. PINNED at MAX_DETUNE_HZ since
  *                   2026-08-04 — the ceiling slider is gone and the
@@ -107,36 +116,27 @@ export function smoothRandomCurve(n) {
 }
 
 /**
- * Channel weights for one drone voice under the collapse-pan model.
+ * Channel weights for one drone voice under the collapse-pan model —
+ * the single pan law since the drone engine went mode-blind.
  * `pan` ∈ [−1, +1] is the per-voice dial; returns [L, R] weight pairs
  * for the primary and partner oscillators.
  *
- * In 'stereo' mode the pair starts split (primary hard L, partner hard
- * R) and the dial slides BOTH oscillators toward the pan side with an
- * equal-power law over the moving half, so every detent reproduces the
- * pre-pan graph exactly: center → [1,0]/[0,1] (classic split), full
- * R → [0,1]/[0,1] (pair collapsed right), full L mirrored.
- *
- * In 'lr' mode there is one audible oscillator and the dial is a
- * balance knob: the on-side stays at 1 while the opposite side
- * attenuates, so center reproduces the legacy ⊙ "both" state ([1,1])
- * and the extremes reproduce hard L/R. Partner weights are parked at
- * [0,1] (its gain is 0 in lr; parked-on-R matches the legacy wiring so
- * a mode flip only has to ramp gains, not re-place the image).
+ * The pair starts split (primary hard L, partner hard R) and the dial
+ * slides BOTH oscillators toward the pan side with an equal-power law
+ * over the moving half, so every detent reproduces the pre-pan graph
+ * exactly: center → [1,0]/[0,1] (classic split), full R → [0,1]/[0,1]
+ * (pair collapsed right), full L mirrored. At the extremes the partner
+ * has faded to 0 (see panWidth), so a hard pan is bit-identical to the
+ * old single-osc 'lr' routing. The old lr balance law (center = mono
+ * [1,1] "⊙ both") is gone with the mode gate — center is the split.
  */
-export function dronePanWeights(pan, mode) {
+export function dronePanWeights(pan) {
   const p = Math.max(-1, Math.min(1, pan || 0));
   const q = Math.max(0, p) * (Math.PI / 2);   // rightward dial travel
   const r = Math.max(0, -p) * (Math.PI / 2);  // leftward dial travel
-  if (mode === 'stereo') {
-    return {
-      primary: [Math.cos(q), Math.sin(q)],
-      partner: [Math.sin(r), Math.cos(r)],
-    };
-  }
   return {
-    primary: [Math.cos(q), Math.cos(r)],
-    partner: [0, 1],
+    primary: [Math.cos(q), Math.sin(q)],
+    partner: [Math.sin(r), Math.cos(r)],
   };
 }
 
@@ -250,9 +250,20 @@ class StereoMode {
   }
 
   /** Final detune (Hz) for slot i, applying the curve × master scale.
-   *  Returns 0 in lr mode — caller doesn't have to branch on mode. */
+   *  Returns 0 in lr mode — the KEYBOARD/MIDI pools still gate their
+   *  detune on the mode (and their lr voices would apply the FULL
+   *  offset, not the half-spread — see KeyboardVoiceManager
+   *  _reapplyVoiceDetune). The mode-blind drone engine must NOT use
+   *  this — it reads nominalDetuneHzAt. */
   detuneHzAt(i) {
     if (this.mode !== 'stereo') return 0;
+    return (this.detuneCurve[i] || 0) * this.detuneHz;
+  }
+
+  /** Curve × master scale for slot i in EVERY mode — the mode-blind
+   *  read (iOS `detuneHzAt`). The drone engine narrows this by pan
+   *  width per voice, so it fades to 0 at a hard pan on its own. */
+  nominalDetuneHzAt(i) {
     return (this.detuneCurve[i] || 0) * this.detuneHz;
   }
 

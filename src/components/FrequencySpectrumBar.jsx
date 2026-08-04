@@ -1270,20 +1270,9 @@ function renderEdgeArrow(key, x, y, edgeRate, color) {
   );
 }
 
-// Compact arrangement of N ghost circles around a cursor: 1 center, 2 horizontal,
-// 3+ regular polygon at radius R. Total extent stays ≤ 2R + DOT_SIZE.
-const GHOST_RING_RADIUS = 7;
-function ghostOffset(i, total) {
-  if (total <= 1) return { dx: 0, dy: 0 };
-  if (total === 2) {
-    return { dx: (i === 0 ? -1 : 1) * GHOST_RING_RADIUS, dy: 0 };
-  }
-  const angle = -Math.PI / 2 + (2 * Math.PI * i) / total;
-  return {
-    dx: GHOST_RING_RADIUS * Math.cos(angle),
-    dy: GHOST_RING_RADIUS * Math.sin(angle),
-  };
-}
+// (ghostOffset — the fan ring that arranged N grab ghosts around one cursor —
+// retired 2026-08-04 with the anchor+delta grab: each held orb keeps its own
+// resting spacing and moves by the cursor's travel, so nothing stacks.)
 
 // Shrink a line segment so each endpoint lies on the circumference of a circle
 // centered at the original endpoint, rather than the center. If the circles
@@ -1457,6 +1446,18 @@ function FrequencySpectrumBar({
   const [settlingDots, setSettlingDots] = useState(() => new Set());
   const settleTimersRef = useRef(new Map()); // index → timeout id
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
+  // Per-grabbed-orb anchor, all in container coords: where the orb was placed
+  // when the gesture took hold (ax, ay) and where the cursor was at that
+  // moment (sx, sy). The orb renders at anchor + (cursor − start), the same
+  // rule `dragRef` carries for a pointer drag; only the anchor differs — a
+  // drag anchors on the ORB (the finger is already on it), a grab anchors on
+  // the CURSOR at grab time (Dan, 2026-08-04: the orb meets the mouse the
+  // moment the number is pressed, no motion required, no formation offset —
+  // so ax==sx and every grabbed orb sits exactly ON the cursor). Absent =
+  // grabbed before the cursor was ever seen; the pointermove handler anchors
+  // it on the first move instead.
+  const [grabAnchors, setGrabAnchors] = useState({});
+  const grabAnchorsRef = useRef(grabAnchors);
   const [range, setRange] = useState({ logMin: ABSOLUTE_LOG_MIN, logMax: ABSOLUTE_LOG_MAX });
   const [shiftHeld, setShiftHeld] = useState(false);
   // Global transpose (semitones) — mirrored from the engine so the moving
@@ -1526,14 +1527,15 @@ function FrequencySpectrumBar({
     // Detune flash: curve edits ('curve', with the slot index when a
     // single node/panel slider is dragged). The old 'detune' kind is
     // gone with the master ceiling slider. Structural curve events (slot
-    // add/remove) stay silent, and lr mode shows nothing — the curve is
-    // inert there, so flashing an all-zero spread would read as broken
-    // rather than informative.
+    // add/remove) stay silent. Mode-blind engine: the effective spread
+    // is the nominal curve narrowed by each voice's pan width, so
+    // hard-panned voices (the L/R preset's origin) show 0 — the
+    // statusReadoutShown suppression below keeps those quiet.
     const offDetune = droneStereo.onChange((sm, info) => {
-      if (!info || info.structural || sm.mode !== 'stereo') return;
+      if (!info || info.structural) return;
       if (info.kind !== 'curve') return;
       const values = audioEngine.getVoicePans()
-        .map((pan, i) => sm.detuneHzAt(i) * panWidth(pan));
+        .map((pan, i) => sm.nominalDetuneHzAt(i) * panWidth(pan));
       show('detune', values, info.index ?? 'all');
     });
     return () => {
@@ -1734,7 +1736,7 @@ function FrequencySpectrumBar({
   };
   const lastGrabXRef = useRef(null); // tracks cursor X between grab-driven frames
   const lastGrabYRef = useRef(null); // tracks cursor Y between grab-driven frames (volume)
-  const mousePosRef = useRef({ x: 0, y: 0 }); // latest client-space cursor, always tracked
+  const mousePosRef = useRef(null); // latest client-space cursor; null until the first pointermove
   const grabEdgeRateRef = useRef(0); // octaves/sec drift for grabbed oscs, set from cursor X
   const lastEdgePanTimeRef = useRef(null); // performance.now() of previous edge-pan tick
   // Auto-zoom loop is demand-driven; pointer handlers that enter the
@@ -1772,6 +1774,7 @@ function FrequencySpectrumBar({
 
   useEffect(() => { barWidthRef.current = barWidth; }, [barWidth]);
   useEffect(() => { grabbedRef.current = grabbedOscs; }, [grabbedOscs]);
+  useEffect(() => { grabAnchorsRef.current = grabAnchors; }, [grabAnchors]);
   useEffect(() => { draggingRef.current = draggingDots; }, [draggingDots]);
   useEffect(() => { fineTuneRef.current = fineTuneEnabled; }, [fineTuneEnabled]);
   useEffect(() => { orbDragModeRef.current = orbDragMode; }, [orbDragMode]);
@@ -2306,11 +2309,14 @@ function FrequencySpectrumBar({
   // Confirmed drags sit out of the collision pass (a finger-held orb neither
   // shoves nor is shoved — iOS parity). Derived from dragOrbs' confirmed flag
   // rather than draggingDots so a mere tap-in-progress never reshuffles the row.
+  // Grabbed orbs are out for the same reason: they're on the cursor, not in the
+  // row, so their resting x has nothing to shove.
   const collisionExcluded = useMemo(() => {
     const s = new Set();
     for (const g of Object.values(dragOrbs)) if (g.confirmed) s.add(g.index);
+    for (const i of grabbedOscs) s.add(i);
     return s;
-  }, [dragOrbs]);
+  }, [dragOrbs, grabbedOscs]);
   const dotXs = useMemo(
     () => resolveCollisions(freqXs, DOT_SIZE, collisionExcluded),
     [freqXs, collisionExcluded]
@@ -2322,8 +2328,45 @@ function FrequencySpectrumBar({
     for (const g of Object.values(dragOrbs)) m.set(g.index, g);
     return m;
   }, [dragOrbs]);
+  // GRAB moves the real orbs too (Dan, 2026-08-04): a grab is a drag that keeps
+  // going after the button comes up, so the orbs it holds obey every rule a
+  // dragged orb does — above all the above-the-curve handoff.
+  //
+  // ONE positioning model for both gestures (Dan, 2026-08-04 late): anchor +
+  // total pointer delta, exactly like `handlePointerMove`. For a grab the
+  // anchor IS the cursor at grab time (ax==sx), so every grabbed orb sits
+  // exactly on the cursor — instantly, un-animated (an ease toward an
+  // already-stale cursor made fast grab-toggle-plus-move miss the mark), and
+  // stacked when several are held (Dan, 2026-08-04: the orb meets the mouse,
+  // not a formation around it).
+  const grabPosByIndex = useMemo(() => {
+    const m = new Map();
+    if (!grabCursor) return m;
+    for (const idx of grabbedOscs) {
+      const a = grabAnchors[idx];
+      if (!a) continue;   // grabbed before any cursor was seen; stays home
+      m.set(idx, {
+        index: idx,
+        x: a.ax + (grabCursor.x - a.sx),
+        y: a.ay + (grabCursor.y - a.sy),
+        edgeRate: grabCursor.edgeRate || 0,
+        confirmed: true,
+        grabbed: true,
+      });
+    }
+    return m;
+  }, [grabCursor, grabbedOscs, grabAnchors]);
+  // Union of both — what every renderer that positions an orb (and the chrome
+  // riding it: label, selection ring, pan dot, stem, readout) reads. A pointer
+  // drag wins if an orb is somehow in both.
+  const orbPosByIndex = useMemo(() => {
+    if (grabPosByIndex.size === 0) return dragPosByIndex;
+    const m = new Map(grabPosByIndex);
+    for (const [i, g] of dragPosByIndex) m.set(i, g);
+    return m;
+  }, [dragPosByIndex, grabPosByIndex]);
   useEffect(() => { dotXsRef.current = dotXs; freqXsRef.current = freqXs; }, [dotXs, freqXs]);
-  useEffect(() => { dragPosRef.current = dragPosByIndex; }, [dragPosByIndex]);
+  useEffect(() => { dragPosRef.current = orbPosByIndex; }, [orbPosByIndex]);
   // Any orb under a finger (or held by a keyboard grab) — the whole readout
   // strip's on/off switch, iOS's `dragReadout`.
   const hzStripShown = draggingDots.size > 0 || grabbedOscs.size > 0;
@@ -2447,6 +2490,57 @@ function FrequencySpectrumBar({
     for (const t of settleTimersRef.current.values()) clearTimeout(t);
   }, []);
 
+  // Above-the-bar crossing (flipped layout, iOS parity) — the ONE rule both
+  // gestures run, so a grab hands its readout off exactly where a drag does
+  // (Dan, 2026-08-04). ±3px hysteresis on the orb's center against the TOP OF
+  // THE CONSONANCE CURVE under the orb — not the bar's bottom edge, which
+  // flipped the readout the moment the orb left its rest row, ~36px before it
+  // had cleared anything. The orb has to rise past the graph line it's sitting
+  // under; that's also where the position-line stem locks to the indicator's
+  // tip, so the readout hands off from the frequency to the orb in one motion.
+  // Purely visual — tuning math is untouched. Reads only setters and module
+  // helpers, so it's safe to capture in the mount-time grab handler.
+  const updateOrbAbove = (index, x, y) => {
+    const crossY = _curveSurfaceAtX(x);
+    if (y < crossY - 3) {
+      setOrbsAbove((prev) => {
+        if (prev.has(index)) return prev;
+        const next = new Set(prev);
+        next.add(index);
+        return next;
+      });
+    } else if (y > crossY + 3) {
+      setOrbsAbove((prev) => {
+        if (!prev.has(index)) return prev;
+        const next = new Set(prev);
+        next.delete(index);
+        return next;
+      });
+    }
+  };
+  const clearOrbsAbove = (indices) => {
+    setOrbsAbove((prev) => {
+      let next = null;
+      for (const i of indices) {
+        if (!prev.has(i)) continue;
+        next = next || new Set(prev);
+        next.delete(i);
+      }
+      return next || prev;
+    });
+  };
+
+  // Grabbed orbs run that same test off the positions they're RENDERED at —
+  // an effect rather than a line in the pointermove handler, because a
+  // keyboard grab (1-9) seeds the cursor with no pointer motion at all and
+  // still has to hand its readout off. Each held orb is tested at its own spot
+  // on the fan ring. Costs nothing on frames where nothing crosses:
+  // updateOrbAbove returns the identical set and React bails out.
+  useEffect(() => {
+    if (!geo.flipped || grabPosByIndex.size === 0) return;
+    for (const [idx, p] of grabPosByIndex) updateOrbAbove(idx, p.x, p.y);
+  }, [geo.flipped, grabPosByIndex]);
+
   const handlePointerDown = (e, index) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2554,32 +2648,8 @@ function FrequencySpectrumBar({
     // stationary finger doesn't drift the orb.
     const x = drag.anchorX + (e.clientX - drag.startX);
     const y = drag.anchorY + (e.clientY - drag.startY);
-    // Above-the-bar crossing (flipped layout, iOS parity): ±3px hysteresis
-    // on the orb's center against the TOP OF THE CONSONANCE CURVE under the
-    // orb (Dan, 2026-08-04) — not the bar's bottom edge, which flipped the
-    // readout the moment the orb left its rest row, ~36px before it had
-    // cleared anything. The orb has to rise past the graph line it's
-    // sitting under; that's also where the position-line stem locks to the
-    // indicator's tip, so the readout hands off from the frequency to the
-    // orb in one motion. Purely visual — tuning math is untouched.
-    if (geo.flipped && drag.didDrag) {
-      const crossY = _curveSurfaceAtX(x);
-      if (y < crossY - 3) {
-        setOrbsAbove((prev) => {
-          if (prev.has(drag.index)) return prev;
-          const next = new Set(prev);
-          next.add(drag.index);
-          return next;
-        });
-      } else if (y > crossY + 3) {
-        setOrbsAbove((prev) => {
-          if (!prev.has(drag.index)) return prev;
-          const next = new Set(prev);
-          next.delete(drag.index);
-          return next;
-        });
-      }
-    }
+    // Above-the-bar crossing — see updateOrbAbove.
+    if (geo.flipped && drag.didDrag) updateOrbAbove(drag.index, x, y);
     setDragOrbs((prev) => ({
       ...prev,
       [e.pointerId]: {
@@ -2651,13 +2721,34 @@ function FrequencySpectrumBar({
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const rate = computeEdgeRate(e.clientX);
-      setGrabCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top, edgeRate: rate });
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      setGrabCursor({ x: cx, y: cy, edgeRate: rate });
       grabEdgeRateRef.current = rate;
       // Wake the auto-zoom rAF when entering edge-pan from a static cursor
       // (cursor moved into the edge zone without dragging an orb, so the
       // setFrequency path below may not fire on this event).
       if (rate) wakeRef.current?.();
 
+      // Anchoring normally happens at grab time (the grab-set effect below);
+      // this is the fallback for a voice grabbed before the cursor was ever
+      // seen (mousePosRef still null) — it jumps straight onto the cursor at
+      // the first move. Write-through the ref NOW, not just via the
+      // state-sync effect: pointermove outruns React's re-render, and a
+      // second move arriving before the sync would re-anchor the orb.
+      const pending = [];
+      for (const idx of grabbedRef.current) if (!grabAnchorsRef.current[idx]) pending.push(idx);
+      if (pending.length) {
+        const additions = {};
+        for (const idx of pending) additions[idx] = { ax: cx, ay: cy, sx: cx, sy: cy };
+        grabAnchorsRef.current = { ...grabAnchorsRef.current, ...additions };
+        setGrabAnchors((prev) => ({ ...prev, ...additions }));
+      }
+
+      // First motion of a grab only moves the orbs there — the jump itself is
+      // never a tuning gesture (Dan). `lastGrabX/Y` are nulled whenever the
+      // grab set changes, so pitch and volume start accumulating on the NEXT
+      // event, from where the cursor is now.
       if (lastGrabXRef.current === null) {
         lastGrabXRef.current = e.clientX;
         lastGrabYRef.current = e.clientY;
@@ -2698,27 +2789,69 @@ function FrequencySpectrumBar({
     return () => document.removeEventListener('pointermove', onPointerMove);
   }, []);
 
-  // On transitions in the grab set: reset anchors on N→0, seed ghost on 0→N
-  // so the ghost is visible immediately after a keyboard grab (even without mouse motion).
+  // Grab set transitions. JOINING anchors the orb on the CURSOR right away
+  // (Dan, 2026-08-04: pressing the number brings the orb to the mouse — no
+  // waiting for motion, no ease chasing a stale cursor; the jump is instant,
+  // so any in-flight release settle is cancelled first, exactly like a drag's
+  // pointerdown does). LEAVING settles the orb home on the same .settling
+  // ease a drag release uses (the only animation either gesture has) and
+  // drops it out of orbsAbove, whose readout and stem derive from a position
+  // it no longer has (iOS clears that set unconditionally on release).
+  const prevGrabbedRef = useRef(new Set());
   useEffect(() => {
+    const prev = prevGrabbedRef.current;
+    prevGrabbedRef.current = new Set(grabbedOscs);
+    const removed = [...prev].filter((i) => !grabbedOscs.has(i));
+    if (removed.length) {
+      beginSettle(removed);
+      clearOrbsAbove(removed);
+      const next = { ...grabAnchorsRef.current };
+      for (const i of removed) delete next[i];
+      grabAnchorsRef.current = next;
+      setGrabAnchors((p) => {
+        const pruned = { ...p };
+        for (const i of removed) delete pruned[i];
+        return pruned;
+      });
+    }
+    const added = [...grabbedOscs].filter((i) => !prev.has(i));
+    if (added.length) {
+      for (const i of added) cancelSettle(i);
+      const rect = containerRef.current?.getBoundingClientRect();
+      const mouse = mousePosRef.current;
+      // No cursor seen yet → leave the orb unanchored (it stays home); the
+      // pointermove fallback jumps it onto the cursor at the first move.
+      if (rect && mouse) {
+        const cx = mouse.x - rect.left;
+        const cy = mouse.y - rect.top;
+        const additions = {};
+        for (const i of added) additions[i] = { ax: cx, ay: cy, sx: cx, sy: cy };
+        grabAnchorsRef.current = { ...grabAnchorsRef.current, ...additions };
+        setGrabAnchors((p) => ({ ...p, ...additions }));
+      }
+    }
+  }, [grabbedOscs]);
+
+  // Any change to the grab set drops the tuning reference, so the next
+  // pointermove is spent on the JUMP alone and pitch/volume start accumulating
+  // from wherever the cursor is then — grabbing a voice never nudges what it's
+  // already holding. Also seeds `grabCursor` from the last known mouse spot so
+  // the orbs (anchored at grab time) render on the cursor before it moves.
+  useEffect(() => {
+    lastGrabXRef.current = null;
+    lastGrabYRef.current = null;
     if (grabbedOscs.size === 0) {
       setGrabCursor(null);
-      lastGrabXRef.current = null;
-      lastGrabYRef.current = null;
       grabEdgeRateRef.current = 0;
       return;
     }
-    if (lastGrabXRef.current === null) {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (rect) {
-        setGrabCursor({
-          x: mousePosRef.current.x - rect.left,
-          y: mousePosRef.current.y - rect.top,
-          edgeRate: 0,
-        });
-      }
-      lastGrabXRef.current = mousePosRef.current.x;
-      lastGrabYRef.current = mousePosRef.current.y;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect && mousePosRef.current) {
+      setGrabCursor({
+        x: mousePosRef.current.x - rect.left,
+        y: mousePosRef.current.y - rect.top,
+        edgeRate: 0,
+      });
     }
   }, [grabbedOscs]);
 
@@ -2950,7 +3083,16 @@ function FrequencySpectrumBar({
           <div className="fsb-edge-zone-line fsb-edge-zone-line-right" aria-hidden="true" />
         </>
       )}
-      <div className="fsb-row" style={{ height: geo.totalHeight }}>
+      {/* gesture-live hoists the whole row's stacking context above every
+          menu/panel while an orb is under a finger, held by a grab, or still
+          settling home — a dragged orb must never disappear under the console,
+          knob band, or an open side-menu column (Dan, 2026-08-04). Scoped to
+          the gesture so the at-rest rules (side menu covers the orb row,
+          settings panel over everything) keep their existing stacking. */}
+      <div
+        className={`fsb-row${draggingDots.size > 0 || grabbedOscs.size > 0 || settlingDots.size > 0 ? ' gesture-live' : ''}`}
+        style={{ height: geo.totalHeight }}
+      >
       <div className="fsb-side fsb-side-left" style={{ marginBottom: geo.sideMarginBottom }}>
         {/* DEBUG: overall consonance (0–100) from audioFeatures.consonance —
             the FFT-measured Sethares value, so it reflects the full mix
@@ -3016,9 +3158,7 @@ function FrequencySpectrumBar({
 
       {(() => {
         const homeY = geo.dotCenterY;
-        const homeR = DOT_SIZE / 2;
         const ghostYOffset = 0;
-        const ghostR = DOT_SIZE / 2;
         return (
           <svg className="fsb-lines" width="100%" height={geo.totalHeight} style={{ overflow: 'visible' }}>
             {/* Occlusion mask: white shows, black hides. Black discs at every
@@ -3349,32 +3489,9 @@ function FrequencySpectrumBar({
               })}
               </g>
             )}
-            {/* No drag tether: the real orb rides the pointer (iOS parity),
-                and its position line above doubles as the stem back to the
-                true frequency x. Grab mode below keeps its cursor tethers. */}
-            {grabCursor &&
-              Array.from(grabbedOscs).map((idx, i, arr) => {
-                const color = palette.oscColor(idx, oscillatorCount);
-                const { dx, dy } = ghostOffset(i, arr.length);
-                const seg = offsetLine(
-                  dotXs[idx], homeY,
-                  grabCursor.x + dx, grabCursor.y + dy + ghostYOffset,
-                  homeR, ghostR
-                );
-                if (!seg) return null;
-                return (
-                  <line
-                    key={`grab-${idx}`}
-                    x1={seg.x1}
-                    y1={seg.y1}
-                    x2={seg.x2}
-                    y2={seg.y2}
-                    stroke={color}
-                    strokeOpacity={0.5}
-                    strokeWidth={1}
-                  />
-                );
-              })}
+            {/* No tether in either gesture: the real orb rides the pointer
+                (iOS parity), and its position line above doubles as the stem
+                back to the true frequency x. */}
             {Object.entries(dragOrbs).map(([pid, g]) =>
               renderEdgeArrow(
                 `drag-arrow-${pid}`,
@@ -3384,17 +3501,18 @@ function FrequencySpectrumBar({
                 palette.oscColor(g.index, oscillatorCount)
               )
             )}
-            {grabCursor &&
-              Array.from(grabbedOscs).map((idx, i, arr) => {
-                const { dx, dy } = ghostOffset(i, arr.length);
-                return renderEdgeArrow(
-                  `grab-arrow-${idx}`,
-                  grabCursor.x + dx,
-                  grabCursor.y + dy + ghostYOffset,
-                  grabCursor.edgeRate,
-                  palette.oscColor(idx, oscillatorCount)
-                );
-              })}
+            {/* Grabbed orbs get the same arrow beside wherever each one now
+                sits — one per orb, not one per cursor, since they no longer
+                stack at a single point. */}
+            {[...grabPosByIndex.values()].map((g) =>
+              renderEdgeArrow(
+                `grab-arrow-${g.index}`,
+                g.x,
+                g.y + ghostYOffset,
+                g.edgeRate,
+                palette.oscColor(g.index, oscillatorCount)
+              )
+            )}
           </svg>
         );
       })()}
@@ -3409,10 +3527,10 @@ function FrequencySpectrumBar({
         // the drag ghost has — so the user can see which osc they're
         // affecting from another control.
         const isBoosted = !isDragging && !isGrabbed && extraActive?.has(i);
-        // While a pointer holds this orb it rides the finger directly (no
-        // ghost — iOS parity); on release the .settling transition eases it
-        // back onto its resolved dotXs spot.
-        const dragPos = dragPosByIndex.get(i);
+        // While a pointer holds this orb — or a grab does — it rides the
+        // cursor directly (no ghost, iOS parity); on release the .settling
+        // transition eases it back onto its resolved dotXs spot.
+        const dragPos = orbPosByIndex.get(i);
         const classes = ['fsb-dot'];
         if (muted[i]) classes.push('muted');
         if (isDragging) classes.push('dragging');
@@ -3453,10 +3571,10 @@ function FrequencySpectrumBar({
           drag/settle the way the pinned pan dot does. Exactly one is ever
           mounted — the CSS hover rule depends on that. */}
       {selectedVoice != null && selectedVoice >= 0 && selectedVoice < frequencies.length && (() => {
-        const dragPos = dragPosByIndex.get(selectedVoice);
+        const dragPos = orbPosByIndex.get(selectedVoice);
         return (
           <div
-            className={`fsb-sel-ring${grabbedOscs.has(selectedVoice) ? ' ghosted' : ''}${settlingDots.has(selectedVoice) ? ' settling' : ''}`}
+            className={`fsb-sel-ring${settlingDots.has(selectedVoice) ? ' settling' : ''}`}
             style={{
               left: dragPos ? dragPos.x : dotXs[selectedVoice],
               top: dragPos ? dragPos.y : geo.dotCenterY,
@@ -3494,9 +3612,9 @@ function FrequencySpectrumBar({
       {frequencies.map((f, i) => {
         const color = palette.oscColor(i, oscillatorCount);
         const isActive = !geo.flipped && (draggingDots.has(i) || grabbedOscs.has(i));
-        // The label rides the orb: at the finger during a drag, easing home
-        // with it during the release settle (same .settling transition).
-        const dragPos = dragPosByIndex.get(i);
+        // The label rides the orb: at the cursor during a drag or grab, easing
+        // home with it during the release settle (same .settling transition).
+        const dragPos = orbPosByIndex.get(i);
         const lx = dragPos ? dragPos.x : dotXs[i];
         const lyCenter = dragPos ? dragPos.y : geo.dotCenterY;
         // Orb pulled above the spectrum: the number would trail it up over the
@@ -3566,7 +3684,7 @@ function FrequencySpectrumBar({
           floating Hz label does. */}
       {geo.flipped && frequencies.map((f, i) => {
         if (!(draggingDots.has(i) || grabbedOscs.has(i))) return null;
-        const dragPos = dragPosByIndex.get(i);
+        const dragPos = orbPosByIndex.get(i);
         if (!dragPos || !orbsAbove.has(i)) return null;
         return (
           <div
@@ -3625,12 +3743,12 @@ function FrequencySpectrumBar({
           resolved spot, as it always has); while it's on, the flash hands
           this layer the pan dot so there's never a doubled indicator. */}
       {panDots && frequencies.map((_, i) => {
-        const dragPos = dragPosByIndex.get(i);
+        const dragPos = orbPosByIndex.get(i);
         const pan = Math.max(-1, Math.min(1, voicePans[i] ?? audioEngine.getVoicePan(i)));
         return (
           <div
             key={`pan-dot-${i}`}
-            className={`fsb-status pinned${geo.flipped ? ' flipped' : ''}${muted[i] ? ' muted' : ''}${dragPos ? ' dragging' : ''}${grabbedOscs.has(i) ? ' ghosted' : ''}${settlingDots.has(i) ? ' settling' : ''}`}
+            className={`fsb-status pinned${geo.flipped ? ' flipped' : ''}${muted[i] ? ' muted' : ''}${dragPos ? ' dragging' : ''}${settlingDots.has(i) ? ' settling' : ''}`}
             style={{
               left: dragPos ? dragPos.x : dotXs[i],
               top: dragPos ? dragPos.y : geo.dotCenterY,
@@ -3720,25 +3838,6 @@ function FrequencySpectrumBar({
           </div>
         );
       })}
-
-      {grabCursor &&
-        Array.from(grabbedOscs).map((idx, i, arr) => {
-          const color = palette.oscColor(idx, oscillatorCount);
-          const { dx, dy } = ghostOffset(i, arr.length);
-          return (
-            <div
-              key={`grab-ghost-${idx}`}
-              className="fsb-ghost"
-              style={{
-                left: grabCursor.x - DOT_SIZE / 2 + dx,
-                top: grabCursor.y - DOT_SIZE / 2 + dy,
-                width: DOT_SIZE,
-                height: DOT_SIZE,
-                '--dot-color': color,
-              }}
-            />
-          );
-        })}
 
       {/* Transpose readout — iOS parity (transposeReadout in
           FrequencySpectrumBar.swift), parked at the bar's TOP-RIGHT in the

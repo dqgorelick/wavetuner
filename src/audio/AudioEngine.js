@@ -36,6 +36,55 @@ const TRANSPOSE_MAX_SEMITONES = 24;
 const TRANSPOSE_STORAGE_KEY = 'wavetuner.transposeSemitones';
 const TRANSPOSE_SNAP_KEY = 'wavetuner.transposeSnap';
 
+// Tape transport (paused time-dilation) tunables — ported from the iOS
+// engine's tape-transport section so the two scopes share one feel.
+export const TAPE = {
+  // Seconds for the HIGHEST sounding drone to complete one cycle at full
+  // crawl. Frequency ratios are preserved (that's what keeps the scope
+  // tracing the true figure); only absolute speed dilates. Normalizing
+  // to the fastest voice bounds the crawl regardless of voice spread.
+  baseCycleSeconds: 8.0,
+  // Gesture durations (iOS TapeStopPitch defaults): spin-down under the
+  // pause fade, spin-up under the resume fade-in.
+  rampOffSeconds: 1.65,
+  rampOnSeconds: 0.75,
+  // End-rate of the gesture S-curve, in multiples of the linear average.
+  // Both directions run the SAME symmetric curve — morph =
+  // k·u + (1−k)·smoothstep(u) — fast at both extremes and slow through
+  // the middle. Since speed = crawl^morph, morph is log-frequency, and
+  // the middle morphs are where the slow-down actually reads; the
+  // extremes are dead zones (near real speed the motion is a blur, near
+  // the crawl it looks static). Must stay < 3 (mid-curve rate is
+  // 1.5 − k/2, which hits 0 at 3).
+  easeEndRate: 2.2,
+  // Speed wander at full crawl: ±35% at ~1/14 Hz — the fairy's float
+  // feel. Scales with the morph, so it's absent at real speed.
+  wanderDepth: 0.35,
+  wanderHz: 0.07,
+};
+
+// The gesture S-curve: morph over the normalized clock u ∈ [0, 1].
+// Exactly 0 at 0 and 1 at 1 (resume must LAND on real speed).
+function tapeEase(u) {
+  const s = u * u * (3 - 2 * u);
+  return TAPE.easeEndRate * u + (1 - TAPE.easeEndRate) * s;
+}
+
+// Inverse of tapeEase, a few Newton steps (monotonic, rate bounded below
+// by 1.5 − k/2). Recovering the clock from the CURRENT morph keeps the
+// per-frame step stateless, so a mid-flight reversal (play tapped during
+// the spin-down) re-enters the opposite curve exactly where the morph
+// sits — no progress state to reconcile.
+function tapeEaseInv(m) {
+  let u = Math.min(1, Math.max(0, m));
+  for (let i = 0; i < 6; i++) {
+    const f = tapeEase(u) - m;
+    const d = TAPE.easeEndRate + (1 - TAPE.easeEndRate) * (6 * u - 6 * u * u);
+    u = Math.min(1, Math.max(0, u - f / d));
+  }
+  return u;
+}
+
 // Master-bus soft limiter / saturator curves. Integers match the values
 // the worklet expects via port.postMessage({ curve }).
 export const SATURATION_CURVES = {
@@ -257,6 +306,28 @@ class AudioEngine {
     this.smoothedFreqsR = [];
     this._lastPhaseUpdateR = [];
     this._phaseSmoothTau = 0.016;
+
+    // Tape transport (paused time-dilation) — visual tier of the iOS
+    // record-stop gesture. Pausing doesn't freeze the scope's phase
+    // accumulators: one morph parameter (0 = real speed, 1 = full crawl)
+    // eases toward its transport-driven target along a symmetric S-curve
+    // and dilates every drone phase increment in updatePhases
+    // (dθ = 2π·f·dilation·dt), with the dilation lerped in LOG space so
+    // the deceleration reads as a smooth unwind across ~3 decades. The
+    // model frequencies (orbs, spectrum, mixer) never see the dilation —
+    // only the accumulators crawl — and because those accumulators are
+    // the only trajectory at every speed, the resume handoff back to the
+    // live trace is phase-exact by construction.
+    //
+    // AUDIO IS UNTOUCHED: the real oscillators keep running at pitch
+    // under the drone bus's plain pause fade (iOS's "ramp 0" audible
+    // config). calibratePhases would fight the crawl by pulling the
+    // accumulators back toward the still-at-speed analyser signal, so
+    // the scope gates it off while the gesture is engaged.
+    this._tapeMorph = 0;
+    this._tapeWanderPhase = 0;
+    this._tapeCrawlDilation = 1e-3;
+    this._tapeLastStep = null;
 
     // Per-channel joint-least-squares phase-recovery caches. Each holds
     // { sig, oscs, LL, P, N } where LL is the in-place Cholesky factor
@@ -794,54 +865,36 @@ class AudioEngine {
     if (!this._noiseUnsubscribe) {
       this._noiseUnsubscribe = noise.onChange(() => this._applyNoise());
     }
-    // Drone stereo mode + detune: on mode flip, re-route every drone to
-    // either single-channel (lr) or both channels (stereo). On detune
-    // change, re-roll every offset and ramp the oscillators to their
-    // new actual frequency so the user hears the change live. The
-    // visualizer's smoothedFreqs follows because updatePhases() reads
-    // _dronePrimaryFreq() / _dronePartnerFreq().
+    // Drone stereo mode + detune. The engine is MODE-BLIND (iOS parity):
+    // every drone always renders as a detuned pair under the collapse-pan
+    // law, so a mode flip is nothing but a batch pan move — each voice
+    // glides to the NEW preset's origin (stereo → center split, lr →
+    // alternating hard L/R) and the width-coupled math dephases or
+    // converges its pair continuously along the way. No reroute, no gain
+    // dip, no detune zeroing: the taps carry the whole travel, and the
+    // L/R channels stay decorrelated throughout (the old instant
+    // detune-zero + deferred glide played every voice mono for the whole
+    // glide — the Lissajous flashed a diagonal). The ⊙/LR button in the
+    // console's ALL lane is the usual trigger. On detune change, ramp
+    // every oscillator to its new frequency so the user hears the curve
+    // live. The visualizer's smoothedFreqs follows because updatePhases()
+    // reads _dronePrimaryFreq() / _dronePartnerFreq().
     if (!this._droneStereoUnsubscribe) {
       this._droneStereoUnsubscribe = droneStereo.onChange((_inst, info) => {
         if (!this.audioContext) return;
         if (!info) return;
         if (info.kind === 'mode') {
-          // detuneHzAt() returns 0 in lr — recompute offsets first so
-          // the primary's freq goes back to nominal when leaving stereo
-          // and back to (offset/2) when entering. Then perform a
-          // click-free reroute: every drone gain (primary + partner +
-          // partials) ramps to 0, the disconnect/reconnect happens
-          // during silence, and gains ramp back to their post-switch
-          // targets. Without this, _connectDroneToChannels' abrupt
-          // disconnect() snaps the signal to 0 mid-waveform and
-          // produces an audible click on every L|R ↔ L+R toggle.
-          // Switching pan mode resets every voice back to its origin
-          // L/R image — per-voice pan choices are an 'lr'-mode concept and
-          // shouldn't persist across a mode flip. reconnect:false because
-          // the click-free swap below does the disconnect/reconnect; here
-          // we only rewrite the map so the swap picks up the defaults.
-          // …and with a glide time set (PERFORM's, via getPanGlideMs) the
-          // voices TRAVEL to their new origins instead of teleporting: the
-          // map flips now, but the pan values stay where the ear left them
-          // (deferPan) so the reroute rebuilds the taps on the old image,
-          // and the glide runs once the graph is back up. The ⊙/LR button
-          // in the console's ALL lane is the usual trigger.
+          // Per-voice pan choices don't persist across a mode flip —
+          // resetRoutingToDefaults rewrites the discrete map to the new
+          // origins (patch-bay slots crossing to/from multichannel still
+          // get their click-free swap inside) and hands back the pure-pan
+          // moves, which travel over PERFORM's timing (0 = snap).
           const glideMs = Math.max(0, Number(this.getPanGlideMs?.()) || 0);
-          const deferred = this.resetRoutingToDefaults({
-            reconnect: false,
-            deferPan: glideMs > 0,
-          });
-          this._applyDroneDetuneCurve();
-          this._clickFreeDroneRouteSwap(deferred.length ? () => {
-            // One more ramp window of patience: the swap has just
-            // SCHEDULED its 25 ms fade back up, and setVoicePan's own
-            // setTargetAtTime writes on those same gains would land
-            // mid-ramp. Let the graph settle, then travel.
-            setTimeout(() => {
-              for (const { index, pan } of deferred) {
-                this.glideVoicePan(index, pan, glideMs);
-              }
-            }, 30);
-          } : null);
+          const deferred = this.resetRoutingToDefaults({ deferPan: true });
+          for (const { index, pan } of deferred) {
+            if (glideMs > 0) this.glideVoicePan(index, pan, glideMs);
+            else this.setVoicePan(index, pan, { syncRouting: false });
+          }
         } else if (info.kind === 'detune' || info.kind === 'curve') {
           this._applyDroneDetuneCurve();
         }
@@ -858,7 +911,7 @@ class AudioEngine {
         const gainNodeR = this.gainNodesR[i];
         const peak = this.volumeValues[i];
         if (gainNode) droneEnvelope.retargetSustain(gainNode.gain, this.audioContext, peak);
-        if (gainNodeR && droneStereo.mode === 'stereo') {
+        if (gainNodeR && this._slotPairActive(i)) {
           droneEnvelope.retargetSustain(gainNodeR.gain, this.audioContext, peak * width);
         }
       }
@@ -870,7 +923,7 @@ class AudioEngine {
         for (const p of partials) {
           if (p.muted || !p._gain) continue;
           droneEnvelope.retargetSustain(p._gain.gain, this.audioContext, p.vol);
-          if (p._gainR && droneStereo.mode === 'stereo') {
+          if (p._gainR && this._slotPairActive(i)) {
             droneEnvelope.retargetSustain(p._gainR.gain, this.audioContext, p.vol * width);
           }
         }
@@ -1362,11 +1415,12 @@ class AudioEngine {
       this.gainNodesR[index] = gainNodeR;
       this._connectDroneToChannels(index);
 
-      // Detune offset comes from the curve × master Hz. Always recompute
+      // Detune offset comes from the curve × master Hz (mode-blind
+      // nominal — pan width narrows it at play time). Always recompute
       // on (re)create so the offset stays consistent with the curve
       // even after a slot was restored from removedSlots with a stale
       // value or never set.
-      this.droneDetuneOffsets[index] = droneStereo.detuneHzAt(index);
+      this.droneDetuneOffsets[index] = droneStereo.nominalDetuneHzAt(index);
       const primaryFreq = this._dronePrimaryFreq(index);
       const partnerFreq = this._dronePartnerFreq(index);
       const primaryTarget = this._droneTargetGain(index);
@@ -1450,6 +1504,17 @@ class AudioEngine {
     return channels.some((ch) => ch >= 2);
   }
 
+  /** True when slot i renders as the collapse-pan detuned pair. Always
+   *  true for stereo-pair slots — the drone engine is mode-blind, so
+   *  detune and partner gain follow the pan dial, not the mode toggle.
+   *  Slots the patch bay routed beyond the stereo pair keep the legacy
+   *  discrete behavior, where the pair only sounds in 'stereo' mode
+   *  (their pan is inert, so width can't fade the partner for them). */
+  _slotPairActive(i) {
+    if (!this._usesBeyondStereo(this.routingMap[i] || [])) return true;
+    return droneStereo.mode === 'stereo';
+  }
+
   /** Subscribe to per-voice pan changes. Returns an unsubscribe fn. */
   addPanListener(fn) {
     this._panListeners.add(fn);
@@ -1483,20 +1548,20 @@ class AudioEngine {
   }
 
   /**
-   * Primary oscillator's played freq.
-   * - 'lr' mode:     base + offset[i]   (single osc, full random shift)
-   * - 'stereo' mode: base + offset[i]/2 (half-spread; partner takes -half)
+   * Primary oscillator's played freq: base + offset[i]·width/2 (the
+   * half-spread; partner takes −half). Mode-blind — the offset narrows
+   * with |pan| (panWidth) so a hard-panned voice converges on its true
+   * orb frequency; see setVoicePan. Beyond-stereo patch-bay slots play
+   * clean in lr (legacy: their offsets were 0 there).
    */
   _dronePrimaryFreq(i) {
     // Global transpose scales the nominal pitch; the stereo detune `offset`
     // stays additive in Hz (beat rate is a fixed slot property, per below).
-    // The offset narrows with |pan| (panWidth) so a hard-panned voice
-    // converges on its true orb frequency — see setVoicePan.
     const nominal = (this.frequencyValues[i] || 0) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[i] || 0;
-    const shift = droneStereo.mode === 'stereo'
+    const shift = this._slotPairActive(i)
       ? (offset * panWidth(this.getVoicePan(i))) / 2
-      : offset;
+      : 0;
     return Math.max(0.001, Math.min(20000, nominal + shift));
   }
 
@@ -1548,19 +1613,20 @@ class AudioEngine {
    * 1.0. Both endpoints therefore match the two pre-pan calibrations.
    */
   _slotLoudnessScale(i) {
-    if (droneStereo.mode !== 'stereo') return 1;
+    if (!this._slotPairActive(i)) return 1;
     return 0.5 + 0.5 * Math.abs(this.getVoicePan(i));
   }
 
   /**
    * Steady-state gain target for the partner oscillator: the primary's
-   * target scaled by panWidth in 'stereo' mode (the partner fades out
-   * as the voice pans, reaching 0 at the extremes — so a hard-panned
-   * voice is one clean oscillator, never two identical-frequency oscs
-   * summing at arbitrary phase), 0 in 'lr' mode (silent partner).
+   * target scaled by panWidth — the partner fades out as the voice
+   * pans, reaching 0 at the extremes, so a hard-panned voice is one
+   * clean oscillator, never two identical-frequency oscs summing at
+   * arbitrary phase. Mode-blind: in the 'lr' PRESET the default hard
+   * pans give width 0, reproducing the old silent-partner behavior.
    */
   _dronePartnerTargetGain(i) {
-    if (droneStereo.mode !== 'stereo') return 0;
+    if (!this._slotPairActive(i)) return 0;
     return this._droneTargetGain(i) * panWidth(this.getVoicePan(i));
   }
 
@@ -1574,9 +1640,9 @@ class AudioEngine {
   _partialPrimaryFreq(slotIndex, partial) {
     const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[slotIndex] || 0;
-    const shift = droneStereo.mode === 'stereo'
+    const shift = this._slotPairActive(slotIndex)
       ? (offset * panWidth(this.getVoicePan(slotIndex))) / 2
-      : offset;
+      : 0;
     return Math.max(0.001, Math.min(20000, nominal + shift));
   }
 
@@ -1598,7 +1664,7 @@ class AudioEngine {
   }
 
   _partialPartnerTargetGain(partial, slotIndex) {
-    if (droneStereo.mode !== 'stereo') return 0;
+    if (!this._slotPairActive(slotIndex)) return 0;
     return this._partialTargetGain(partial, slotIndex) * panWidth(this.getVoicePan(slotIndex));
   }
 
@@ -1818,7 +1884,7 @@ class AudioEngine {
   /**
    * (Re)build the pan-tap pair for a primary/partner gain duo: each gain
    * connects to channelGains[0] via a fresh tapL and channelGains[1] via
-   * a fresh tapR, weights per dronePanWeights(pan, mode). Fresh taps per
+   * a fresh tapR, weights per dronePanWeights(pan). Fresh taps per
    * call keep the function idempotent across device changes (channelGains
    * get rebuilt) and node swaps; orphaned taps GC once their gain
    * disconnects. Continuous pan moves do NOT come through here — they
@@ -1827,7 +1893,7 @@ class AudioEngine {
   _wirePanTaps(gainNode, gainNodeR, pan) {
     if (!this.audioContext) return;
     const t = this.audioContext.currentTime;
-    const { primary, partner } = dronePanWeights(pan, droneStereo.mode);
+    const { primary, partner } = dronePanWeights(pan);
     const wire = (g, [wL, wR]) => {
       if (!g) return;
       try { g.disconnect(); } catch { /* ignore */ }
@@ -1847,95 +1913,15 @@ class AudioEngine {
   }
 
   /**
-   * Click-free drone route-swap for an L|R ↔ L+R mode change.
-   *
-   * _connectDroneToChannels' disconnect()/connect() pair is synchronous
-   * and abrupt: at audible gain, snapping the signal off (even for a
-   * single sample) reads as a click. Solution: fade every drone gain
-   * (primary + partner + partials, both channels) down to 0, schedule
-   * the routing swap to happen after the audio thread has reached
-   * silence, then fade back to the post-switch target. Two 25 ms
-   * ramps + a small JS handoff keeps the total transition under
-   * ~70 ms — well under perceptual threshold — and the silent reroute
-   * eliminates the click entirely.
-   */
-  _clickFreeDroneRouteSwap(afterSwap = null) {
-    if (!this.audioContext) return;
-    const RAMP_S = 0.025;
-    const ctx = this.audioContext;
-    const t = ctx.currentTime;
-
-    // Collect every drone-side gain node with a getter for its
-    // post-switch target. The target is read AFTER the mode flip
-    // (which has already happened by the time this runs), so the
-    // values reflect the new routing and stereo-loudness scaling.
-    const gains = [];
-    for (let i = 0; i < this.oscillatorCount; i++) {
-      const slot = i;
-      if (this.gainNodes[i]) {
-        gains.push({ node: this.gainNodes[i], target: () => this._droneTargetGain(slot) });
-      }
-      if (this.gainNodesR[i]) {
-        gains.push({ node: this.gainNodesR[i], target: () => this._dronePartnerTargetGain(slot) });
-      }
-      const partials = this.extraPartials[i] || [];
-      for (const p of partials) {
-        if (p._gain) {
-          gains.push({ node: p._gain, target: () => this._partialTargetGain(p, slot) });
-        }
-        if (p._gainR) {
-          gains.push({ node: p._gainR, target: () => this._partialPartnerTargetGain(p, slot) });
-        }
-      }
-    }
-
-    // Fade everyone to 0 over the ramp window.
-    for (const { node } of gains) {
-      node.gain.cancelScheduledValues(t);
-      node.gain.setValueAtTime(node.gain.value, t);
-      node.gain.linearRampToValueAtTime(0, t + RAMP_S);
-    }
-
-    // After the fade-down completes on the audio thread, do the
-    // disconnect/reconnect (silent) and ramp back to new targets.
-    // setTimeout is JS-timed so it may fire slightly late, but that
-    // just extends silence — the audio is guaranteed at 0 by the
-    // linear ramp on the audio clock, so the reroute is click-free
-    // either way.
-    setTimeout(() => {
-      if (!this.audioContext) return;
-      const tAfter = this.audioContext.currentTime;
-      for (let i = 0; i < this.oscillatorCount; i++) {
-        this._connectDroneToChannels(i);
-        const partials = this.extraPartials[i] || [];
-        for (const p of partials) {
-          this._connectPartialToChannels(i, p);
-        }
-      }
-      for (const { node, target } of gains) {
-        const t1 = target();
-        node.gain.cancelScheduledValues(tAfter);
-        node.gain.setValueAtTime(0, tAfter);
-        node.gain.linearRampToValueAtTime(t1, tAfter + RAMP_S);
-      }
-      // The graph is back up on its new routing — anything that wants to
-      // MOVE the image (the ⊙/LR flip's pan glide) starts here, not
-      // before: setVoicePan's gain writes inside the dip window would
-      // fight the fade-to-0 ramp above and put the click back.
-      if (afterSwap) {
-        try { afterSwap(); } catch (err) {
-          console.error('AudioEngine: post-swap hook failed', err);
-        }
-      }
-    }, RAMP_S * 1000 + 5);
-  }
-
-  /**
-   * Click-free route-swap for a SINGLE drone slot. Same trick as
-   * _clickFreeDroneRouteSwap but scoped to one voice's gains (primary +
-   * partner + partials), so changing one voice's L/R/⊙ pan dips only that
-   * voice for ~50 ms instead of momentarily ducking the whole drone bus.
-   * The rest of the bed keeps sounding untouched.
+   * Click-free route-swap for a SINGLE drone slot: fade the voice's
+   * gains (primary + partner + partials) to 0, do the synchronous
+   * disconnect/reconnect during the silence, then fade back — an
+   * abrupt reroute at audible gain reads as a click. (The whole-bus
+   * variant died with the mode-blind rework: a ⊙/LR flip is a pure pan
+   * glide on the persistent taps now, no reroute needed.) Scoped to one
+   * voice, the ~50 ms dip only ducks that slot — the rest of the bed
+   * keeps sounding untouched. Used for patch-bay moves to/from
+   * multichannel assignments, which genuinely need a graph swap.
    */
   _clickFreeVoiceRouteSwap(i) {
     if (!this.audioContext) return;
@@ -1994,7 +1980,7 @@ class AudioEngine {
     if (!this.audioContext) return;
     const t = this.audioContext.currentTime;
     for (let i = 0; i < this.oscillatorCount; i++) {
-      this.droneDetuneOffsets[i] = droneStereo.detuneHzAt(i);
+      this.droneDetuneOffsets[i] = droneStereo.nominalDetuneHzAt(i);
       if (this.oscillators[i]) {
         this.oscillators[i].frequency.setTargetAtTime(this._dronePrimaryFreq(i), t, 0.016);
       }
@@ -2599,15 +2585,14 @@ class AudioEngine {
   }
 
   /**
-   * Continuous per-voice pan, −1 … +1. The dial behind the drone tray:
-   * center is the mode origin (stereo split / lr ⊙ both), the extremes
-   * are hard L/R. In stereo mode the whole detune pair slides toward the
+   * Continuous per-voice pan, −1 … +1. Mode-blind: center is the detune
+   * split, the extremes are hard L/R. The whole pair slides toward the
    * pan side (collapse model) while the effective detune AND the partner
    * oscillator's gain narrow with panWidth — at a full extreme the voice
    * degenerates to a single clean oscillator at its true orb frequency,
-   * exactly an lr hard-pan. Everything here is AudioParam ramps on the
-   * persistent tap/gain nodes — no graph edits, so dragging the dial is
-   * click-free at any speed.
+   * exactly the classic lr hard-pan. Everything here is AudioParam ramps
+   * on the persistent tap/gain nodes — no graph edits, so dragging the
+   * dial is click-free at any speed.
    */
   setVoicePan(oscIndex, pan, { syncRouting = true, cancelGlide = true } = {}) {
     if (oscIndex < 0) return;
@@ -2629,7 +2614,7 @@ class AudioEngine {
 
     if (!beyondStereo) {
       // 1. Image: ramp the tap weights.
-      const { primary, partner } = dronePanWeights(p, droneStereo.mode);
+      const { primary, partner } = dronePanWeights(p);
       const retap = (g, [wL, wR]) => {
         if (!g || !g._tapL || !g._tapR) return;
         g._tapL.gain.setTargetAtTime(wL, t, TAU);
@@ -2643,7 +2628,7 @@ class AudioEngine {
       }
     }
 
-    if (droneStereo.mode === 'stereo') {
+    if (this._slotPairActive(oscIndex)) {
       // 2. Detune narrows with |pan| — glide the pair (and partials)
       // toward/away from the true orb frequency.
       if (this.oscillators[oscIndex]) {
@@ -2741,19 +2726,18 @@ class AudioEngine {
   }
 
   /**
-   * Reset every drone back to its origin L/R image: slot i → channel
-   * (i % channelCount), i.e. the alternating hard-pan the engine starts
-   * with. Fired by the drone-tray reset button and whenever the drone
-   * stereo mode is toggled. Pass { reconnect: false } when the caller
-   * performs its own reconnect afterward (the click-free mode swap does),
-   * so we only rewrite the map values without an extra disconnect.
+   * Reset every drone back to its origin image for the CURRENT mode
+   * preset: 'lr' → alternating hard-pan (slot i → i % channelCount),
+   * 'stereo' → the center split. Fired whenever the drone stereo mode
+   * is toggled — under the mode-blind engine that flip is nothing more
+   * than this map rewrite plus the pan moves handed back to the caller.
    */
-  resetRoutingToDefaults({ reconnect = true, deferPan = false } = {}) {
+  resetRoutingToDefaults({ deferPan = false } = {}) {
     if (!this.isInitialized) return [];
     // With deferPan the map is rewritten but the pure-pan moves are NOT
-    // applied: they're handed back so the caller can glide them home once
-    // its own reroute has landed (the ⊙/LR flip does — see the mode
-    // listener). Without it the pans snap, as they always did.
+    // applied: they're handed back so the caller can glide them home on
+    // its own schedule (the ⊙/LR flip travels them over PERFORM's
+    // timing). Without it the pans snap, as they always did.
     const deferred = [];
     const max = this.channelGains.length || 2;
     // Origin depends on mode: 'lr' → alternating hard-pan (slot i → i%2);
@@ -2768,10 +2752,8 @@ class AudioEngine {
       const panChanged = Math.abs(this.getVoicePan(i) - defPan) > 1e-3;
       const wasBeyondStereo = this._usesBeyondStereo(prev);
       this.routingMap[i] = def;
-      // Reroute only the voices that actually moved. reconnect:false is the
-      // mode-swap path — the caller's _clickFreeDroneRouteSwap handles the
-      // graph, so there we only rewrite the map + pan values.
-      if (reconnect && (mapChanged || panChanged) && this.gainNodes[i]) {
+      // Reroute only the voices that actually moved.
+      if ((mapChanged || panChanged) && this.gainNodes[i]) {
         try {
           if (wasBeyondStereo || this._usesBeyondStereo(def)) {
             // Crossing to/from a multichannel assignment needs a real
@@ -3540,7 +3522,7 @@ class AudioEngine {
     const attackCap = Math.max(0.02, overlapSec + droneEnvelope.release);
     const stepAttack = droneEnvelope.attack > attackCap ? attackCap : null;
     droneEnvelope.applyNoteOn(gainNode.gain, this.audioContext, peak, stepAttack);
-    if (droneStereo.mode === 'stereo') {
+    if (this._slotPairActive(index)) {
       // Partner fades with panWidth — silent at the pan extremes.
       droneEnvelope.applyNoteOn(gainNodeR.gain, this.audioContext,
         peak * panWidth(this.getVoicePan(index)), stepAttack);
@@ -3781,7 +3763,10 @@ class AudioEngine {
     const offset = this.droneDetuneOffsets[forSlot] || 0;
     const w = panWidth(pan);
     const nominal = clamped * this._transposeRatio;
-    const shift = droneStereo.mode === 'stereo' ? (offset * w) / 2 : offset;
+    // Mode-blind: pair travellers always take the width-narrowed
+    // half-spread; beyond-stereo slots keep the legacy mode gate.
+    const pairActive = !this._usesBeyondStereo(channels) || droneStereo.mode === 'stereo';
+    const shift = pairActive ? (offset * w) / 2 : 0;
     osc.frequency.setValueAtTime(Math.max(0.001, Math.min(20000, nominal + shift)), t);
     oscR.frequency.setValueAtTime(Math.max(0.001, Math.min(20000, nominal - (offset * w) / 2)), t);
 
@@ -3790,7 +3775,7 @@ class AudioEngine {
     gain.gain.setValueAtTime(0, t);
     gainR.gain.setValueAtTime(0, t);
     droneEnvelope.applyNoteOn(gain.gain, this.audioContext, peak);
-    if (droneStereo.mode === 'stereo') {
+    if (pairActive) {
       droneEnvelope.applyNoteOn(gainR.gain, this.audioContext, peak * w);
     }
     osc.start();
@@ -3829,7 +3814,8 @@ class AudioEngine {
     tv.nominalHz = clamped;
     const nominal = clamped * this._transposeRatio;
     const w = panWidth(tv.pan ?? 0);
-    const shift = droneStereo.mode === 'stereo' ? (tv.offset * w) / 2 : tv.offset;
+    const pairActive = !this._usesBeyondStereo(tv.channels || []) || droneStereo.mode === 'stereo';
+    const shift = pairActive ? (tv.offset * w) / 2 : 0;
     const t = this.audioContext.currentTime;
     tv.osc.frequency.setTargetAtTime(
       Math.max(0.001, Math.min(20000, nominal + shift)), t, 0.016);
@@ -4084,9 +4070,9 @@ class AudioEngine {
     this.markSlotReleasing(index);
 
     droneEnvelope.applyNoteOff(this.gainNodes[index].gain, this.audioContext);
-    // Partner runs the same release tail when stereo mode has it audible;
-    // skip in lr mode where it's already at 0.
-    if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
+    // Partner runs the same release tail. Harmless on a silent partner
+    // (hard pan / inactive pair): the release just ramps 0 → 0.
+    if (this.gainNodesR[index]) {
       droneEnvelope.applyNoteOff(this.gainNodesR[index].gain, this.audioContext);
     }
     // Notify listeners so demand-driven UIs (FSB) repaint the muted state.
@@ -4114,11 +4100,15 @@ class AudioEngine {
     if (this.volumeValues[index] > DRONE_PLAY_VOL_CAP) {
       this.volumeValues[index] = DRONE_PLAY_VOL_CAP;
     }
-    const peak = this.volumeValues[index];
+    // Peak carries the equal-loudness comp like every other gain target
+    // site, so the attack's landing level matches the steady-state
+    // _droneTargetGain (at the default hard pans the scale is 1 — this
+    // only matters for mid-pan voices).
+    const peak = this.volumeValues[index] * this._slotLoudnessScale(index);
     droneEnvelope.applyNoteOn(this.gainNodes[index].gain, this.audioContext, peak);
-    // Partner mirrors the unmute when stereo mode has it audible,
-    // scaled by panWidth (silent at the pan extremes).
-    if (this.gainNodesR[index] && droneStereo.mode === 'stereo') {
+    // Partner mirrors the unmute, scaled by panWidth (silent at the pan
+    // extremes, and gated off for legacy multichannel slots).
+    if (this.gainNodesR[index] && this._slotPairActive(index)) {
       droneEnvelope.applyNoteOn(this.gainNodesR[index].gain, this.audioContext,
         peak * panWidth(this.getVoicePan(index)));
     }
@@ -4276,11 +4266,78 @@ class AudioEngine {
    * phase tracks the actual running Web Audio oscillators — including
    * across slider drags where the audio graph is ramping the frequency.
    */
+  /**
+   * Advance the tape-transport morph/wander clocks to `now` and return
+   * the phase dilation factor for the elapsed period (1 = real speed).
+   * Called once per frame from updatePhases. Visual-only: the audio
+   * graph never sees the dilation — while the gesture is in flight the
+   * real oscillators keep playing at pitch under the drone bus's plain
+   * pause fade, and the accumulators (the scope's only trajectory)
+   * decelerate underneath.
+   */
+  _stepTapeTransport(now) {
+    let dt = this._tapeLastStep === null ? 0 : now - this._tapeLastStep;
+    this._tapeLastStep = now;
+    // Hidden-tab rAF gaps resume the gesture mid-flight instead of
+    // jumping it to completion.
+    dt = Math.min(0.1, Math.max(0, dt));
+
+    // Crawl dilation from the highest sounding drone (transposed — the
+    // dilation must match what the accumulators integrate), held at its
+    // last value while everything is muted so log() never sees 0.
+    const ratio = this._transposeRatio || 1;
+    let maxF = 0;
+    for (let i = 0; i < this.oscillatorCount; i++) {
+      if (this.mutedStates[i]) continue;
+      if (!((this.volumeValues[i] || 0) > 0)) continue;
+      const f = (this.frequencyValues[i] || 0) * ratio;
+      if (f > maxF) maxF = f;
+    }
+    if (isFinite(maxF) && maxF > 0.1) {
+      this._tapeCrawlDilation = 1 / (maxF * TAPE.baseCycleSeconds);
+    }
+
+    const target = this.isPaused ? 1 : 0;
+    if (target > this._tapeMorph) {
+      // Record-stop on the S-curve: the visible slow-down plays out in
+      // the mid-low morphs for most of the ramp instead of compressing
+      // into the last instants (linear speed) or parking in the
+      // near-static bottom (plain ease-out).
+      this._tapeMorph = Math.min(
+        target,
+        tapeEase(Math.min(1, tapeEaseInv(this._tapeMorph) + dt / TAPE.rampOffSeconds))
+      );
+    } else if (target < this._tapeMorph) {
+      // Spin-up on the mirrored S-curve (symmetric: ease(1−u) = 1−ease(u)):
+      // the reel leaves the crawl at full rate the frame play is tapped
+      // and lands exactly on real speed at the end of the ramp.
+      this._tapeMorph = Math.max(
+        target,
+        1 - tapeEase(Math.min(1, tapeEaseInv(1 - this._tapeMorph) + dt / TAPE.rampOnSeconds))
+      );
+    }
+
+    this._tapeWanderPhase += dt * 2 * Math.PI * TAPE.wanderHz;
+    if (this._tapeMorph <= 0) return 1;
+    const wander = 1 + TAPE.wanderDepth * this._tapeMorph * Math.sin(this._tapeWanderPhase);
+    return Math.exp(this._tapeMorph * Math.log(this._tapeCrawlDilation)) * wander;
+  }
+
+  /**
+   * Current tape morph (0 = real speed, 1 = full crawl). The scope keys
+   * its fairy takeover, tail-window contraction and phase-calibration
+   * gating off this.
+   */
+  getTapeMorph() {
+    return this._tapeMorph;
+  }
+
   updatePhases() {
     if (!this.isInitialized || !this.audioContext) return;
     const now = this.audioContext.currentTime;
     const TWO_PI = Math.PI * 2;
     const tau = this._phaseSmoothTau;
+    const dilation = this._stepTapeTransport(now);
     for (let i = 0; i < this.oscillatorCount; i++) {
       const last = this._lastPhaseUpdate[i];
       if (last === null || last === undefined) {
@@ -4302,11 +4359,11 @@ class AudioEngine {
         this.smoothedFreqs[i] += (targetP - this.smoothedFreqs[i]) * alpha;
       }
       this.phases[i] =
-        ((this.phases[i] || 0) + TWO_PI * this.smoothedFreqs[i] * dt) % TWO_PI;
+        ((this.phases[i] || 0) + TWO_PI * this.smoothedFreqs[i] * dilation * dt) % TWO_PI;
 
       // Partner phase tracking. _lastPhaseUpdateR is seeded at create
-      // time; advancing every frame keeps it ready for a mode flip
-      // even when the partner is silent in lr mode.
+      // time; advancing every frame keeps it ready even while the
+      // partner is silent at a hard pan.
       const lastR = this._lastPhaseUpdateR[i];
       if (lastR === null || lastR === undefined) {
         this._lastPhaseUpdateR[i] = now;
@@ -4322,7 +4379,7 @@ class AudioEngine {
             this.smoothedFreqsR[i] += (targetR - this.smoothedFreqsR[i]) * alphaR;
           }
           this.phasesR[i] =
-            ((this.phasesR[i] || 0) + TWO_PI * this.smoothedFreqsR[i] * dtR) % TWO_PI;
+            ((this.phasesR[i] || 0) + TWO_PI * this.smoothedFreqsR[i] * dilation * dtR) % TWO_PI;
         }
       }
     }
@@ -4344,19 +4401,20 @@ class AudioEngine {
 
   /**
    * Per-drone partner-osc data for the synth visualizer. Returns a
-   * parallel-indexed array of { freq, phase, audible } where `audible`
-   * is true only in 'stereo' mode (lr keeps the partner gain at 0). The
-   * synth path uses this to render the second osc on the right channel
-   * so the visualized lissajous matches the analyzer's L/R split.
+   * parallel-indexed array of { freq, phase, audible }. Mode-blind:
+   * `audible` follows each voice's pan width — the partner sounds
+   * whenever the voice isn't hard-panned (legacy multichannel slots
+   * still gate on 'stereo' mode via _slotPairActive). The synth path
+   * uses this to render the second osc so the visualized lissajous
+   * matches the analyzer's L/R split.
    */
   getDronePartnerData() {
     const out = [];
-    const audible = droneStereo.mode === 'stereo';
     for (let i = 0; i < this.oscillatorCount; i++) {
       out.push({
         freq: this.smoothedFreqsR[i] || this._dronePartnerFreq(i),
         phase: this.phasesR[i] || 0,
-        audible,
+        audible: this._slotPairActive(i) && panWidth(this.getVoicePan(i)) > 1e-3,
       });
     }
     return out;
@@ -4587,9 +4645,49 @@ class AudioEngine {
    */
   getTimeDataRight() {
     if (!this.isInitialized) return null;
-    
+
     this.analyserNode2.getFloatTimeDomainData(this.timeData2);
     return this.timeData2;
+  }
+
+  /**
+   * Coherent stereo snapshot for the XY scope. The two analyser ring
+   * buffers advance on the audio thread in 128-sample render quanta,
+   * asynchronously to rAF — roughly once every ~10 s a quantum commit
+   * lands between the separate L and R reads, leaving R one quantum
+   * newer than L. On the Lissajous that 128-sample skew is a large
+   * X↔Y relative-phase error (~210° at 220 Hz), so the figure flashes
+   * a different phase position for exactly one frame. Bracket the pair
+   * with verification re-reads and retry until both channels' tails are
+   * unchanged across the bracket, which pins L and R to the same
+   * quantum epoch. Measured live: skew fires ~1× per 10 s and one
+   * retry always resolves it; each read is a 32 KB copy, so the two
+   * extra reads per frame are noise.
+   */
+  getTimeDataStereo() {
+    if (!this.isInitialized) return null;
+    const N = this.timeData1.length;
+    if (!this._stereoBracketL || this._stereoBracketL.length !== N) {
+      this._stereoBracketL = new Float32Array(N);
+      this._stereoBracketR = new Float32Array(N);
+    }
+    const CHECK = Math.min(512, N);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.analyserNode1.getFloatTimeDomainData(this.timeData1);
+      this.analyserNode2.getFloatTimeDomainData(this.timeData2);
+      this.analyserNode1.getFloatTimeDomainData(this._stereoBracketL);
+      this.analyserNode2.getFloatTimeDomainData(this._stereoBracketR);
+      let coherent = true;
+      for (let i = N - CHECK; i < N; i++) {
+        if (this.timeData1[i] !== this._stereoBracketL[i] ||
+            this.timeData2[i] !== this._stereoBracketR[i]) {
+          coherent = false;
+          break;
+        }
+      }
+      if (coherent) break;
+    }
+    return { L: this.timeData1, R: this.timeData2 };
   }
   
   /**

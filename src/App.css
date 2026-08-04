@@ -3714,9 +3714,9 @@ kbd {
 }
 /* The always-on pan dots ride the orbs, so they go silent with them —
    same 0.42 as .fsb-dot above, and the same exclusions: muted (already
-   dimmer at 0.45), ghosted (dimmer still at 0.25), and the orb under the
-   finger, which stays bright exactly as .fsb-dot.dragging does. */
-#wrapper.paused .fsb-status.pinned:not(.muted):not(.ghosted):not(.dragging) {
+   dimmer at 0.45) and the orb under the cursor, which stays bright exactly
+   as .fsb-dot.dragging does. */
+#wrapper.paused .fsb-status.pinned:not(.muted):not(.dragging) {
   opacity: 0.42;
 }
 /* When paused, the console mute cells dim to reflect "drones silent." */
@@ -4612,6 +4612,16 @@ kbd {
 }
 .fsb-row > * { pointer-events: auto; }
 
+/* While an orb gesture is live (drag, grab, or the release settle) the row
+   outranks EVERYTHING — the console/knob band (100), a hoisted side-menu
+   column (400), the tuning/settings panels (1100) — so an orb carried across
+   the app never ducks under a menu (Dan, 2026-08-04). At rest the base 300
+   restores the deliberate stacking: an open side-menu column covers the orb
+   row, and the settings panel covers all. */
+.fsb-row.gesture-live {
+  z-index: 1200;
+}
+
 .freq-spectrum-bar {
   position: relative;
   width: min(500px, calc(100vw - 120px));
@@ -4871,23 +4881,10 @@ kbd {
   }
 }
 
-/* Ghost at the cursor — GRAB mode (and the global detune orb) only. A grab
-   can hold several orbs at one cursor, so colored ghost copies ride the
-   cursor while the real dots stay dimmed at their freq positions. Pointer
-   DRAGS no longer ghost: the real orb itself rides the finger (iOS parity,
-   see .fsb-dot.dragging below). */
-.fsb-ghost {
-  position: absolute;
-  border-radius: 50%;
-  background: var(--dot-color);
-  border: 3px solid var(--dot-color);
-  opacity: 0.95;
-  mix-blend-mode: plus-lighter;
-  box-shadow: 0 0 24px var(--dot-color), 0 0 10px var(--dot-color);
-  box-sizing: border-box;
-  pointer-events: none;
-  z-index: 30;
-}
+/* (.fsb-ghost retired 2026-08-04: nothing on the bar ghosts any more. The
+   real orb rides the cursor in a DRAG and in a GRAB alike — iOS parity, see
+   .fsb-dot.dragging below. The global detune orb keeps its own ghost under
+   .global-detune-orb-ghost.) */
 
 .fsb-dot {
   position: absolute;
@@ -4909,15 +4906,11 @@ kbd {
   z-index: 20;
 }
 
-/* Grabbed (sticky grab mode): the real dot dims (similar to muted) while
-   the filled, color-saturated ghosts follow the free cursor. */
-.fsb-dot.grabbed {
-  opacity: 0.25;
-  box-shadow: none;
-  transform: none;
-  z-index: 10;
-}
-
+/* Grabbed (sticky grab mode) is a drag that outlives the button, so the orb
+   looks and behaves exactly like a dragged one — it rides the free cursor
+   with the same saturated glow (Dan, 2026-08-04; it used to dim to 0.25 in
+   the row while a ghost copy did the moving). */
+.fsb-dot.grabbed,
 /* Dragging: no ghost — the real orb IS under the finger (iOS parity), so it
    takes the ghost's saturated, glowing look. */
 .fsb-dot.dragging {
@@ -4973,12 +4966,6 @@ kbd {
   z-index: 31;
   transition: transform 0.15s ease;
 }
-/* Grabbed: the home orb ghosts to 0.25 while the ghost carries the drag,
-   and a bright ring on a ghosted orb reads as the wrong voice being live —
-   the same call .fsb-status.pinned.ghosted makes for the pan dot. Mute and
-   pause deliberately do NOT dim it: those describe the audio, the ring
-   describes what the panel is editing. */
-.fsb-sel-ring.ghosted { opacity: 0.3; }
 /* Release settle: travel home on the same curve as .fsb-dot.settling (the
    class is stripped by the same timer). */
 .fsb-sel-ring.settling {
@@ -5298,10 +5285,6 @@ kbd {
   animation: none;
   z-index: 31;
 }
-/* Grabbed voice: the home orb dims to 0.25 while the ghost carries the
-   drag, and its dot goes with it — a bright dot on a ghosted orb reads as
-   the wrong voice being live. */
-.fsb-status.pinned.ghosted { opacity: 0.25; }
 /* Release settle: match .fsb-dot.settling exactly so the dot and its orb
    travel home together (the class is stripped by the same timer). */
 .fsb-status.pinned.settling {

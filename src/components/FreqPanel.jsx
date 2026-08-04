@@ -30,6 +30,10 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
   const [face, setFace] = useState('controls');
   const [buffer, setBuffer] = useState('');
   const [invalid, setInvalid] = useState(false);
+  // Keypad/piano entry runs in the SOUNDING domain while checked (what
+  // you type is what you hear); commits divide the transpose back out
+  // so the engine still only ever stores nominal Hz.
+  const [addTranspose, setAddTranspose] = useState(true);
 
   // Engine mirrors — rAF poll like MixerConsole (the panel shows live
   // values while orb drags / glides / MIDI move the voice under it).
@@ -69,10 +73,11 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
   // Render-time previous-state pattern (not an effect) so the reseed
   // lands in the same render as the retarget.
   const [seededFor, setSeededFor] = useState(null);
-  const seedId = `${voice}:${face}`;
+  const seedRatio = addTranspose ? (audioEngine.getTransposeRatio?.() ?? 1) : 1;
+  const seedId = `${voice}:${face}:${addTranspose}`;
   if (seededFor !== seedId) {
     setSeededFor(seedId);
-    setBuffer(formatHz(audioEngine.getFrequency(voice) || 0));
+    setBuffer(formatHz((audioEngine.getFrequency(voice) || 0) * seedRatio));
     setInvalid(false);
   }
 
@@ -93,10 +98,11 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
   const pan = Number.isFinite(voicePans[voice]) ? voicePans[voice] : 0;
   const curveVal = droneStereo.detuneCurve[voice] ?? 0;
   const effectiveHz = curveVal * MAX_DETUNE_HZ;
-  // Pair lines show the pan-narrowed pair offset; 0 in L/R mode (the
-  // web engine's detuneHzAt rule). The caption shows the un-narrowed
-  // value on purpose (iOS: "deliberately ≠ the tapered lines").
-  const pannedHz = droneStereo.mode === 'stereo' ? effectiveHz * (1 - Math.abs(pan)) : 0;
+  // Pair lines show the pan-narrowed pair offset — mode-blind, so a
+  // hard pan (the L/R preset's origin) tapers them to 0 on its own.
+  // The caption shows the un-narrowed value on purpose (iOS:
+  // "deliberately ≠ the tapered lines").
+  const pannedHz = effectiveHz * (1 - Math.abs(pan));
   // Two decimals below 1 Hz: that's where the pinned-ceiling axis spends
   // half its travel, so 0.1 Hz steps would read as a dead zone.
   const detuneLabel = effectiveHz < 0.005
@@ -120,11 +126,17 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
     </div>
   );
 
+  // Entry domain: sounding while "add transpose" is checked, else nominal.
+  const entryRatio = addTranspose ? ratio : 1;
+  const transposed = Math.abs(ratio - 1) > 0.003;
+  const starOn = addTranspose && transposed;
+
   const setFromBuffer = () => {
     const parsed = parseHz(buffer);
     if (parsed == null) { setInvalid(true); return; }
-    commitHz(parsed);
-    setBuffer(formatHz(Math.max(HZ_MIN, Math.min(HZ_MAX, parsed))));
+    commitHz(parsed / entryRatio);
+    const nominal = Math.max(HZ_MIN, Math.min(HZ_MAX, parsed / entryRatio));
+    setBuffer(formatHz(nominal * entryRatio));
   };
 
   return (
@@ -218,12 +230,23 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
 
       {face === 'freq' && (
         <div className="vp-freq-face">
+          <span className={`vp-transpose-star${starOn ? '' : ' off'}`} aria-hidden="true">*</span>
           <div className="ekp-side-col">
             <div className={`ekp-buffer${invalid ? ' invalid' : ''}`} data-testid="pitchEntryBuffer">
               <span className="ekp-buffer-text">{buffer || ' '}</span>
               <span className="ekp-caret" aria-hidden="true" />
               <span className="ekp-unit">Hz</span>
             </div>
+            <button
+              type="button"
+              className={`ekp-sidebtn ekp-toggle${addTranspose ? ' on' : ''}`}
+              onClick={() => setAddTranspose((v) => !v)}
+              data-testid="keypadAddTranspose"
+              aria-pressed={addTranspose}
+            >
+              <span className="ekp-checkbox" aria-hidden="true">{addTranspose ? '✓' : ''}</span>
+              add transpose
+            </button>
             <button type="button" className="ekp-sidebtn em" onClick={setFromBuffer} data-testid="keypadSet">set</button>
             <button
               type="button"
@@ -234,15 +257,30 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
               clear
             </button>
           </div>
-          <EntryKeypad
-            buffer={buffer}
-            onBuffer={(b) => { setBuffer(b); setInvalid(false); }}
-          />
+          <div className="ekp-pad-col">
+            <EntryKeypad
+              buffer={buffer}
+              onBuffer={(b) => { setBuffer(b); setInvalid(false); }}
+            />
+            <span className={`vp-transpose-note${starOn ? '' : ' off'}`} data-testid="transposeApplied">
+              * transpose applied
+            </span>
+          </div>
         </div>
       )}
 
       {face === 'note' && (
-        <NoteKeyboard hz={hz} color={color} slot={voice} onCommitHz={commitHz} />
+        <div className="vp-note-wrap">
+          <span className={`vp-transpose-star${starOn ? '' : ' off'}`} aria-hidden="true">*</span>
+          <NoteKeyboard
+            hz={hz * entryRatio}
+            transposeRatio={entryRatio}
+            color={color}
+            slot={voice}
+            onCommitHz={(v) => commitHz(v / entryRatio)}
+          />
+          <span className={`vp-transpose-note${starOn ? '' : ' off'}`}>* transpose applied</span>
+        </div>
       )}
     </div>
   );

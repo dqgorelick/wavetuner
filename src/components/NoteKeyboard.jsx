@@ -10,7 +10,10 @@ import { freqToMidiAndCents, midiToFreq } from '../ui/pitchMath';
 // piano keys where a tap commits IMMEDIATELY (audible feedback is the
 // point, no confirm), an octave cluster, a ±50¢ rotary whose clean tap
 // snaps to the exact note, and just⇄equal commit modes. All math runs
-// in the NOMINAL domain; the chips above the face display sounding.
+// in the HOST's entry domain: `hz` and every onCommitHz value share it,
+// and `transposeRatio` scales the root reference into the same domain
+// (1 = nominal; the panel passes the global transpose ratio while its
+// "add transpose" toggle is on, then divides commits back to nominal).
 
 const WHITE_PCS = [0, 2, 4, 5, 7, 9, 11];
 const WHITE_NAMES = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
@@ -125,7 +128,7 @@ function CentsDial({ cents, midi, onCommit }) {
 const TUNING_TIP = 'just — pure 5-limit ratios from the root voice\n'
   + 'equal — the standard 12 equal steps per octave';
 
-export default function NoteKeyboard({ hz, color, slot, onCommitHz }) {
+export default function NoteKeyboard({ hz, color, slot, onCommitHz, transposeRatio = 1 }) {
   const [just, setJust] = useState(false);
   const [showTip, setShowTip] = useState(false);
 
@@ -138,7 +141,9 @@ export default function NoteKeyboard({ hz, color, slot, onCommitHz }) {
   const anchorSlot = frequencyManager.anchorSlot ?? 0;
   const isRoot = slot === anchorSlot;
   const rootNominal = audioEngine.getFrequency(anchorSlot) || 0;
-  const rootSounding = rootNominal * (audioEngine.getTransposeRatio?.() ?? 1);
+  // Root reference in the host's entry domain — the just quotient is
+  // then domain-invariant (both sides carry the same ratio).
+  const rootRef = rootNominal * transposeRatio;
   const justActive = just && !isRoot;
 
   const commitEqual = (newMidi) => {
@@ -146,12 +151,12 @@ export default function NoteKeyboard({ hz, color, slot, onCommitHz }) {
     onCommitHz(midiToFreq(newMidi + cents / 100));
   };
   const commitJust = (newMidi) => {
-    if (!(rootNominal > 0)) { commitEqual(newMidi); return; }
-    const nr = nearestRatio(midiToFreq(newMidi) / rootNominal, '5-limit');
+    if (!(rootRef > 0)) { commitEqual(newMidi); return; }
+    const nr = nearestRatio(midiToFreq(newMidi) / rootRef, '5-limit');
     if (!nr || nr.n == null || nr.d == null) { commitEqual(newMidi); return; }
     const ext = extendOctaves(nr.n, nr.d, nr.octave);
     // Exact ratio; the cents deviation is deliberately discarded.
-    onCommitHz(rootNominal * (ext.n / ext.d));
+    onCommitHz(rootRef * (ext.n / ext.d));
   };
   const select = (newMidi) => {
     if (newMidi < 0 || newMidi > 127) return;
@@ -160,8 +165,8 @@ export default function NoteKeyboard({ hz, color, slot, onCommitHz }) {
   // Key tap keeps the CURRENT octave (on C4, tapping B gives B4).
   const selectPc = (newPc) => select(12 * (octave + 1) + newPc);
 
-  const rootLabel = rootSounding > 0
-    ? `root: ${isRoot ? 'this voice' : `voice ${anchorSlot + 1}`} (${rootSounding >= 100 ? rootSounding.toFixed(0) : rootSounding.toFixed(1)}hz)`
+  const rootLabel = rootRef > 0
+    ? `root: ${isRoot ? 'this voice' : `voice ${anchorSlot + 1}`} (${rootRef >= 100 ? rootRef.toFixed(0) : rootRef.toFixed(1)}hz)`
     : 'root: —';
 
   return (

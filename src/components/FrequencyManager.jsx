@@ -217,6 +217,12 @@ function CellInput({ value, onCommit, format, parse, className, title, disabled,
 
 function FrequencyRow({ slot, oscillatorCount, frozen }) {
   const hz = audioEngine.initialized ? audioEngine.getFrequency(slot) : 0;
+  // Rows display SOUNDING values (nominal × global transpose) so the
+  // menu matches the mixer readout the user came from; commits divide
+  // the transpose back out — the engine still stores nominal Hz. The
+  // ratio column keeps the nominal quotient (transpose-invariant).
+  const tr = audioEngine.initialized ? (audioEngine.getTransposeRatio?.() ?? 1) : 1;
+  const hzShown = hz * tr;
   const anchorHz = audioEngine.initialized
     ? audioEngine.getFrequency(frequencyManager.anchorSlot)
     : 0;
@@ -281,7 +287,7 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
     }
   }
 
-  const note = freqToNote(hz);
+  const note = freqToNote(hzShown);
   const noteLabel = `${note.note}${note.octave}`;
   const centsLabel = note.cents === 0
     ? '0¢'
@@ -324,9 +330,9 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
     frequencyManager.setRootHz(cur * factor);
   }, [slot]);
 
-  const handleHzCommit = useCallback((hz) => {
-    frequencyManager.setSlotHz(slot, hz);
-  }, [slot]);
+  const handleHzCommit = useCallback((typedHz) => {
+    frequencyManager.setSlotHz(slot, typedHz / tr);
+  }, [slot, tr]);
 
   const handleRatioCommit = useCallback(({ n, d }) => {
     frequencyManager.setSlotRatio(slot, n, d);
@@ -344,10 +350,11 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
     if (!audioEngine.initialized) return;
     const cur = audioEngine.getFrequency(slot);
     if (!(cur > 0)) return;
-    const { centsExact } = freqToMidiAndCents(cur);
+    // Sounding domain: the typed note names what the ear should hear.
+    const { centsExact } = freqToMidiAndCents(cur * tr);
     const newHz = midiToFreq(midi + centsExact / 100);
-    frequencyManager.setSlotHz(slot, newHz);
-  }, [slot]);
+    frequencyManager.setSlotHz(slot, newHz / tr);
+  }, [slot, tr]);
 
   // Cents column commit: keep the currently-displayed note, set the
   // deviation to the typed cents. Typing values outside ±50 are
@@ -356,10 +363,10 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
     if (!audioEngine.initialized) return;
     const cur = audioEngine.getFrequency(slot);
     if (!(cur > 0)) return;
-    const { midi } = freqToMidiAndCents(cur);
+    const { midi } = freqToMidiAndCents(cur * tr);
     const newHz = midiToFreq(midi + cents / 100);
-    frequencyManager.setSlotHz(slot, newHz);
-  }, [slot]);
+    frequencyManager.setSlotHz(slot, newHz / tr);
+  }, [slot, tr]);
 
   return (
     <div className="freq-rail-row" style={{ '--osc-color': color }}>
@@ -390,12 +397,12 @@ function FrequencyRow({ slot, oscillatorCount, frozen }) {
         {slot + 1}
       </button>
       <CellInput
-        value={hz}
+        value={hzShown}
         format={formatHz}
         parse={parseHz}
         onCommit={handleHzCommit}
         className="freq-rail-hz"
-        title="Frequency in Hz"
+        title="Frequency in Hz (transpose applied)"
         frozen={frozen}
       />
       <CellInput
@@ -510,11 +517,15 @@ function useFreqVersion() {
     };
     const unsubA = audioEngine.addFrequencyListener(bump);
     const unsubB = frequencyManager.onChange(bump);
+    // Rows show sounding (transposed) values, so a transpose drag/glide
+    // must repaint them too.
+    const unsubC = audioEngine.addTransposeListener?.(bump);
     frequencyManager.ensureInitialSnapshot();
     return () => {
       if (raf) cancelAnimationFrame(raf);
       unsubA();
       unsubB();
+      unsubC?.();
     };
   }, []);
   // Mute changes don't fire the frequency listener (AudioEngine's
@@ -755,6 +766,11 @@ export function TuningPanel({
   // frame after the glide ends.
   const effFrozen = frozen || audioEngine.isGliding || frequencyManager.isLaunching;
 
+  // The rows show sounding values; the star ↔ footnote pair flags it
+  // whenever a global transpose is actually shifting them.
+  const transposed = audioEngine.initialized
+    && Math.abs(audioEngine.getTransposeSemitones?.() ?? 0) > 0.05;
+
   return (
     <>
       <div
@@ -763,6 +779,7 @@ export function TuningPanel({
         aria-label="Tuning"
         style={{ '--anchor-idx': anchorSlot, '--anchor-color': anchorColor }}
       >
+        <span className={`tuning-transpose-star${transposed ? '' : ' off'}`} aria-hidden="true">*</span>
         <div className="tuning-rows">
           {Array.from({ length: oscillatorCount }, (_, i) => (
             <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} frozen={effFrozen} />
@@ -868,6 +885,9 @@ export function TuningPanel({
         </button>
         <TransposeControl />
       </div>
+      {transposed && (
+        <span className="tuning-transpose-note">* transpose applied</span>
+      )}
       {/* Parameter lock (ScopePanel) moved to its own PERFORM panel. */}
       {/* Recall easing curve moved to Settings → "Recall curve". */}
       </div>

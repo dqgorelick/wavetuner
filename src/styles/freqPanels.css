@@ -321,22 +321,25 @@
 
 /* ── Entry keypad (freq face) ── */
 .vp-freq-face {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 8px;
 }
+/* Side column rows share the keypad's 38px/6px rhythm so buffer /
+   add-transpose / set / clear sit exactly on the four dialpad rows. */
 .ekp-side-col {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .ekp-buffer {
   display: flex;
   align-items: baseline;
   gap: 4px;
-  height: 40px;
+  height: 38px;
   padding: 0 8px;
   box-sizing: border-box;
   border-radius: 8px;
@@ -380,6 +383,92 @@
 .ekp-sidebtn.em {
   background: rgba(255, 255, 255, 0.12);
   border-color: rgba(255, 255, 255, 0.25);
+}
+.ekp-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+}
+.ekp-toggle.on { color: rgba(255, 255, 255, 0.9); }
+.ekp-checkbox {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.95);
+}
+.ekp-toggle.on .ekp-checkbox {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+.ekp-pad-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ekp-pad-col .ekp { flex: 0 0 auto; }
+/* Footnote marker + legend — opacity-gated (space stays reserved) so
+   toggling transpose on/off never reflows the face. */
+.vp-transpose-star {
+  position: absolute;
+  top: -2px;
+  right: -11px;
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.vp-transpose-star.off { opacity: 0; }
+.vp-transpose-note {
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.vp-transpose-note.off { opacity: 0; }
+.vp-note-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* Tuning menu shares the star ↔ footnote grammar (its rows now show
+   sounding values). Styled here, not App.css — same file-ownership rule
+   as the rest of the panels. */
+.tuning-panel { position: relative; }
+.tuning-transpose-star {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.tuning-transpose-star.off { opacity: 0; }
+.tuning-transpose-note {
+  display: block;
+  padding: 2px 0 0 10px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: rgba(255, 255, 255, 0.5);
 }
 .ekp {
   flex: 1 1 0;

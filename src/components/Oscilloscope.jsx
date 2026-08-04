@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import { droneEnvelope } from '../audio/Envelope';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { dronePanWeights, panWidth } from '../audio/StereoMode';
 import { droneWave, keyboardWave } from '../audio/Wave';
@@ -35,6 +36,153 @@ const VIZ_BUF_N_STEP = 32;
 // above/below this. Synth-source scopes are already normalized, so this
 // only applies to the audio path.
 const AUDIO_AMP_SCALE = 0.315;
+
+// ── Tape-transport fairy (paused scope takeover) ──────────────────────
+// Web port of the iOS GhostScope. Pausing no longer just fades the
+// figure out: the engine's tape transport slows the phase accumulators
+// to a crawl (see AudioEngine's tape-transport section), and while that
+// morph is in flight the XY / Hilbert paths hand the frame to a tail
+// SYNTHESIZED from those crawling accumulators instead of the analyser
+// (whose signal fades out at real speed under the plain pause ramp).
+// The tail window contracts — in log space, on the morph — from the
+// live window toward a fraction of the fastest voice's cycle, so the
+// figure visibly unwinds into a drifting comet dot as the phase clocks
+// decelerate, and rewinds into the full figure as they spin back up.
+//
+// The tail stays honest while paused: orb drags, mutes and fader moves
+// all reshape it on the next frame, and when every drone is muted (or
+// the drone toggle is off) the fairy yields and the trace washes out.
+// Resume handoff is phase-exact by construction — the live synth paths
+// draw the same accumulators — and the analyser-fed paths get their
+// frame back only once the morph has landed (FAIRY_HANDOFF_EPS), by
+// which point the resume fade has restored the live signal underneath.
+const FAIRY_TAIL_FRACTION = 0.05; // tail length at full crawl, as a fraction of the fastest voice's cycle
+const FAIRY_HANDOFF_EPS = 0.02;   // morph below which the live trace owns the frame again
+const FAIRY_BREATH_DEPTH = 0.35;  // tail-length breathing at full crawl…
+const FAIRY_BREATH_HZ = 0.11;     // …±35% at ~1/9 Hz (display-only; the speed wander lives in the engine)
+const FAIRY_POINTS_PER_CYCLE = 32;
+const FAIRY_MIN_POINTS = 48;
+const FAIRY_GAIN_IN_TAU = 0.6;    // ease-in for a cold start (fairy appearing from black)
+
+const _fairy = {
+  gain: 0,
+  wasOwning: false,
+  breathPhase: 0,
+  lastT: 0,
+  // Per-frame outputs (valid while `owns` is true).
+  owns: false,
+  morph: 0,
+  window: 0,   // tail span, seconds of UNDILATED phase
+  points: 0,   // polyline budget for that span
+  ampAudio: 0, // per-voice amp multiplier in analyser space (XY paths)
+  ampSynth: 0, // per-voice amp multiplier in synth space (Hilbert path)
+};
+
+function _fairyRelease() {
+  _fairy.owns = false;
+  _fairy.wasOwning = false;
+  _fairy.gain = 0;
+}
+
+// Advance the fairy's clocks and decide frame ownership. Called once
+// per drawScope frame, after the engine's phases have advanced.
+function updateFairy(synthN, sampleRate) {
+  const now = performance.now() / 1000;
+  const dt = Math.min(0.1, Math.max(0, now - (_fairy.lastT || now)));
+  _fairy.lastT = now;
+
+  const morph = audioEngine.getTapeMorph();
+  _fairy.morph = morph;
+  // Breathing clock rolls even when not drawing, so the float never
+  // restarts from the same pose.
+  _fairy.breathPhase += dt * 2 * Math.PI * FAIRY_BREATH_HZ;
+
+  if (!(audioEngine.paused || morph > FAIRY_HANDOFF_EPS)) {
+    _fairyRelease();
+    return;
+  }
+
+  // Keyboard voices keep sounding through a drone pause — while any are
+  // audible the live analyser is the only honest view of them, so it
+  // keeps the frame and the fairy returns once they fade out.
+  const kbdGain = audioEngine.getKeyboardVizGain();
+  if (kbdGain > 0.001) {
+    for (const v of keyboardVoiceManager.getVoicesForSynth()) {
+      if (v.amp * kbdGain > 0.005) {
+        _fairyRelease();
+        return;
+      }
+    }
+  }
+
+  // Highest sounding drone, transposed — the same basis the engine's
+  // crawl dilation normalizes to. Nothing sounding (all muted, drone
+  // toggle off) → nothing to draw; the renderer washes out as usual.
+  const sounding = audioEngine.getSoundingFrequencies();
+  const vols = audioEngine.volumeValues || [];
+  let maxF = 0;
+  for (let i = 0; i < sounding.length; i++) {
+    if (audioEngine.isMuted(i)) continue;
+    if (!((vols[i] || 0) > 0)) continue;
+    if (sounding[i] > maxF) maxF = sounding[i];
+  }
+  // The ALL lane (droneUserGain) and the waves dial sit between the
+  // voices and the analyser tap, so the live figure is scaled by both —
+  // the tail must carry the same factor or the takeover/handoff steps
+  // in size whenever ALL ≠ 1 (iOS folds the same model-side bus gain
+  // into GhostScope). Model values rather than the nodes' ramped twins,
+  // read fresh every frame: dragging either fader while paused reshapes
+  // the figure on the next frame, keeping the tail honest.
+  const busLevel = (audioEngine.isDroneBusMuted() ? 0 : audioEngine.getDroneBusGain())
+    * audioEngine.getWaveBusGain();
+  if (!(maxF > 0) || !(busLevel > 0.001) || !audioEngine.droneEnabled) {
+    _fairyRelease();
+    return;
+  }
+
+  // Fresh takeover only when the fairy wasn't already on screen: a warm
+  // takeover (pause tap — the live trace was just up, morph still near
+  // 0) shows at full brightness; a cold start (already crawled — e.g.
+  // a viz-mode switch while paused) eases in from black.
+  if (!_fairy.wasOwning && _fairy.gain <= 0.01) {
+    _fairy.gain = morph > 0.9 ? 0 : 1;
+  }
+  _fairy.wasOwning = true;
+  _fairy.gain += (1 - _fairy.gain) * (1 - Math.exp(-dt / FAIRY_GAIN_IN_TAU));
+
+  // Tail window in seconds of UNDILATED phase: the live window at
+  // takeover contracting — in log space, on the morph — to
+  // FAIRY_TAIL_FRACTION of the fastest cycle at full crawl. THIS is the
+  // unwind: the window shrinks from many cycles to a fraction of one
+  // while the accumulators decelerate underneath it.
+  const liveWindow = synthN / sampleRate;
+  const crawlWindow = FAIRY_TAIL_FRACTION / maxF;
+  const breath = 1 + FAIRY_BREATH_DEPTH * morph * Math.sin(_fairy.breathPhase);
+  const win = Math.exp(
+    Math.log(liveWindow) + morph * (Math.log(crawlWindow) - Math.log(liveWindow))
+  ) * breath;
+  // Point budget follows the densest voice so individual cycles stay
+  // smooth near real speed without burning the full budget on the crawl.
+  const points = Math.max(
+    FAIRY_MIN_POINTS,
+    Math.min(VIZ_BUF_MAX_N, Math.floor(maxF * win * FAIRY_POINTS_PER_CYCLE) + 2)
+  );
+
+  // Amplitude parity with the live trace at takeover, settling a touch
+  // dimmer in the crawl. Two conventions: the analysers tap post
+  // ALL/waves and pre-master, so their per-voice level is vol ×
+  // envelope sustain × ALL × waves — the XY paths' tail carries all
+  // three factors. The synth-fed paths (Hilbert, drawStatic) draw
+  // vol × droneBusGain(≈1 when sounding) with no ALL/waves scaling —
+  // their live figures never resize with those faders, so neither does
+  // their tail.
+  const level = (1 - 0.08 * morph) * _fairy.gain;
+  _fairy.ampAudio = droneEnvelope.sustain * busLevel * level;
+  _fairy.ampSynth = level;
+  _fairy.window = win;
+  _fairy.points = points;
+  _fairy.owns = true;
+}
 
 function adaptiveBufferSize(highestActiveFreq, sampleRate, targetCycles) {
   if (!(highestActiveFreq > 0)) return VIZ_BUF_MAX_N;
@@ -366,7 +514,16 @@ function drawStatic(
   // ramped to 0. Stored on the shared smoothedWindow ref so it persists
   // across frames. Deliberate, designed motion: the wave settles to a
   // resting line rather than just blinking out.
-  const pausedTarget = audioEngine.paused ? 1 : 0;
+  //
+  // Tape transport supersedes the collapse: while the fairy owns the
+  // frame the wave keeps its full height and simply DECELERATES — the
+  // phase accumulators feeding relPhases crawl, so the beat pattern
+  // drifts fairy-slow — with the drone contributions held at the
+  // fairy's level instead of fading with the paused bus. The legacy
+  // collapse still plays when the fairy can't own the frame (drone
+  // toggle off, everything muted, keyboard sounding through the pause).
+  const tapeOwns = _fairy.owns;
+  const pausedTarget = audioEngine.paused && !tapeOwns ? 1 : 0;
   if (smoothedWindow.pausedFade === undefined) {
     smoothedWindow.pausedFade = pausedTarget;
   } else {
@@ -433,7 +590,7 @@ function drawStatic(
   // drone contributions out while leaving keyboard voices visible, and
   // toggling the keyboard bus does the inverse. Master is deliberately
   // excluded so muting the final mixer leaves the scope visible.
-  const droneScale = audioEngine.getDroneVizGain();
+  const droneScale = tapeOwns ? _fairy.ampSynth : audioEngine.getDroneVizGain();
   const kbdScale = kbdEffectiveGain;
   // 'wave' keeps individuals at ±0.22·h (aggregate up to 1.75× that).
   // 'beating' renders only the aggregate and gets ~1.5× the amplitude so
@@ -676,14 +833,15 @@ function drawStatic(
 // for the side-by-side synthesized XY scope so the comparison against
 // the real analyzer output is apples-to-apples (same N, same
 // sampleRate, same amplitude scaling).
-function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
+function synthStereoData(N, sampleRate, sampleOffsetBackward = 0, opts = {}) {
   const freqs = audioEngine.getAllFrequencies();
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
   const routingMap = audioEngine.getRoutingMap();
-  // Partner oscillator data — second osc per drone, audible on R only
-  // in 'stereo' mode. In 'lr' mode `audible` is false and the partner
-  // contributes nothing to the synth output.
+  // Partner oscillator data — second osc per drone. Mode-blind engine:
+  // `audible` follows the voice's pan width, so a hard-panned voice
+  // (the lr preset's origin) contributes nothing while any off-extreme
+  // pan renders the detuned pair.
   const partners = audioEngine.getDronePartnerData
     ? audioEngine.getDronePartnerData()
     : [];
@@ -691,8 +849,12 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
   // with spacebar/pause), keyboard sees keyboardBusGain (so they fade with
   // the keyboard volume slider / on-off toggle). Master is excluded so the
   // scope stays visible when the final mixer is muted.
-  const droneScale = audioEngine.getDroneVizGain();
-  const keyboardScale = audioEngine.getKeyboardVizGain();
+  // The tape fairy overrides both: its tail must NOT fade with the paused
+  // drone bus (the crawl is the paused visual), and keyboard voices are
+  // excluded (they only reach here when already inaudible, and their
+  // real-speed phases over the tail's tiny window would draw noise).
+  const droneScale = opts.droneScale ?? audioEngine.getDroneVizGain();
+  const keyboardScale = opts.keyboardScale ?? audioEngine.getKeyboardVizGain();
 
   const L = new Float32Array(N);
   const R = new Float32Array(N);
@@ -732,16 +894,16 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
     if (!(f > 0)) continue;
 
     const partner = partners[k];
-    const stereoMode = partner && partner.audible;
+    const pairAudible = partner && partner.audible;
     const channels = routingMap[k] || [];
     const beyondStereo = channels.some((ch) => ch >= 2);
 
-    if (stereoMode) {
-      // Each drone is two oscillators in stereo mode. Mirror the tap
-      // weights: primary/partner slide per the slot's pan (collapse
-      // model) and the partner fades out with panWidth.
+    if (pairAudible) {
+      // The detuned pair is sounding. Mirror the tap weights:
+      // primary/partner slide per the slot's pan (collapse model) and
+      // the partner fades out with panWidth.
       const pan = beyondStereo ? 0 : (pans[k] || 0);
-      const w = dronePanWeights(pan, 'stereo');
+      const w = dronePanWeights(pan);
       renderOsc(f, phases[k], amp * w.primary[0], amp * w.primary[1], droneWT);
       if (partner.freq > 0) {
         const partnerAmp = amp * panWidth(pan);
@@ -755,8 +917,9 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
       if (!goesLeft && !goesRight) continue;
       renderOsc(f, phases[k], goesLeft ? amp : 0, goesRight ? amp : 0, droneWT);
     } else {
-      // lr mode: single osc, continuous balance-law pan.
-      const w = dronePanWeights(pans[k] || 0, 'lr');
+      // Pair collapsed at a hard pan: one clean oscillator, same
+      // collapse weights the audio taps hold ([0,1] / [1,0] there).
+      const w = dronePanWeights(pans[k] || 0);
       renderOsc(f, phases[k], amp * w.primary[0], amp * w.primary[1], droneWT);
     }
   }
@@ -794,13 +957,14 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0) {
 // instantaneous phase. Output fits the same [-1, 1] envelope as
 // synthStereoData (same masterScale-based count clipping), so drawXY's
 // mapping works as-is.
-function synthHilbertData(bufferSize, sampleRate) {
+function synthHilbertData(bufferSize, sampleRate, opts = {}) {
   const freqs = audioEngine.getAllFrequencies();
   const phases = audioEngine.getAllPhases();
   const volumes = audioEngine.volumeValues || [];
-  // Viz gain (bus only, no master) so the polar scope survives a final-mixer mute.
-  const droneScale = audioEngine.getDroneVizGain();
-  const keyboardScale = audioEngine.getKeyboardVizGain();
+  // Viz gain (bus only, no master) so the polar scope survives a final-mixer
+  // mute. Overridden by the tape fairy — see synthStereoData.
+  const droneScale = opts.droneScale ?? audioEngine.getDroneVizGain();
+  const keyboardScale = opts.keyboardScale ?? audioEngine.getKeyboardVizGain();
 
   const X = new Float32Array(bufferSize);
   const Y = new Float32Array(bufferSize);
@@ -1575,11 +1739,22 @@ export default function Oscilloscope({
       // mode keeps the original always-on behavior so the look can't shift.
       // The timeline (4) reads frequencies only, never phase, so it skips
       // all of this regardless of tier.
-      if (!isTimeline && (!perf || vizMode !== 0)) {
+      // Tape transport: while paused / spinning back up the fairy needs
+      // the accumulators advancing even in tiers that would normally
+      // skip them (perf-mode Lissajous), and calibration gated OFF —
+      // the crawling accumulators deliberately diverge from the (still
+      // at-speed, fading) analyser signal, and the LSQ would drag them
+      // back. On release the ≤0.2-blend correction re-converges them
+      // under the resume fade.
+      const tapeEngaged = audioEngine.paused
+        || audioEngine.getTapeMorph() > FAIRY_HANDOFF_EPS;
+      if ((!isTimeline && (!perf || vizMode !== 0)) || tapeEngaged) {
         audioEngine.updatePhases();
         keyboardVoiceManager.updatePhases();
         calibrateTickRef.current = (calibrateTickRef.current + 1) & 1;
-        if (calibrateTickRef.current === 0) audioEngine.calibratePhases();
+        if (calibrateTickRef.current === 0 && !tapeEngaged) {
+          audioEngine.calibratePhases();
+        }
       }
 
       // Tier-3 audio features (dissonance, consonance, beating, centroid,
@@ -1645,6 +1820,10 @@ export default function Oscilloscope({
         vizCyclesRef.current
       );
 
+      // Fairy frame-ownership + tail window for this frame (no-op work
+      // unless the tape gesture is engaged).
+      updateFairy(synthN, sampleRate);
+
       // Per-mode source policy:
       //   0 (Circle), 2 (Face)  → 'audio'  (analyzer's actual signal,
       //                            so wavefolding + setPeriodicWave
@@ -1665,15 +1844,49 @@ export default function Oscilloscope({
       // length-bounded by synthN so the viz density stays consistent
       // across sources.
       const getXY = (source) => {
+        // Tape-transport takeover: the fairy tail, synthesized from the
+        // crawling phase accumulators. Points span `window` seconds of
+        // UNDILATED phase ending at the accumulators' current pose —
+        // ≈ the live figure at morph 0, a drifting comet dot at full
+        // crawl. Reuses the synth renderer with an effective sample
+        // rate of points/window, so pans / detune partners / routing
+        // all place voices exactly like the live paths do.
+        if (_fairy.owns) {
+          const tail = synthStereoData(_fairy.points, _fairy.points / _fairy.window, 0, {
+            droneScale: _fairy.ampAudio,
+            keyboardScale: 0,
+          });
+          // The live 'audio' window replays the master saturator when
+          // "show in oscilloscope" is on (default) — the same replay
+          // must squash the tail, or the takeover/handoff steps in size
+          // at any hot gain: tanh is near-transparent at ALL 1x but
+          // flattens the live figure hard at 2x, which the linear tail
+          // would overshoot. Memoryless curve, so in-place is safe (the
+          // tail arrays are fresh this frame).
+          const satCurve = scopeSaturationRef.current
+            ? audioEngine.getSaturationCurve()
+            : 0;
+          if (satCurve) {
+            const drive = audioEngine.getSaturationDrive();
+            saturateInto(tail.L, tail.L, satCurve, drive);
+            saturateInto(tail.R, tail.R, satCurve, drive);
+          }
+          return tail;
+        }
         if (source === 'audio') {
           // Read the analyzer directly. In 'stereo' mode (drone or
           // keyboard) the same signal goes to both channels, so the
           // lissajous collapses to a diagonal — that's an accurate
           // reading of what's playing. Detune still shows up as
           // beating in either L or R individually.
-          const L = audioEngine.getTimeDataLeft();
-          const R = audioEngine.getTimeDataRight();
-          if (!L || !R) return { L: new Float32Array(0), R: new Float32Array(0) };
+          // Coherent stereo read (getTimeDataStereo, not the separate
+          // L/R getters) — two independent snapshots let a render-quantum
+          // commit land between them ~1× per 10 s, skewing R 128 samples
+          // newer than L and flashing the figure at a wrong phase for one
+          // frame. See the AudioEngine method for the bracketing details.
+          const stereo = audioEngine.getTimeDataStereo();
+          if (!stereo) return { L: new Float32Array(0), R: new Float32Array(0) };
+          const { L, R } = stereo;
           // Phase-lock the window to a rising zero-crossing on L so the
           // figure holds still instead of flickering. Same start index for
           // both channels so the X/Y correspondence is preserved.
@@ -1702,6 +1915,14 @@ export default function Oscilloscope({
       // (FIR-transformed mono) is left available below in case we
       // expose it again later, but the call site picks 'synth'.
       const getHilbertXY = (source) => {
+        // Same fairy takeover as getXY, in the analytic pair — each
+        // voice's epicycle unwinds into a slow orbiting dot.
+        if (_fairy.owns) {
+          return synthHilbertData(_fairy.points, _fairy.points / _fairy.window, {
+            droneScale: _fairy.ampSynth,
+            keyboardScale: 0,
+          });
+        }
         if (source === 'audio') {
           const L = audioEngine.getTimeDataLeft();
           const R = audioEngine.getTimeDataRight();

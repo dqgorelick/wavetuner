@@ -51,10 +51,16 @@ behavior applies to the panels unchanged.
 
 - Selection IS the panel (readout tap toggles/retargets; ALL and voice
   selection are one radio state).
-- Chips display SOUNDING pitch (nominal × transpose ratio); every editor and
-  commit runs NOMINAL. Commits go through `frequencyManager.setSlotHz` (ratio
-  locks / follow-root / undo snapshots for free — never `audioEngine.
-  setFrequency` directly).
+- Chips display SOUNDING pitch (nominal × transpose ratio). The keypad and
+  note faces run in the SOUNDING domain while the keypad's "add transpose"
+  checkbox is on (the default): seeds show nominal × ratio and commits divide
+  the ratio back out, so what you type is what you hear. Unchecking drops
+  both faces to the raw NOMINAL domain. A `*` at the face's top right pairs
+  with the "* transpose applied" footnote under the dialpad whenever the
+  shown value includes a live transpose. The controls-face scrubber stays
+  nominal. Every commit still lands NOMINAL through
+  `frequencyManager.setSlotHz` (ratio locks / follow-root / undo snapshots
+  for free — never `audioEngine.setFrequency` directly).
 - Note keyboard: tap commits immediately, keeps the current octave, equal
   mode preserves the cents deviation; just mode snaps to the nearest 5-limit
   ratio vs the anchor voice (hardcoded 5-limit like iOS). Cents-dial drag is

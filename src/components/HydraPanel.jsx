@@ -97,6 +97,12 @@ export default function HydraPanel({
   onVfxScaleChange,
   vfxBlend,
   onVfxBlendChange,
+  vfxModR,
+  onVfxModRChange,
+  vfxModG,
+  onVfxModGChange,
+  vfxModB,
+  onVfxModBChange,
 }) {
   const sketches = useMemo(() => getSketches(), []);
   const defaultCode = useMemo(
@@ -577,6 +583,47 @@ export default function HydraPanel({
             {status.text || 'Hydra ready. Cmd-Enter to run.'}
           </div>
         </>
+      )}
+
+      {/* Shader backend only (hydra sketches drive their own split in
+          code). Lives OUTSIDE the supportsFeedback gate: the mobile lite
+          pipeline has no feedback but does have the RGB split, so these
+          are the one set of visual sliders a phone gets. Mirrors iOS's
+          oscModR/G/B "rgb offset" params. */}
+      {!supportsLiveCode && (
+      <section className="hydra-section">
+        <h5 className="hydra-section-title">RGB split</h5>
+        <VizSlider
+          label="Red"
+          value={vfxModR}
+          min={0}
+          max={0.1}
+          step={0.001}
+          format={(v) => v.toFixed(3)}
+          onChange={onVfxModRChange}
+          title="How far the red channel's tap drifts from the trace. 0 = no red fringe."
+        />
+        <VizSlider
+          label="Green"
+          value={vfxModG}
+          min={0}
+          max={0.1}
+          step={0.001}
+          format={(v) => v.toFixed(3)}
+          onChange={onVfxModGChange}
+          title="How far the green channel's tap drifts from the trace. 0 = no green fringe."
+        />
+        <VizSlider
+          label="Blue"
+          value={vfxModB}
+          min={0}
+          max={0.1}
+          step={0.001}
+          format={(v) => v.toFixed(3)}
+          onChange={onVfxModBChange}
+          title="How far the blue channel's tap drifts from the trace. 0 = no blue fringe."
+        />
+      </section>
       )}
 
       {/* Hidden when the running pipeline has no feedback layer (the

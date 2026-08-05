@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import EnvelopeGraph from './EnvelopeGraph';
+import CompactSlider from './CompactSlider';
 
 /**
  * EnvelopeControls - one Ableton-style ADSR panel for a single
@@ -10,6 +11,16 @@ import EnvelopeGraph from './EnvelopeGraph';
  * mutations (e.g. URL state restore) keep the sliders in sync, but
  * user interaction goes envelope.set* → onChange → setState round-
  * trip via the same path.
+ *
+ * `split` switches to the iOS EnvelopeEditorView layout: the graph on
+ * the left, the ADSR levers stacked in a column beside it (label over
+ * track — CompactSlider), so the whole editor fits the 310px side-menu
+ * column without four full-width rows of scroll. The host draws the
+ * section header in that mode, so `title` is skipped. `belowGraph`
+ * mounts under the graph in the LEFT column (the waves menu puts its
+ * drone/midi/kbd target radio there) — the picker used to sit above
+ * the whole split, which pushed release off the bottom of the column
+ * and made the menu scroll.
  *
  * Time sliders use a sqrt-ms curve: slider value t ∈ [0, 1] maps to
  * ms = 1 + 9999 × t² (so 1 ms..10 s with fine control near the bottom
@@ -34,7 +45,13 @@ function formatMs(ms) {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
-export default function EnvelopeControls({ title, envelope, mode = 'adsr' }) {
+export default function EnvelopeControls({
+  title,
+  envelope,
+  mode = 'adsr',
+  split = false,
+  belowGraph = null,
+}) {
   const [, setTick] = useState(0);
 
   // Re-render whenever the envelope's values change (URL restore, the
@@ -51,6 +68,55 @@ export default function EnvelopeControls({ title, envelope, mode = 'adsr' }) {
   // that shape without teaching EnvelopeGraph a new code path.
   const graphDecay = isAR ? 0 : envelope.decay;
   const graphSustain = isAR ? 1 : envelope.sustain;
+
+  if (split) {
+    return (
+      <div className="envelope-section tray-split">
+        <div className="tray-split-col">
+          <EnvelopeGraph
+            attack={envelope.attack}
+            decay={graphDecay}
+            sustain={graphSustain}
+            release={envelope.release}
+          />
+          {belowGraph}
+        </div>
+        <div className="tray-split-col">
+          <CompactSlider
+            label="attack"
+            value={msToT(attackMs)}
+            step="0.001"
+            readout={formatMs(attackMs)}
+            onChange={(t) => envelope.setAttack(tToMs(t) / 1000)}
+          />
+          {!isAR && (
+            <CompactSlider
+              label="decay"
+              value={msToT(decayMs)}
+              step="0.001"
+              readout={formatMs(decayMs)}
+              onChange={(t) => envelope.setDecay(tToMs(t) / 1000)}
+            />
+          )}
+          {!isAR && (
+            <CompactSlider
+              label="sustain"
+              value={envelope.sustain}
+              readout={`${Math.round(envelope.sustain * 100)} %`}
+              onChange={(v) => envelope.setSustain(v)}
+            />
+          )}
+          <CompactSlider
+            label="release"
+            value={msToT(releaseMs)}
+            step="0.001"
+            readout={formatMs(releaseMs)}
+            onChange={(t) => envelope.setRelease(tToMs(t) / 1000)}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="settings-section envelope-section">

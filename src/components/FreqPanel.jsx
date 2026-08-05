@@ -126,10 +126,8 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
     </div>
   );
 
-  // Entry domain: sounding while "add transpose" is checked, else nominal.
+  // Entry domain: sounding while "apply transpose" is checked, else nominal.
   const entryRatio = addTranspose ? ratio : 1;
-  const transposed = Math.abs(ratio - 1) > 0.003;
-  const starOn = addTranspose && transposed;
 
   const setFromBuffer = () => {
     const parsed = parseHz(buffer);
@@ -230,57 +228,47 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
 
       {face === 'freq' && (
         <div className="vp-freq-face">
-          <span className={`vp-transpose-star${starOn ? '' : ' off'}`} aria-hidden="true">*</span>
           <div className="ekp-side-col">
             <div className={`ekp-buffer${invalid ? ' invalid' : ''}`} data-testid="pitchEntryBuffer">
               <span className="ekp-buffer-text">{buffer || ' '}</span>
               <span className="ekp-caret" aria-hidden="true" />
               <span className="ekp-unit">Hz</span>
             </div>
+            <button type="button" className="ekp-sidebtn em" onClick={setFromBuffer} data-testid="keypadSet">set</button>
             <button
               type="button"
-              className={`ekp-sidebtn ekp-toggle${addTranspose ? ' on' : ''}`}
+              className="ekp-word"
+              onClick={() => { setBuffer(''); setInvalid(false); }}
+              data-testid="keypadClear"
+            >
+              <span className="ekp-word-label">clear</span>
+            </button>
+            <button
+              type="button"
+              className={`ekp-word${addTranspose ? ' on' : ''}`}
               onClick={() => setAddTranspose((v) => !v)}
               data-testid="keypadAddTranspose"
               aria-pressed={addTranspose}
             >
               <span className="ekp-checkbox" aria-hidden="true">{addTranspose ? '✓' : ''}</span>
-              add transpose
-            </button>
-            <button type="button" className="ekp-sidebtn em" onClick={setFromBuffer} data-testid="keypadSet">set</button>
-            <button
-              type="button"
-              className="ekp-sidebtn"
-              onClick={() => { setBuffer(''); setInvalid(false); }}
-              data-testid="keypadClear"
-            >
-              clear
+              <span className="ekp-word-label">apply transpose</span>
             </button>
           </div>
-          <div className="ekp-pad-col">
-            <EntryKeypad
-              buffer={buffer}
-              onBuffer={(b) => { setBuffer(b); setInvalid(false); }}
-            />
-            <span className={`vp-transpose-note${starOn ? '' : ' off'}`} data-testid="transposeApplied">
-              * transpose applied
-            </span>
-          </div>
+          <EntryKeypad
+            buffer={buffer}
+            onBuffer={(b) => { setBuffer(b); setInvalid(false); }}
+          />
         </div>
       )}
 
       {face === 'note' && (
-        <div className="vp-note-wrap">
-          <span className={`vp-transpose-star${starOn ? '' : ' off'}`} aria-hidden="true">*</span>
-          <NoteKeyboard
-            hz={hz * entryRatio}
-            transposeRatio={entryRatio}
-            color={color}
-            slot={voice}
-            onCommitHz={(v) => commitHz(v / entryRatio)}
-          />
-          <span className={`vp-transpose-note${starOn ? '' : ' off'}`}>* transpose applied</span>
-        </div>
+        <NoteKeyboard
+          hz={hz * entryRatio}
+          transposeRatio={entryRatio}
+          color={color}
+          slot={voice}
+          onCommitHz={(v) => commitHz(v / entryRatio)}
+        />
       )}
     </div>
   );

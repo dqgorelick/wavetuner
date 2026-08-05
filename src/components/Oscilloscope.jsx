@@ -888,7 +888,13 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0, opts = {}) {
 
   for (let k = 0; k < freqs.length; k++) {
     const muted = audioEngine.isMuted(k);
-    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
+    // Equal-loudness comp the audio gain targets carry (0.5 at center →
+    // 1 at a hard pan) — without it a centered voice draws ~2× its
+    // analyser amplitude and the tape-fairy handoff steps in size.
+    const loud = audioEngine.getSlotLoudnessScale
+      ? audioEngine.getSlotLoudnessScale(k)
+      : 1;
+    const amp = (muted ? 0 : (volumes[k] || 0)) * loud * droneScale;
     if (amp <= 0) continue;
     const f = freqs[k];
     if (!(f > 0)) continue;
@@ -987,13 +993,31 @@ function synthHilbertData(bufferSize, sampleRate, opts = {}) {
     }
   };
 
+  // Partner oscillators + pans: the Hilbert view is mono (analytic of
+  // the L+R mix), so a centered voice's detuned pair contributes BOTH
+  // oscillators — primary and partner each at their own frequency and
+  // accumulator, the partner fading with pan width exactly like its
+  // gain node (iOS GhostScope draws the same pair in its hilbert path).
+  // At a hard pan this degenerates to the old single-osc render.
+  const hPartners = audioEngine.getDronePartnerData
+    ? audioEngine.getDronePartnerData()
+    : [];
+  const hPans = audioEngine.getVoicePans ? audioEngine.getVoicePans() : [];
+
   for (let k = 0; k < freqs.length; k++) {
     const muted = audioEngine.isMuted(k);
-    const amp = (muted ? 0 : (volumes[k] || 0)) * droneScale;
+    const loud = audioEngine.getSlotLoudnessScale
+      ? audioEngine.getSlotLoudnessScale(k)
+      : 1;
+    const amp = (muted ? 0 : (volumes[k] || 0)) * loud * droneScale;
     if (amp <= 0) continue;
     const f = freqs[k];
     if (!(f > 0)) continue;
     renderAnalytic(f, phases[k], amp, droneH);
+    const partner = hPartners[k];
+    if (partner && partner.audible && partner.freq > 0) {
+      renderAnalytic(partner.freq, partner.phase, amp * panWidth(hPans[k] || 0), droneH);
+    }
   }
 
   // Keyboard voices — Hilbert is mono (analytic of the L+R mix), so

@@ -14,6 +14,7 @@
  *   stopVisuals()                                          → void
  *   setVisualResolution(width, height)                     → void
  *   setVfxParams(scale, blend)                             → void
+ *   setChromaParams(modR, modG, modB)                      → void
  *   selectSketch(id)                                       → void
  *   getSketches()                                          → [{id, name, description, code?}]
  *   evalUserCode(code)                                     → { ok, error? }
@@ -30,6 +31,7 @@ export {
   stopVisuals,
   setVisualResolution,
   setVfxParams,
+  setChromaParams,
   evalUserCode,
   selectSketch,
   getSketches,

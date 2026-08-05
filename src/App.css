@@ -1720,6 +1720,12 @@ kbd {
   width: 100%;
   accent-color: rgba(240, 244, 255, 0.85);
 }
+/* Label-less variant — the slider IS the thing the menu is named for
+   (noise level, saturation level), so the word would only repeat the
+   menu title. Track takes the freed column; the value stays put. */
+.tune-slider-row.no-label {
+  grid-template-columns: 1fr 72px;
+}
 .tune-slider-row.disabled {
   opacity: 0.4;
 }
@@ -1731,7 +1737,10 @@ kbd {
    WaveControls section. */
 .fold-type-row {
   display: flex;
-  gap: 14px;
+  flex-wrap: wrap;
+  /* 10px, not 14: the saturation styles are a five-up row and have to
+     clear the 310px side-menu column on one line. */
+  gap: 6px 10px;
   margin-top: 8px;
 }
 .fold-type-option {
@@ -2462,21 +2471,23 @@ kbd {
 .source-tray-body {
   padding: 0 10px 10px;
 }
-.source-tray-cols {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+/* The body already supplies the gutter and the panel is one section —
+   .settings-section's own 12/16 padding just double-counts it and costs
+   the waves menu the vertical room its four ADSR levers need to fit
+   without the column scrolling. */
+.source-tray-body > .settings-section {
+  padding: 2px 6px 0;
+  border-bottom: none;
 }
-.source-tray-cols > * { flex: 1 1 180px; min-width: 0; }
-
-/* Source tabs inside the waves tray — drone / kbd / midi, one envelope
-   mounted at a time. Same caps-underline word grammar as the knob
-   labels and the tray title: dim white, the open one brightens and
-   wears the underline. */
+/* Target selectors inside a tray — drone | midi | kbd for the envelope,
+   drone | midi/kbd for the wave pool. Same caps-underline word grammar
+   as the knob labels and the tray title: dim white, the selected one
+   brightens and wears the underline. (Class names are historical — this
+   was a tab strip before the words became radio buttons.) */
 .source-tab-row {
   display: flex;
   gap: 14px;
-  margin: 12px 0 2px;
+  margin: 2px 0 2px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   padding-bottom: 6px;
 }
@@ -2497,9 +2508,95 @@ kbd {
   color: rgba(255, 255, 255, 0.9);
   border-bottom-color: rgba(255, 255, 255, 0.9);
 }
-/* The tab body carries its own sections; the envelope panel inside
-   already brings its own top margin, so only the level row needs air. */
-.source-tab-body .envelope-section { margin-top: 4px; }
+/* Section heading inside a tray body. `.settings-label` already carries
+   the caps/tracking; this only re-establishes the air above it, since
+   the tray stacks several sections inside ONE .settings-section (the
+   section's own padding would otherwise be the only separation). The
+   <em> holds the selected option's character fragment — "color: −6 dB
+   per octave" — so the heading itself carries the blurb. */
+.tray-section-label {
+  margin: 16px 0 6px;
+}
+.tray-section-label em {
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Two-up tray section (iOS SoundDesignViews parity): the picture on the
+   left, its levers stacked on the right. Wraps to one column when the
+   menu is a full-width sheet on phones and the halves get too narrow. */
+.tray-split {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-top: 8px;
+}
+.tray-split-col {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+.tray-split .wave-preview,
+.tray-split .envelope-graph {
+  width: 100%;
+}
+/* Match the height of the lever column beside it (two/four stacked
+   CompactSliders) so the two-up section reads as one block. */
+.tray-split .wave-preview {
+  height: 72px;
+  margin: 0;
+}
+.tray-split .envelope-graph {
+  display: block;
+  height: 72px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+
+/* Stacked label-over-slider control (CompactSlider) — the half-width
+   column can't fit .tune-slider-row's label · track · value grid. */
+/* A word radio parked inside a split column (the envelope target under
+   its curve) drops the rule + the row spacing it wears when it sits on
+   its own above a section — the graph above it already bounds it. */
+.tray-split-col .source-tab-row {
+  margin: 6px 0 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  gap: 10px;
+}
+
+.compact-slider + .compact-slider {
+  margin-top: 8px;
+}
+.compact-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 1px;
+}
+.compact-slider-label {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.compact-slider-value {
+  font-family: monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
+.compact-slider.disabled { opacity: 0.4; }
+
+/* Check-mark rows at the foot of a tray (saturate noise, visualize …).
+   They borrow .fold-type-option's layout but stack instead of sitting
+   in a row, so each needs its own top margin. */
+.tray-check {
+  margin-top: 10px;
+}
 
 /* Top-row toggles — always-visible corner buttons. Right cluster:
    settings (16px), share (58px), scope-mode (100px). Left cluster: help
@@ -5171,7 +5268,11 @@ kbd {
   z-index: 40;
 }
 .fsb-hz-float.showing {
-  opacity: 1;
+  /* --edge-fade (per-voice, inline): dissolves the readout as it follows
+     its pitch off the row edge — it slides off screen instead of clamping
+     (Dan, 2026-08-04). Multiplies inside the same opacity the strip's
+     show/hide transition animates, so the two fades compose. */
+  opacity: calc(var(--edge-fade, 1));
   transition-duration: 0.12s;
 }
 /* Orb raised above the bar: the float leaves the strip and hangs off the
@@ -5186,7 +5287,7 @@ kbd {
   transition: stroke-opacity 0.15s ease-out;
 }
 .fsb-hz-stem.showing {
-  stroke-opacity: 0.6;
+  stroke-opacity: calc(0.6 * var(--edge-fade, 1));
   transition-duration: 0.12s;
 }
 
@@ -5280,6 +5381,9 @@ kbd {
               top 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
               opacity 0.35s ease;
 }
+/* (Off-row hiding is a continuous per-voice edge fade now — an inline
+   `filter: opacity(…)` driven by edgeFades in FrequencySpectrumBar.jsx —
+   so chrome slides off the row and dissolves instead of blinking out.) */
 /* Type matches .fsb-dot-label exactly — the readout stands in for the
    voice number, so it must feel like the same text swapping content.
    Color comes inline (the orb color), like the label's inline color. */

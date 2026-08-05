@@ -766,11 +766,6 @@ export function TuningPanel({
   // frame after the glide ends.
   const effFrozen = frozen || audioEngine.isGliding || frequencyManager.isLaunching;
 
-  // The rows show sounding values; the star ↔ footnote pair flags it
-  // whenever a global transpose is actually shifting them.
-  const transposed = audioEngine.initialized
-    && Math.abs(audioEngine.getTransposeSemitones?.() ?? 0) > 0.05;
-
   return (
     <>
       <div
@@ -779,7 +774,6 @@ export function TuningPanel({
         aria-label="Tuning"
         style={{ '--anchor-idx': anchorSlot, '--anchor-color': anchorColor }}
       >
-        <span className={`tuning-transpose-star${transposed ? '' : ' off'}`} aria-hidden="true">*</span>
         <div className="tuning-rows">
           {Array.from({ length: oscillatorCount }, (_, i) => (
             <FrequencyRow key={i} slot={i} oscillatorCount={oscillatorCount} frozen={effFrozen} />
@@ -885,9 +879,6 @@ export function TuningPanel({
         </button>
         <TransposeControl />
       </div>
-      {transposed && (
-        <span className="tuning-transpose-note">* transpose applied</span>
-      )}
       {/* Parameter lock (ScopePanel) moved to its own PERFORM panel. */}
       {/* Recall easing curve moved to Settings → "Recall curve". */}
       </div>

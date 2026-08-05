@@ -24,9 +24,11 @@ import SourceKnob from './SourceKnob';
 // Grains/ambient/mic are iOS-only.
 //
 // The drone / kbd / midi bus dials used to sit in a second group here.
-// They're gone: their level sliders and envelopes now live inside the
-// waves tray, one behind each of three tabs, so the three ADSR panels
-// don't stack on top of each other in the menu.
+// They're gone: their envelopes moved into the waves tray behind a
+// drone | midi | kbd word radio, so the three ADSR panels don't stack
+// on top of each other in the menu. (Their bus LEVEL sliders went with
+// the 2026-08-04 cleanup — the waves level above them read as the same
+// control; the engine setters are still there.)
 
 // Dial geometry — the band fills the console column's width instead of
 // stepping between two hardcoded sizes at a breakpoint (the old 46 / 32
@@ -42,6 +44,11 @@ const MAX_SIZE = 50;
 const MAX_SLOT = MAX_SIZE / SIZE_IN_SLOT;
 
 const clamp = (lo, v, hi) => Math.max(lo, Math.min(hi, v));
+
+// The shape and fold dials open the same merged "shape and fold" menu
+// (2026-08-04) — one pool selector, one wave picture, both levers. The
+// dials stay separate macros; only the menu behind them merged.
+const SHAPE_FOLD = new Set(['shape', 'fold']);
 
 // Slot width → dial size + the type that rides with it. Height matters
 // too: the label sits under the circle inside the band's fixed height
@@ -191,7 +198,11 @@ function SourceKnobBand({
             readout={k.readout}
             title={k.title}
             dimmed={k.dimmed}
-            selected={openTray === k.kind}
+            // shape and fold share ONE menu ("shape and fold"), so both
+            // dials light up whichever of the two opened it.
+            selected={SHAPE_FOLD.has(k.kind)
+              ? SHAPE_FOLD.has(openTray)
+              : openTray === k.kind}
             size={dial.size}
             slot={dial.slot}
             linkNext={k.linkNext}

@@ -6,6 +6,12 @@ import WaveShapePreview from './WaveShapePreview';
 /**
  * WaveControls - per-pool waveform shape + wavefolder controls.
  *
+ * UNMOUNTED since 2026-08-04: the shape/fold menu merged into one
+ * SourceTrayPanel body with a drone | midi/kbd pool selector, so the
+ * two side-by-side copies of this section are gone. Kept as the
+ * reference for the full-width layout (preview over label·track·value
+ * rows) in case the settings drawer wants it back.
+ *
  * Two sliders + a fold-algorithm radio group:
  *   - Shape: 0..3, lerps through sine/triangle/square/saw via the
  *     pool's Wave singleton (drives setPeriodicWave on every running

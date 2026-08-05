@@ -64,6 +64,11 @@ export function setVfxParams(scale, blend) {
   vfxBlend = blend;
 }
 
+// Contract parity with the shader backend's per-channel RGB-split
+// uniforms. Hydra sketches drive their own split amounts in code, so
+// this is a no-op here.
+export function setChromaParams() {}
+
 /**
  * Boot Hydra (idempotent — re-calling with a different canvas rebinds).
  * Must be called from inside the React tree once the canvas refs exist.

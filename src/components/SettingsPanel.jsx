@@ -15,6 +15,10 @@ import {
   SCALE_AMOUNT_MAX,
   FINE_LIMIT_MIN,
   FINE_LIMIT_MAX,
+  ZOOM_OFFSET_MIN,
+  ZOOM_OFFSET_MAX,
+  ZOOM_SCALE_MIN,
+  ZOOM_SCALE_MAX,
 } from '../audio/scrubSettings';
 
 /**
@@ -407,6 +411,15 @@ export default function SettingsPanel({
           >
             ios scaling
           </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${orbDragMode === 'zoom' ? 'on' : 'off'}`}
+            onClick={() => onOrbDragModeChange?.('zoom')}
+            aria-pressed={orbDragMode === 'zoom'}
+            title="Zoom: the view is the speed dial — raising the pointer zooms out for coarse sweeps, pulling below zooms in around the voice for fine tuning. The ruler's tick spacing shows the current rate. Sliders below set the jump at the grab, the slope, and the direction."
+          >
+            zoom
+          </button>
         </div>
         {/* Grab mode (click an orb so it follows the cursor) sits out of all
             three — its vertical axis still rides the voice's level. */}
@@ -443,6 +456,64 @@ export default function SettingsPanel({
                 className="tune-slider"
               />
               <span className="tune-slider-value">{scrub.fineLimit.toFixed(2)}×</span>
+            </div>
+          </>
+        )}
+        {orbDragMode === 'zoom' && (
+          <>
+            <div
+              className="tune-slider-row"
+              title="How far the view jumps the instant a drag confirms, before you've pulled at all — the b offset. 0 leaves the frame alone; positive zooms out into some breathing room, negative leans in."
+            >
+              <span className="tune-slider-label">Grab zoom</span>
+              <input
+                type="range"
+                min={ZOOM_OFFSET_MIN}
+                max={ZOOM_OFFSET_MAX}
+                step="0.05"
+                value={scrub.zoomOffset}
+                onChange={(e) => updateScrub('zoomOffset', parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">
+                {scrub.zoomOffset === 0 ? 'none' : `${(2 ** scrub.zoomOffset).toFixed(2)}×`}
+              </span>
+            </div>
+            <div
+              className="tune-slider-row"
+              title="How hard vertical travel leans the frame — the slope. 1× is the tuned curve (3× wider at a full pull one way, ~1/3 the other), 0 is flat (the view never moves), 3× exaggerates both ends."
+            >
+              <span className="tune-slider-label">Zoom amount</span>
+              <input
+                type="range"
+                min={ZOOM_SCALE_MIN}
+                max={ZOOM_SCALE_MAX}
+                step="0.05"
+                value={scrub.zoomScale}
+                onChange={(e) => updateScrub('zoomScale', parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">{scrub.zoomScale.toFixed(2)}×</span>
+            </div>
+            <div className="settings-toggle-row">
+              <button
+                type="button"
+                className={`settings-toggle-btn ${!scrub.zoomInvert ? 'on' : 'off'}`}
+                onClick={() => updateScrub('zoomInvert', false)}
+                aria-pressed={!scrub.zoomInvert}
+                title="Raise the pointer to zoom OUT for coarse sweeps, pull it down to zoom in around the voice."
+              >
+                up = out
+              </button>
+              <button
+                type="button"
+                className={`settings-toggle-btn ${scrub.zoomInvert ? 'on' : 'off'}`}
+                onClick={() => updateScrub('zoomInvert', true)}
+                aria-pressed={!!scrub.zoomInvert}
+                title="Flipped: raise the pointer to zoom IN around the voice, pull it down to zoom out."
+              >
+                up = in
+              </button>
             </div>
           </>
         )}

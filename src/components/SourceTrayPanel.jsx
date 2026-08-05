@@ -1,12 +1,13 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import { droneWave, keyboardWave } from '../audio/Wave';
-import { droneFold, keyboardFold, FOLD_TYPES, FOLD_TYPE_IDS } from '../audio/Fold';
+import { droneFold, keyboardFold, FOLD_TYPES } from '../audio/Fold';
 import { noise, NOISE_TYPES, NOISE_TYPE_IDS } from '../audio/Noise';
 import { droneEnvelope, keyboardEnvelope, computerKbdEnvelope } from '../audio/Envelope';
 import useBusGains, { BUS_MAX } from '../hooks/useBusGains';
-import WaveControls from './WaveControls';
+import WaveShapePreview from './WaveShapePreview';
 import EnvelopeControls from './EnvelopeControls';
+import CompactSlider from './CompactSlider';
 
 // Source tray — the settings behind one knob of the SourceKnobBand
 // (waves / shape / fold / noise / saturate). It used to float above the
@@ -15,26 +16,108 @@ import EnvelopeControls from './EnvelopeControls';
 // and the frequency / ALL panels, so every menu in the app arrives from
 // the same place. Markup follows the column's grammar: a .side-menu-head
 // title bar (name + ✕) over a scrolling body.
+//
+// Reorganized 2026-08-04 to the iOS SourceTray shape (Dan): every menu
+// leads with its dial's own parameter, a target selector picks WHICH
+// pool the rest of the menu edits (underlined words, radio behavior),
+// and the two-up sections put the picture on the left with its levers
+// stacked beside it instead of a stack of full-width rows.
+//
+//   waves     level · envelope (drone | midi | kbd) with the ADSR graph
+//             beside its levers
+//   shape /   ONE merged "shape and fold" menu — both dials open it —
+//   fold      with a drone | midi/kbd pool selector over the wave
+//             preview + shape/fold levers, and the fold-character
+//             radio spanning underneath
+//   noise     level (unlabeled) · color: <character> · route + viz
+//   saturate  level 0–100 · style: <character> · viz
 
 const TRAY_TITLES = {
   waves: 'waves',
-  shape: 'shape',
-  fold: 'fold',
+  shape: 'shape and fold',
+  fold: 'shape and fold',
   noise: 'noise',
   saturate: 'saturate',
 };
 
 // Drive slider range from the Settings panel, shared with the band's
-// saturate dial sweep (SourceKnobBand imports the pair).
+// saturate dial sweep (SourceKnobBand imports the pair). The menu now
+// shows the position on this sweep as a plain 0–100 amount rather than
+// the raw multiplier — the dial reads the same number.
 export const DRIVE_MIN = 0.5;
 export const DRIVE_MAX = 3;
 
-// Tabs inside the waves tray — one bus level + envelope per source.
-const SOURCE_TABS = [
-  { id: 'drone', label: 'drone' },
-  { id: 'kbd', label: 'kbd' },
-  { id: 'midi', label: 'midi' },
+// Saturation styles = the web curve set. Each gets the same one-line
+// character fragment the noise colors carry, shown inline after the
+// "style" label instead of as a paragraph underneath.
+//
+// TODO(unify): iOS ships a different vocabulary here — four named
+// styles (tape / smooth / crunch / fuzz, each with its own ADAA1 curve)
+// plus a separate `punish` macro that pushes extra level-compensated
+// drive on top, and its own enabled flag rather than an "off" style.
+// Web has five raw curves, no punish. Pick one model and port it both
+// ways: the style names + blurbs (SaturationStyle.swift), the punish
+// slider (SourceTray.saturateSections), and the amount/enabled split.
+const SAT_STYLES = [
+  { id: 'off', label: 'off', short: 'bypassed — the chain is out of the way' },
+  { id: 'tanh', label: 'soft', short: 'smooth symmetric squash' },
+  { id: 'cubic', label: 'cubic', short: 'gentle knee, warm odd harmonics' },
+  { id: 'sine', label: 'sine', short: 'sine transfer — folds over at the top' },
+  { id: 'hard', label: 'hard', short: 'brick-wall clip, buzzy edges' },
 ];
+
+// Fold algorithms, in the menu's order with short names (the full
+// labels — "Buchla 259" — don't fit a three-up radio row at 310px).
+const FOLD_CHOICES = [
+  { id: 'triangle', label: 'tri' },
+  { id: 'sine', label: 'sine' },
+  { id: 'buchla', label: '259' },
+];
+
+// Which wave/fold pool the shape-and-fold menu edits. MIDI notes and
+// the computer keyboard share one pool on web, so they share one word.
+const WAVE_POOLS = [
+  { id: 'drone', label: 'drone', wave: droneWave, fold: droneFold },
+  { id: 'kbd', label: 'midi/kbd', wave: keyboardWave, fold: keyboardFold },
+];
+
+// Which envelope the waves menu edits. Three here, not two: the
+// computer keyboard runs its own AR envelope separate from MIDI.
+const ENV_POOLS = [
+  { id: 'drone', label: 'drone', envelope: droneEnvelope, mode: 'adsr' },
+  { id: 'midi', label: 'midi', envelope: keyboardEnvelope, mode: 'adsr' },
+  { id: 'kbd', label: 'kbd', envelope: computerKbdEnvelope, mode: 'ar' },
+];
+
+/** Underlined-word radio row — the knob labels' grammar as a selector. */
+function WordRadio({ options, value, onChange, label }) {
+  return (
+    <div className="source-tab-row" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={value === o.id}
+          className={`source-tab${value === o.id ? ' active' : ''}`}
+          onClick={() => onChange(o.id)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Web `shapeLabel` parity with iOS: closest anchor, or the drift between two. */
+const SHAPE_NAMES = ['sine', 'tri', 'sq', 'saw'];
+function shapeLabel(p) {
+  const seg = Math.min(2, Math.floor(p));
+  const t = p - seg;
+  if (t < 0.05) return SHAPE_NAMES[seg];
+  if (t > 0.95) return SHAPE_NAMES[seg + 1];
+  return `${SHAPE_NAMES[seg]}→${SHAPE_NAMES[seg + 1]} ${Math.round(t * 100)}%`;
+}
 
 function SourceTrayPanel({
   kind,
@@ -46,7 +129,8 @@ function SourceTrayPanel({
   scopeSaturation,
   onScopeSaturationChange,
 }) {
-  const [sourceTab, setSourceTab] = useState('drone');
+  const [envPool, setEnvPool] = useState('drone');
+  const [wavePool, setWavePool] = useState('drone');
   // Re-render tick for the singleton modules (wave / fold / noise).
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -62,125 +146,111 @@ function SourceTrayPanel({
     panelRef.current?.scrollIntoView?.({ block: 'start' });
   }, [kind]);
 
-  const busSliderRow = (label, key, setter) => (
-    <div className="tune-slider-row">
-      <span className="tune-slider-label">{label}</span>
-      <input
-        type="range"
-        min="0"
-        max={BUS_MAX}
-        step="0.01"
-        value={bus[key]}
-        onChange={(e) => setBusGain(key, setter)(parseFloat(e.target.value) / BUS_MAX)}
-        className="tune-slider"
-      />
-      <span className="tune-slider-value">{Math.round(bus[key] * 100)}</span>
-    </div>
-  );
-
-  // Waves tray = the wave-generator level plus a tabbed source strip:
-  // drone / kbd / midi each own a bus level and an envelope, and only
-  // the selected one is mounted so three ADSR panels never stack.
-  const SOURCE_TAB_BODIES = {
-    drone: (
-      <>
-        {busSliderRow('Level', 'drone', (g) => audioEngine.setDroneBusGain(g))}
-        <EnvelopeControls title="Drone envelope" envelope={droneEnvelope} />
-      </>
-    ),
-    kbd: (
-      <>
-        {busSliderRow('Level', 'kbd', (g) => audioEngine.setKbdBusGain(g))}
-        <EnvelopeControls
-          title="Computer keyboard envelope (AR)"
-          envelope={computerKbdEnvelope}
-          mode="ar"
-        />
-      </>
-    ),
-    midi: (
-      <>
-        {busSliderRow('Level', 'midi', (g) => audioEngine.setMidiBusGain(g))}
-        <EnvelopeControls title="MIDI envelope" envelope={keyboardEnvelope} />
-      </>
-    ),
-  };
-
   let body = null;
   if (kind === 'waves') {
+    // One level row, not two: the drone / kbd / midi bus sliders that
+    // used to sit behind these same words read as a duplicate of the
+    // waves level right above them (Dan, 2026-08-04), so the words now
+    // pick an ENVELOPE only. The per-bus gains keep their engine
+    // setters (setDroneBusGain / setKbdBusGain / setMidiBusGain, still
+    // polled by useBusGains) but have no UI here for the moment.
+    const env = ENV_POOLS.find((p) => p.id === envPool) ?? ENV_POOLS[0];
     body = (
       <div className="settings-section">
-        {busSliderRow('Waves', 'waves', (g) => audioEngine.setWaveBusGain(g))}
-        <div className="source-tab-row" role="tablist" aria-label="Source">
-          {SOURCE_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={sourceTab === t.id}
-              className={`source-tab${sourceTab === t.id ? ' active' : ''}`}
-              onClick={() => setSourceTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Level</span>
+          <input
+            type="range"
+            min="0"
+            max={BUS_MAX}
+            step="0.01"
+            value={bus.waves}
+            onChange={(e) => setBusGain('waves', (g) => audioEngine.setWaveBusGain(g))(
+              parseFloat(e.target.value) / BUS_MAX,
+            )}
+            className="tune-slider"
+          />
+          <span className="tune-slider-value">{Math.round(bus.waves * 100)}</span>
         </div>
-        <div className="source-tab-body" role="tabpanel" aria-label={`${sourceTab} settings`}>
-          {SOURCE_TAB_BODIES[sourceTab]}
-        </div>
-      </div>
-    );
-  } else if (kind === 'shape') {
-    body = (
-      <div className="source-tray-cols">
-        <WaveControls title="Drone wave" wave={droneWave} fold={droneFold} />
-        <WaveControls title="Keyboard wave" wave={keyboardWave} fold={keyboardFold} />
-      </div>
-    );
-  } else if (kind === 'fold') {
-    const foldSliderRow = (label, fold) => (
-      <div className="tune-slider-row">
-        <span className="tune-slider-label">{label}</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value={fold.amount}
-          onChange={(e) => fold.setAmount(parseFloat(e.target.value))}
-          className="tune-slider"
+
+        <span className="settings-label tray-section-label">Envelope</span>
+        {/* The target radio rides UNDER the curve in the left column,
+            not above the whole split — the levers on the right start at
+            the section's top that way, and the four of them fit the
+            column without it scrolling (Dan, 2026-08-04). */}
+        <EnvelopeControls
+          envelope={env.envelope}
+          mode={env.mode}
+          split
+          belowGraph={(
+            <WordRadio
+              options={ENV_POOLS}
+              value={envPool}
+              onChange={setEnvPool}
+              label="Envelope target"
+            />
+          )}
         />
-        <span className="tune-slider-value">
-          {fold.amount === 0 ? 'off' : `${Math.round(fold.amount * 100)} %`}
-        </span>
       </div>
     );
+  } else if (kind === 'shape' || kind === 'fold') {
+    const pool = WAVE_POOLS.find((p) => p.id === wavePool) ?? WAVE_POOLS[0];
+    const { wave, fold } = pool;
     body = (
       <div className="settings-section">
-        {foldSliderRow('Drone', droneFold)}
-        {foldSliderRow('Keyboard', keyboardFold)}
+        <span className="settings-label tray-section-label">Wave shape</span>
+        <WordRadio
+          options={WAVE_POOLS}
+          value={wavePool}
+          onChange={setWavePool}
+          label="Wave pool"
+        />
+
+        <div className="tray-split">
+          <div className="tray-split-col">
+            <WaveShapePreview wave={wave} fold={fold} />
+          </div>
+          <div className="tray-split-col">
+            <CompactSlider
+              label="shape"
+              value={wave.position}
+              max={3}
+              readout={shapeLabel(wave.position)}
+              onChange={(v) => wave.setPosition(v)}
+            />
+            <CompactSlider
+              label="fold"
+              value={fold.amount}
+              readout={fold.amount === 0 ? 'off' : `${Math.round(fold.amount * 100)} %`}
+              onChange={(v) => fold.setAmount(v)}
+            />
+          </div>
+        </div>
+
+        <span className="settings-label tray-section-label">Fold character</span>
         <div className="fold-type-row" role="radiogroup" aria-label="Fold algorithm">
-          {FOLD_TYPE_IDS.map((id) => (
-            <label key={id} className="fold-type-option">
+          {FOLD_CHOICES.map((c) => (
+            <label key={c.id} className="fold-type-option">
               <input
                 type="radio"
-                name="band-fold-type"
-                value={id}
-                checked={droneFold.type === id}
-                onChange={() => { droneFold.setType(id); keyboardFold.setType(id); }}
+                name="tray-fold-type"
+                value={c.id}
+                checked={fold.type === c.id}
+                onChange={() => fold.setType(c.id)}
               />
-              <span>{FOLD_TYPES[id].label}</span>
+              <span>{c.label}</span>
             </label>
           ))}
         </div>
-        <p className="fold-type-blurb">{FOLD_TYPES[droneFold.type].blurb}</p>
+        <p className="fold-type-blurb">{FOLD_TYPES[fold.type].blurb}</p>
       </div>
     );
   } else if (kind === 'noise') {
     body = (
       <div className="settings-section">
-        <div className="tune-slider-row">
-          <span className="tune-slider-label">Level</span>
+        {/* No "level" label — the slider IS the level, and the menu is
+            already named for the dial it belongs to (iOS parity). */}
+        <div className="tune-slider-row no-label">
           <input
             type="range"
             min="0"
@@ -189,11 +259,18 @@ function SourceTrayPanel({
             value={noise.level}
             onChange={(e) => noise.setLevel(parseFloat(e.target.value))}
             className="tune-slider"
+            aria-label="Noise level"
           />
           <span className="tune-slider-value">
             {noise.level < 0.005 ? 'off' : `${Math.round(noise.level * 100)} %`}
           </span>
         </div>
+
+        {/* The color's character rides in the section label instead of a
+            paragraph underneath the radios (Dan, 2026-08-04). */}
+        <span className="settings-label tray-section-label">
+          color: <em>{NOISE_TYPES[noise.type].short}</em>
+        </span>
         <div className="fold-type-row" role="radiogroup" aria-label="Noise color">
           {NOISE_TYPE_IDS.map((id) => (
             <label key={id} className="fold-type-option">
@@ -208,8 +285,8 @@ function SourceTrayPanel({
             </label>
           ))}
         </div>
-        <p className="fold-type-blurb">{NOISE_TYPES[noise.type].blurb}</p>
-        <label className="fold-type-option" title="Sum the noise pre-master so it drives the master saturator (iOS parity); unchecked keeps it clean after the chain">
+
+        <label className="fold-type-option tray-check" title="Sum the noise pre-master so it drives the master saturator (iOS parity); unchecked keeps it clean after the chain">
           <input
             type="checkbox"
             checked={!noise.postSaturation}
@@ -217,51 +294,75 @@ function SourceTrayPanel({
           />
           <span>saturate noise</span>
         </label>
-        <label className="fold-type-option" title="Feed the noise into the oscilloscope/spectrum tap — off keeps the trace clean">
+        <label className="fold-type-option tray-check" title="Feed the noise into the oscilloscope/spectrum tap — off keeps the trace clean">
           <input
             type="checkbox"
             checked={!!noise.showInViz}
             onChange={(e) => noise.setShowInViz(e.target.checked)}
           />
-          <span>show in oscilloscope</span>
+          <span>visualize noise</span>
         </label>
       </div>
     );
   } else if (kind === 'saturate') {
+    // The dial's sweep as a plain 0–100 amount. Raising it off zero
+    // while the chain is bypassed wakes it (curve off → soft), the same
+    // wake-on-raise the dial and the iOS tray use.
+    const amount = Math.round(
+      Math.max(0, Math.min(1, (saturationDrive - DRIVE_MIN) / (DRIVE_MAX - DRIVE_MIN))) * 100,
+    );
+    const style = SAT_STYLES.find((s) => s.id === saturationCurve) ?? SAT_STYLES[0];
     body = (
       <div className="settings-section">
-        <select
-          className="settings-select"
-          value={saturationCurve}
-          onChange={(e) => onSaturationCurveChange(e.target.value)}
-        >
-          <option value="off">Off (bypass)</option>
-          <option value="tanh">Soft (tanh)</option>
-          <option value="cubic">Cubic</option>
-          <option value="sine">Sine</option>
-          <option value="hard">Hard clip</option>
-        </select>
-        <div className="tune-slider-row">
-          <span className="tune-slider-label">Drive</span>
+        <div className="tune-slider-row no-label">
           <input
             type="range"
-            min={DRIVE_MIN}
-            max={DRIVE_MAX}
-            step="0.05"
-            value={saturationDrive}
-            onChange={(e) => onSaturationDriveChange(parseFloat(e.target.value))}
+            min="0"
+            max="100"
+            step="1"
+            value={amount}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (saturationCurve === 'off' && v > 1) onSaturationCurveChange('tanh');
+              onSaturationDriveChange(DRIVE_MIN + (v / 100) * (DRIVE_MAX - DRIVE_MIN));
+            }}
             className="tune-slider"
-            disabled={saturationCurve === 'off'}
+            aria-label="Saturation level"
           />
-          <span className="tune-slider-value">{saturationDrive.toFixed(2)}×</span>
+          <span className="tune-slider-value">
+            {saturationCurve === 'off' ? 'off' : amount}
+          </span>
         </div>
-        <label className="fold-type-option" title="Run the oscilloscope's signal through the saturation curve so the squash is visible">
+
+        <span className="settings-label tray-section-label">
+          style: <em>{style.short}</em>
+        </span>
+        <div className="fold-type-row" role="radiogroup" aria-label="Saturation style">
+          {SAT_STYLES.map((s) => (
+            <label key={s.id} className="fold-type-option">
+              <input
+                type="radio"
+                name="saturation-style"
+                value={s.id}
+                checked={saturationCurve === s.id}
+                onChange={() => onSaturationCurveChange(s.id)}
+              />
+              <span>{s.label}</span>
+            </label>
+          ))}
+        </div>
+
+        {/* TODO(unify): iOS's "punish" macro (extra level-compensated
+            drive) has no web equivalent yet — it belongs right here,
+            under the style row. See the SAT_STYLES note above. */}
+
+        <label className="fold-type-option tray-check" title="Run the oscilloscope's signal through the saturation curve so the squash is visible">
           <input
             type="checkbox"
             checked={!!scopeSaturation}
             onChange={(e) => onScopeSaturationChange?.(e.target.checked)}
           />
-          <span>show in oscilloscope</span>
+          <span>visualize saturation</span>
         </label>
       </div>
     );

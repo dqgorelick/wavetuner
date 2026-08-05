@@ -6,7 +6,7 @@ import { pairDissonance } from '../audio/dissonanceModel';
 import { droneStereo, panWidth, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { activeProfile } from '../audio/timbreProfiles';
 import { getMovingImpact } from '../audio/dissonanceSettings';
-import { scrubRatio } from '../audio/scrubSettings';
+import { scrubRatio, getScrubSettings } from '../audio/scrubSettings';
 import palette, { useTheme, DUO_WHITE } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 import GlobalDetuneOrb from './GlobalDetuneOrb';
@@ -30,7 +30,7 @@ const SENSITIVITY_NORMAL = 0.5;
 const SENSITIVITY_FINE = 0.1;
 
 // ── Orb-DRAG vertical axis (Settings → Orb drag) ────────────────────────
-// Three modes, all of them owning the vertical axis of a drag; none of them
+// Four modes, all of them owning the vertical axis of a drag; none of them
 // touch the GRAB gesture, which keeps its volume drag (Dan, 2026-08-04).
 // Vertical no longer sets the dragged voice's level in any mode — that job
 // moved to the mixer console's faders.
@@ -43,6 +43,19 @@ const SENSITIVITY_FINE = 0.1;
 //                 precision (to the fine limit). One gesture covers both
 //                 reach and resolution; a `< 1x >` rate tag over the dragged
 //                 voice's Hz readout makes the invisible axis legible.
+//   'zoom'      — zoom-as-gain (Dan, 2026-08-04): the vertical axis drives
+//                 the VIEW SPAN instead of an invisible rate multiplier, and
+//                 the span already IS the drag gain (the px→log conversion in
+//                 handlePointerMove divides by it). Raising the pointer zooms
+//                 out for coarse sweeps; pulling below leans the view in
+//                 around the grab point for finer tuning — and all three
+//                 terms of that curve (grab offset, slope, direction) are
+//                 sliders in Settings. A continuous SUBTLE curve, applied with no
+//                 easing while the finger is down. The rate needs no tag:
+//                 the ruler's tick density is the readout, and on-screen orb
+//                 motion stays proportional to finger motion at every depth.
+//                 Multi-voice GRAB moves keep the stock auto-framing — you
+//                 fine-tune one voice, you transport a chord.
 //
 // "Pull for precision" inverts the linear feel the way a video scrubber does:
 // the further the pointer is pulled AWAY from where it grabbed the orb
@@ -64,6 +77,78 @@ function scrubScale(dy) {
     if (d >= t.dist) scale = t.scale;
   }
   return scale;
+}
+
+// ── 'zoom' mode ─────────────────────────────────────────────────────────
+// Span multiplier relative to the range CAPTURED AT DRAG-CONFIRM (so
+// whatever framing — or, on iOS, manual pinch — you start from is the 1x
+// baseline). A CONTINUOUS curve applied INSTANTLY while the drag is live
+// (Dan, 2026-08-04: the first cut used eased tier steps, and stepping
+// between levels read as jitter — the view must track the finger 1:1 with
+// no animation at all; only the release eases home). Kept SUBTLE for the
+// same reason: this is a lean-in/lean-back of the frame, not a microscope.
+// Depths are fractions of the pull direction's own viewport headroom (the
+// ios ramp's normalization — the orb row sits near the screen bottom, so
+// raw px would starve one side).
+// The curve is y = mx + b in LOG span: log2(mult) = zoomOffset + depth *
+// zoomScale * log2(dirEnd). All three terms are live settings (Settings →
+// Orb drag → zoom; scrubSettings owns them) — `zoomOffset` is b, the span
+// change at the grab itself (0 by default: grabbing no longer moves the
+// view); `zoomScale` is m, how hard the pull leans the frame; `zoomInvert`
+// swaps which direction leans in.
+const ZOOM_TRAVEL = 0.85;       // full effect at 85% of the headroom
+const ZOOM_MAX_OUT = 3;         // pull away → coarse, up to 3x wider
+const ZOOM_MAX_IN = 0.35;       // pull toward → fine, down to ~1/3 span
+// Hard floor on the zoomed-in span (log2 units): ~2.4 semitones around the
+// dragged voice — "only the frequencies near the one moving". Also the
+// effective fine limit: gain can't drop below MIN_ZOOM_SPAN / grabSpan.
+const MIN_ZOOM_SPAN = 0.2;
+
+/** The b term alone — the span multiplier a drag confirms at, before any pull. */
+function zoomBaseMult() {
+  return 2 ** getScrubSettings().zoomOffset;
+}
+
+function zoomSpanMult(pointerY, startY, viewportH) {
+  const s = getScrubSettings();
+  const base = 2 ** s.zoomOffset;
+  const below = pointerY >= startY;
+  // Headroom always comes from the REAL direction of travel (the orb row sits
+  // near the screen bottom, so the two sides have very different room);
+  // inverting only swaps which end of the curve that travel drives.
+  const headroom = below ? viewportH - startY : startY;
+  if (!(headroom > 0)) return base;
+  const depth = Math.min(1, Math.abs(pointerY - startY) / (headroom * ZOOM_TRAVEL));
+  const leansIn = s.zoomInvert ? !below : below;
+  return base * (leansIn ? ZOOM_MAX_IN : ZOOM_MAX_OUT) ** (depth * s.zoomScale);
+}
+
+// Target range for an active zoom-mode drag: the scaled span, ANCHORED at
+// the screen fraction where the voice sat at drag-confirm (drag.grabFrac) —
+// zooming happens around the grab point, so confirming a drag never pans
+// the view, and span changes grow/shrink the frame in place under the
+// finger. Clamped by shifting at the absolute ends so the span survives to
+// the edge.
+function zoomDragTarget(drag) {
+  const f = audioEngine.getFrequency(drag.index);
+  const absSpan = ABSOLUTE_LOG_MAX - ABSOLUTE_LOG_MIN;
+  const grabSpan = drag.grabSpan || absSpan;
+  const span = Math.max(
+    MIN_ZOOM_SPAN,
+    Math.min(absSpan, grabSpan * (drag.spanMult ?? zoomBaseMult()))
+  );
+  const frac = drag.grabFrac ?? 0.5;
+  let logMin = Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, f))) - span * frac;
+  let logMax = logMin + span;
+  if (logMin < ABSOLUTE_LOG_MIN) {
+    logMax += ABSOLUTE_LOG_MIN - logMin;
+    logMin = ABSOLUTE_LOG_MIN;
+  }
+  if (logMax > ABSOLUTE_LOG_MAX) {
+    logMin = Math.max(ABSOLUTE_LOG_MIN, logMin - (logMax - ABSOLUTE_LOG_MAX));
+    logMax = ABSOLUTE_LOG_MAX;
+  }
+  return { logMin, logMax };
 }
 
 // `< 1x >` rate-tag visibility. OFF for now (Dan, 2026-08-04 late — a
@@ -91,6 +176,20 @@ function formatScrubRate(r) {
 // orb after a drag releases. Slightly past the CSS 0.4s so the transition
 // finishes before left/top go back to instant.
 const ORB_SETTLE_MS = 420;
+
+// JS twin of the CSS settle curve (cubic-bezier(0.34, 1.56, 0.64, 1) ≈
+// easeOutBack): the zoom-mode release drives orb position per frame, so it
+// needs the overshoot as a function. t 0→1, returns 0→1 overshooting ~1.1.
+function settleEase(t) {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2;
+}
+
+// Width of the fade band past each row edge: voice chrome (orb, labels,
+// position line, readout) slides off the row and dissolves across this many
+// px instead of clamping or blinking out (Dan, 2026-08-04).
+const EDGE_FADE_PX = 56;
 
 // Global-transpose drag: dragging the empty bar background left/right shifts
 // the whole tuning's playback pitch (a DAW-BPM-style master offset that lives
@@ -450,7 +549,11 @@ const TRIANGLE_H = 7;         // ≈ equilateral for that base (iOS draws 8 × 6
 //              appears in a strip above the curve while dragged.
 // Flipped-only tuning:
 const FLIPPED_ARM_GAP = 8;      // bar bottom → orb top edge (the short arm)
-const FLIPPED_HZ_STRIP_H = 16;  // top strip reserved for the drag Hz readout
+// Top strip reserved for the drag Hz readout. 25 puts ~12px of air between
+// the digits' bottom edge and the curve zone's ceiling — iOS's clearance
+// (hzLabelStem 8 + stemGap 2 + hzLabelCurveClearance 1.75); was 16, which
+// left 3px and read visibly lower than iOS (Dan, 2026-08-04).
+const FLIPPED_HZ_STRIP_H = 25;
 // Height of the .fsb-hz-float box (its font-size, at line-height 1) and the y
 // its stem leaves from — the digits' lower edge plus a hair of air, iOS's
 // `digitsEdgeY`. The stem's other end lands where that voice's own position
@@ -515,10 +618,13 @@ function geometryFor(flipped) {
     // the orb row at the bar's right edge (iOS lifts its readout OUT of the
     // orb row — Dan 2026-07-22: orbs ran over it when the tuning pushed a
     // voice to the right edge — but here the auto-zoom always keeps
-    // right-edge padding, so orbs never reach it). Flipped: the orb row is
-    // below the bar now, so the readout parks in the top strip instead,
-    // clear of the consonance curve's tallest peak (Dan 2026-08-03).
-    transposeReadoutY: flipped ? dissCurveMaxY - 13 : dotCenterY,
+    // right-edge padding, so orbs never reach it). Flipped: the readout
+    // OVERFLOWS the row's top edge (overflow is visible — classic orbs
+    // already draw up there), fully clear of the Hz label strip below it
+    // (Dan 2026-08-04: "even higher than the labels"; it used to park
+    // level with them in the strip). −15 puts the ~25px-tall two-line
+    // box at ≈ −27..−3: a hair of air above the strip's y0.
+    transposeReadoutY: flipped ? -15 : dotCenterY,
     // .fsb-side margin aligning the side adornments with the bar strip
     // (classic: the 4px bottom padding; flipped: the whole orb-row depth).
     sideMarginBottom: totalHeight - barTopY - BAR_LINE_HEIGHT,
@@ -1083,7 +1189,7 @@ const NOTE_DOT_HIT_R = 9;
 // `dragPos` (Map index → {x, y}) overrides a voice's orb endpoint while it's
 // being finger-dragged or release-settling — the stem then runs from the orb
 // at the finger down to the TRUE frequency x on the bar (iOS parity).
-function _updatePositionLines(lineEls, dotXs, freqXs, dragPos) {
+function _updatePositionLines(lineEls, dotXs, freqXs, dragPos, edgeFades) {
   for (let i = 0; i < lineEls.length; i++) {
     const el = lineEls[i];
     if (!el) continue;
@@ -1091,6 +1197,11 @@ function _updatePositionLines(lineEls, dotXs, freqXs, dragPos) {
     const dotX = dp ? dp.x : dotXs[i];
     const dotY = dp ? dp.y : GEO.dotCenterY;
     const freqX = freqXs[i];
+    // Edge fade rides the element's own opacity (multiplies the JSX
+    // strokeOpacity), so the line dissolves as its frequency slides off
+    // the row instead of being cut by the SVG clip. Held voices are
+    // exempt — their marker is anchored on screen.
+    el.style.opacity = dp ? '' : String(edgeFades?.[i] ?? 1);
     // Finite, NOT non-negative: a left drag carries the orb past the row's
     // left edge, and a `>= 0` test there hid the whole line — frequency
     // marker included — for a voice sitting comfortably mid-bar (Dan,
@@ -1385,7 +1496,8 @@ const HZ_FLOAT_GAP = 6;
 function FrequencySpectrumBar({
   oscillatorCount = 4,
   fineTuneEnabled = false,
-  // 'linear' | 'precision' | 'ios' — see the Orb-DRAG vertical axis notes up top.
+  // 'linear' | 'precision' | 'ios' | 'zoom' — see the Orb-DRAG vertical axis
+  // notes up top.
   orbDragMode = 'linear',
   onActiveChange,
   extraActive,
@@ -1449,6 +1561,19 @@ function FrequencySpectrumBar({
   // the rAF zoom loop stay instant.
   const [settlingDots, setSettlingDots] = useState(() => new Set());
   const settleTimersRef = useRef(new Map()); // index → timeout id
+  // Zoom-mode release settle, driven per-frame in JS instead of the CSS
+  // .settling transition: the frame eases home at the same time, so the
+  // orb's target (its marker) MOVES every frame — a CSS left/top transition
+  // retargeting against that read as the orb falling away to the zoomed-out
+  // spot (the round-3 bug the old freeze-then-ease hold worked around).
+  // Instead the orb renders at marker(current frame) + offset·frac, where
+  // offset is the finger→marker gap at release and frac decays 1→0 on the
+  // same overshoot curve as the CSS settle — the orb rides its marker home
+  // while closing the gap, one continuous motion. State mirrors
+  // zoomSettleRef (the loop's source of truth: index → {dx, dy, t0}) as
+  // index → {dx, dy, frac} for the renderers.
+  const [zoomSettle, setZoomSettle] = useState(() => new Map());
+  const zoomSettleRef = useRef(new Map());
   const [grabCursor, setGrabCursor] = useState(null); // { x, y } in container coords while grabbed
   // Per-grabbed-orb anchor, all in container coords: where the orb was placed
   // when the gesture took hold (ax, ay) and where the cursor was at that
@@ -1768,6 +1893,7 @@ function FrequencySpectrumBar({
   const hzStemRefs = useRef([]);
   const dotXsRef = useRef([]);
   const freqXsRef = useRef([]);
+  const edgeFadesRef = useRef([]);
   // Mirrors of dragPosByIndex / settlingDots for the per-frame stem drawer,
   // which can't close over state.
   const dragPosRef = useRef(new Map());
@@ -1848,7 +1974,7 @@ function FrequencySpectrumBar({
           }
         }
       }
-      _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current, dragPos);
+      _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current, dragPos, edgeFadesRef.current);
       // The drag readout's stem lands on that same curve surface, so its foot
       // rides the eased levels too (only mounted in the flipped layout).
       _updateHzStems(hzStemRefs.current);
@@ -2284,7 +2410,20 @@ function FrequencySpectrumBar({
             // line is on screen for as long as it exists.
             const noteVoices = noteVoicesRef.current;
             if (noteVoices.length) framed = framed.concat(noteVoices.map((n) => n.hz));
-            const target = computeTargetRange(framed);
+            // Range ownership: a confirmed zoom-mode drag owns the frame —
+            // its scaled span, anchored at the grab point — and the stock
+            // voice-framing yields until release. With two simultaneous
+            // zoom drags the first-started one steers (insertion order);
+            // both still tune fine, sharing whatever span it sets. GRAB
+            // moves (multi-voice transport) never take ownership.
+            let zoomTarget = null;
+            if (orbDragModeRef.current === 'zoom') {
+              for (const pid in dragRef.current) {
+                const d = dragRef.current[pid];
+                if (d.didDrag) { zoomTarget = zoomDragTarget(d); break; }
+              }
+            }
+            const target = zoomTarget ?? computeTargetRange(framed);
             // Tails expire silently (no engine event) — keep re-evaluating
             // while a ceremony is playing so the zoom-in starts on its own
             // the moment the hop completes.
@@ -2298,7 +2437,14 @@ function FrequencySpectrumBar({
             const nowMs = performance.now();
             const dt = lastZoomMs === 0 ? 16 : Math.min(33, nowMs - lastZoomMs);
             lastZoomMs = nowMs;
-            const k = 1 - Math.exp(-dt / ZOOM_TAU_MS);
+            // While a zoom-mode drag owns the frame, apply its target
+            // DIRECTLY — no ease (Dan, 2026-08-04: any animation between
+            // levels while the finger is down reads as jitter; the view is
+            // part of the gesture and must track it 1:1). The target itself
+            // is continuous in pointer travel and anchored at the grab
+            // point, so there is no step to smooth over. Release drops
+            // ownership and the stock ease below carries the frame home.
+            const k = zoomTarget ? 1 : 1 - Math.exp(-dt / ZOOM_TAU_MS);
             const nextMin = cur.logMin + (target.logMin - cur.logMin) * k;
             const nextMax = cur.logMax + (target.logMax - cur.logMax) * k;
             if (
@@ -2316,6 +2462,26 @@ function FrequencySpectrumBar({
           }
         }
       } catch { /* ignore */ }
+
+      // Advance the zoom-mode release settle (see zoomSettleRef): decay each
+      // orb's release offset along the overshoot curve and hand the renderers
+      // the fraction. Runs every tick — the render this setState forces is
+      // what moves the orb, and it composes with whatever the range ease
+      // above did this same frame (both write in one React batch).
+      if (zoomSettleRef.current.size) {
+        const nowS = performance.now();
+        const live = new Map();   // ref: keeps t0 for the next tick
+        const frames = new Map(); // state: what this frame renders
+        for (const [i, s] of zoomSettleRef.current) {
+          const t = (nowS - s.t0) / ORB_SETTLE_MS;
+          if (t >= 1) continue;
+          live.set(i, s);
+          frames.set(i, { dx: s.dx, dy: s.dy, frac: 1 - settleEase(t) });
+        }
+        zoomSettleRef.current = live;
+        setZoomSettle(frames);
+        if (live.size) keepRunning = true;
+      }
 
       if (keepRunning) schedule();
     };
@@ -2378,6 +2544,25 @@ function FrequencySpectrumBar({
     () => resolveCollisions(freqXs, DOT_SIZE, collisionExcluded),
     [freqXs, collisionExcluded]
   );
+  // Continuous edge fade: 1 inside the row, ramping to 0 across EDGE_FADE_PX
+  // past either edge. Every piece of a voice's chrome — orb, number label,
+  // position line, Hz readout + stem, pan dot — fades out as it slides off
+  // the row instead of clamping at the edge or vanishing at a threshold
+  // (Dan, 2026-08-04: "everything should fade out when it goes off screen").
+  // Keyed on the voice's TRUE position (freqXs, not the collision-pushed
+  // dotXs) so the whole voice fades as one mark; dragged/grabbed voices are
+  // exempt at the use sites — they ride the pointer, which is on screen by
+  // definition.
+  const edgeFades = useMemo(() => {
+    const rowW = barWidth + BAR_H_PADDING * 2;
+    return freqXs.map((x) => {
+      const out = Math.max(-x, x - rowW, 0);
+      return Math.max(0, 1 - out / EDGE_FADE_PX);
+    });
+  }, [freqXs, barWidth]);
+  // Fully faded = out of the layout entirely: dropped from the readout
+  // collision pass and the selection ring unmounts.
+  const offRow = useMemo(() => edgeFades.map((f) => f === 0), [edgeFades]);
   // Index → live drag position, for the orb/label/stem renderers. Last-write-
   // wins if two pointers ever hold the same orb (matches the old ghost map).
   const dragPosByIndex = useMemo(() => {
@@ -2417,12 +2602,29 @@ function FrequencySpectrumBar({
   // riding it: label, selection ring, pan dot, stem, readout) reads. A pointer
   // drag wins if an orb is somehow in both.
   const orbPosByIndex = useMemo(() => {
-    if (grabPosByIndex.size === 0) return dragPosByIndex;
+    if (grabPosByIndex.size === 0 && zoomSettle.size === 0) return dragPosByIndex;
     const m = new Map(grabPosByIndex);
     for (const [i, g] of dragPosByIndex) m.set(i, g);
+    // Zoom-mode release settle: the orb sits at its (frame-tracking) marker
+    // plus the decaying release offset — computed HERE, against this render's
+    // dotXs, so the orb and the easing frame move as one. Live gestures win.
+    for (const [i, s] of zoomSettle) {
+      if (m.has(i) || !Number.isFinite(dotXs[i])) continue;
+      m.set(i, {
+        index: i,
+        x: dotXs[i] + s.dx * s.frac,
+        y: geo.dotCenterY + s.dy * s.frac,
+        edgeRate: 0,
+        confirmed: true,
+      });
+    }
     return m;
-  }, [dragPosByIndex, grabPosByIndex]);
-  useEffect(() => { dotXsRef.current = dotXs; freqXsRef.current = freqXs; }, [dotXs, freqXs]);
+  }, [dragPosByIndex, grabPosByIndex, zoomSettle, dotXs, geo.dotCenterY]);
+  useEffect(() => {
+    dotXsRef.current = dotXs;
+    freqXsRef.current = freqXs;
+    edgeFadesRef.current = edgeFades;
+  }, [dotXs, freqXs, edgeFades]);
   useEffect(() => { dragPosRef.current = orbPosByIndex; }, [orbPosByIndex]);
   // Any orb under a finger (or held by a keyboard grab) — the whole readout
   // strip's on/off switch, iOS's `dragReadout`.
@@ -2439,27 +2641,37 @@ function FrequencySpectrumBar({
   // 2026-08-04). A voice whose orb has been pulled above the bar is out too —
   // it carries its readout with it and stops holding space here. Every voice
   // stays MOUNTED so both edges can fade (see .fsb-hz-float / .fsb-hz-stem).
+  // Readouts show the SOUNDING pitch (nominal × transpose) — iOS parity,
+  // and the ruler ticks already slide with the transpose, so the number
+  // matches the axis under it (Dan, 2026-08-04).
+  const soundingRatio = 2 ** (transpose / 12);
   const hzFloats = useMemo(() => {
     if (!geo.flipped) return [];
-    const texts = frequencies.map((f) => formatActiveFreq(f));
+    const texts = frequencies.map((f) => formatActiveFreq(f * soundingRatio));
     const widths = texts.map(_hzLabelWidth);
     const hidden = new Set();
     for (let i = 0; i < frequencies.length; i++) {
       const held = draggingDots.has(i) || grabbedOscs.has(i);
       if ((muted[i] && !held) || !(frequencies[i] > 0) || orbsAbove.has(i)) hidden.add(i);
+      // Fully faded off the row: out of the collision pass too, so a far
+      // off-screen readout can't shove the on-screen ones around. Held
+      // voices stay: their pitch is what the drag is reading out.
+      if (offRow[i] && !held) hidden.add(i);
     }
     const resolved = resolveLabelCollisions(freqXs, widths, HZ_FLOAT_GAP, hidden);
-    // Clamp into the row (bar + its side gutters) so an edge voice's readout
-    // stays fully on screen rather than sliding off — iOS clamps the same way.
-    const rowW = barWidth + BAR_H_PADDING * 2;
+    // No edge clamp: the readout FOLLOWS its pitch off the row and fades out
+    // across the edge band (edgeFades → --edge-fade), instead of sticking at
+    // the edge with a long stem back to its marker (Dan, 2026-08-04; this
+    // replaced the iOS-style clamp).
     return frequencies.map((_, i) => ({
       index: i,
       text: texts[i],
-      x: Math.min(Math.max(resolved[i], widths[i] / 2), rowW - widths[i] / 2),
+      x: resolved[i],
+      fade: (draggingDots.has(i) || grabbedOscs.has(i)) ? 1 : edgeFades[i],
       shown: hzStripShown && !hidden.has(i),
     }));
-  }, [geo.flipped, frequencies, freqXs, barWidth, muted, orbsAbove, hzStripShown,
-      draggingDots, grabbedOscs]);
+  }, [geo.flipped, frequencies, freqXs, muted, orbsAbove, hzStripShown,
+      draggingDots, grabbedOscs, offRow, edgeFades, soundingRatio]);
   // (A "1/5×" / "2.4×" rate tag used to ride beside the drag readout here.
   // Removed 2026-08-04, Dan: the tier is felt in the drag, and the tag both
   // cluttered the readout and shoved the Hz digits sideways as it appeared.
@@ -2542,6 +2754,19 @@ function FrequencySpectrumBar({
       next.delete(index);
       return next;
     });
+    // The zoom-mode JS settle too — a re-grab mid-flight takes over from
+    // wherever the composed motion has the orb right now.
+    if (zoomSettleRef.current.has(index)) {
+      const next = new Map(zoomSettleRef.current);
+      next.delete(index);
+      zoomSettleRef.current = next;
+      setZoomSettle((prev) => {
+        if (!prev.has(index)) return prev;
+        const n = new Map(prev);
+        n.delete(index);
+        return n;
+      });
+    }
   };
   useEffect(() => () => {
     for (const t of settleTimersRef.current.values()) clearTimeout(t);
@@ -2652,6 +2877,19 @@ function FrequencySpectrumBar({
     const totalDy = e.clientY - drag.startY;
     if (!drag.didDrag && (totalDx * totalDx + totalDy * totalDy) > 4) {
       drag.didDrag = true;
+      // Zoom mode's 1x baseline: whatever span the view had when the drag
+      // became real. Captured here (not pointerdown) so a tap never disturbs
+      // the framing, and on iOS a manual pinch composes naturally — a
+      // pre-pinched-in view means precision is already bought and the curve
+      // multiplies from there. grabFrac is the voice's screen position in
+      // that frame — the zoom's anchor, so taking the frame never pans it.
+      const rGrab = rangeRef.current;
+      drag.grabSpan = rGrab.logMax - rGrab.logMin;
+      const fGrab = audioEngine.getFrequency(drag.index);
+      drag.grabFrac = Math.max(0, Math.min(1,
+        (Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, fGrab))) - rGrab.logMin)
+          / (drag.grabSpan || 1)
+      ));
       // Confirmed drag: unmute the orb regardless of suppressAutoUnmute
       // (i.e. even when the keyboard tray is up), but ONLY while the drone
       // bus is playing — a drag with drones paused shouldn't surprise-restart
@@ -2667,13 +2905,25 @@ function FrequencySpectrumBar({
       // Vertical travel from the grab sets the horizontal tuning rate: the
       // precision tiers, the iOS ramp, or nothing at all in linear mode.
       // Volume is never on this axis during a drag — the faders own it.
+      // Zoom mode applies NO multiplier here: it retargets the view span
+      // instead (the auto-zoom loop reads drag.spanMult), and the span is
+      // already a factor of the logDelta below — folding it in twice would
+      // square the gain.
       const mode = orbDragModeRef.current;
+      if (mode === 'zoom') {
+        drag.spanMult = zoomSpanMult(e.clientY, drag.startY, window.innerHeight);
+        // Vertical-only moves change the span target without any frequency
+        // event, so kick the demand-driven zoom loop ourselves.
+        wakeRef.current?.();
+      }
       const scrub = mode === 'precision'
         ? scrubScale(e.clientY - drag.startY)
         : mode === 'ios'
           ? scrubRatio(e.clientY, drag.startY)
           : 1;
-      drag.rate = scrub;   // read by the `< 1x >` tag over the Hz readout
+      // Read by the `< 1x >` tag over the Hz readout (and the edge arrow).
+      // In zoom mode the effective rate is the span tier itself.
+      drag.rate = mode === 'zoom' ? drag.spanMult : scrub;
       if (deltaX !== 0) {
         const sens = getSensitivity();
         const r = rangeRef.current;
@@ -2689,11 +2939,12 @@ function FrequencySpectrumBar({
       // Edge auto-pan rides the ramp too, but the ramp may only ever SLOW the
       // climb (iOS `min(1, edgePushRatio)`): unclamped, a pointer parked deep
       // below the orb makes the edge sweep lurch. The arrow drawn on the orb
-      // reads this value, so it visualizes the effective rate. Only the iOS
-      // mode does this — precision-mode tiers leave the sweep at full speed,
-      // as they shipped.
+      // reads this value, so it visualizes the effective rate. Zoom mode
+      // clamps by its span ratio for the same reason — zoomed in, the view
+      // is tight, and a full-rate sweep would tear across it. Precision-mode
+      // tiers leave the sweep at full speed, as they shipped.
       drag.edgeRate = computeEdgeRate(e.clientX)
-        * (mode === 'ios' ? Math.min(1, scrub) : 1);
+        * (mode === 'ios' || mode === 'zoom' ? Math.min(1, drag.rate ?? 1) : 1);
       // Edge-pan needs the auto-zoom loop alive even on frames where
       // setFrequency above didn't fire (e.g., orb already at FREQ_MIN/MAX).
       if (drag.edgeRate) wakeRef.current?.();
@@ -2727,24 +2978,66 @@ function FrequencySpectrumBar({
       toggleGrab(index);
     } else if (didDrag && !cancelled) {
       releaseAllGrabs();
-      // Snap range to target instead of letting it ease over ~58 frames.
-      // The post-release ease was causing 1s of re-renders, which on cold JIT
-      // reads as a UI freeze.
-      try {
-        const f = audioEngine.getAllFrequencies();
-        const base = f.slice(0, oscillatorCount);
-        const staged = frequencyManager.getStagedFrequencies();
-        const stagedActive = staged ? staged.slice(0, base.length) : null;
-        const target = computeTargetRange(stagedActive && stagedActive.length ? base.concat(stagedActive) : base);
-        rangeRef.current = target;
-        setRange(target);
-      } catch { /* no-op */ }
+      if (orbDragModeRef.current === 'zoom') {
+        // Zoom mode releases from a deliberately foreign span (maybe a
+        // 2.4-semitone close-up) — snapping that to the full frame in one
+        // commit is a visual cut, so let the demand-driven loop ease home
+        // instead (woken below; the drag record is already gone, so the
+        // loop reads the stock voice framing). The cold-JIT re-render
+        // concern behind the snap in the other branch was measured on
+        // near-target releases; the ease is the point here. Revisit if
+        // release-lag reappears.
+      } else {
+        // Snap range to target instead of letting it ease over ~58 frames.
+        // The post-release ease was causing 1s of re-renders, which on cold JIT
+        // reads as a UI freeze.
+        try {
+          const f = audioEngine.getAllFrequencies();
+          const base = f.slice(0, oscillatorCount);
+          const staged = frequencyManager.getStagedFrequencies();
+          const stagedActive = staged ? staged.slice(0, base.length) : null;
+          const target = computeTargetRange(stagedActive && stagedActive.length ? base.concat(stagedActive) : base);
+          rangeRef.current = target;
+          setRange(target);
+        } catch { /* no-op */ }
+      }
+    }
+
+    // Any ended zoom-mode drag — released OR cancelled — must hand the frame
+    // back: no frequency event fires here, and the loop may be asleep at the
+    // drag's foreign span. The frame eases home IMMEDIATELY, and the orb's
+    // return runs in the same motion: capture the finger→marker offset here
+    // and let the loop decay it per frame (zoomSettleRef), the orb welded to
+    // its moving marker plus the shrinking offset. This replaced the round-3
+    // freeze-then-ease hold (frame frozen for ORB_SETTLE_MS, then eased),
+    // which read as two sequenced moves (Dan, 2026-08-04).
+    let jsSettle = false;
+    if (didDrag && orbDragModeRef.current === 'zoom') {
+      const pos = dragPosRef.current.get(index);
+      if (pos && Number.isFinite(dotXs[index])) {
+        const dx = pos.x - dotXs[index];
+        const dy = pos.y - geo.dotCenterY;
+        zoomSettleRef.current.set(index, { dx, dy, t0: performance.now() });
+        // Seed the render state in THIS commit — the loop's first setZoomSettle
+        // lands a frame after the dragOrbs entry is gone, and that gap frame
+        // rendered the orb teleported onto its marker (caught by the headless
+        // release probe).
+        setZoomSettle((prev) => {
+          const n = new Map(prev);
+          n.set(index, { dx, dy, frac: 1 });
+          return n;
+        });
+        jsSettle = true;
+      }
+      wakeRef.current?.();
     }
 
     // A confirmed drag settles home: the .settling transition lands in the
     // same commit that hands the orb's position back to dotXs, so it eases
     // from the finger to the resolved spot in one motion (iOS spring parity).
-    if (didDrag) beginSettle([index]);
+    // Zoom mode settles through the per-frame path above instead — a CSS
+    // left/top transition would fight the frame-driven positions.
+    if (didDrag && !jsSettle) beginSettle([index]);
     setDraggingDots((prev) => {
       const next = new Set(prev);
       next.delete(index);
@@ -3147,7 +3440,7 @@ function FrequencySpectrumBar({
           the gesture so the at-rest rules (side menu covers the orb row,
           settings panel over everything) keep their existing stacking. */}
       <div
-        className={`fsb-row${draggingDots.size > 0 || grabbedOscs.size > 0 || settlingDots.size > 0 ? ' gesture-live' : ''}`}
+        className={`fsb-row${draggingDots.size > 0 || grabbedOscs.size > 0 || settlingDots.size > 0 || zoomSettle.size > 0 ? ' gesture-live' : ''}`}
         style={{ height: geo.totalHeight }}
       >
       <div className="fsb-side fsb-side-left" style={{ marginBottom: geo.sideMarginBottom }}>
@@ -3326,7 +3619,7 @@ function FrequencySpectrumBar({
                 Fades with its label (`.showing`), so the whole strip comes up
                 and goes down as one. Only the foot is written per frame
                 (_updateHzStems); the rest is layout. */}
-            {hzFloats.map(({ index: i, x, shown }) => {
+            {hzFloats.map(({ index: i, x, fade, shown }) => {
               const color = palette.oscColor(i, oscillatorCount);
               return (
                 <line
@@ -3340,7 +3633,7 @@ function FrequencySpectrumBar({
                   stroke={color}
                   strokeWidth={1.5}
                   strokeLinecap="round"
-                  style={{ filter: `drop-shadow(0 0 3px ${color})` }}
+                  style={{ filter: `drop-shadow(0 0 3px ${color})`, '--edge-fade': fade }}
                 />
               );
             })}
@@ -3582,7 +3875,9 @@ function FrequencySpectrumBar({
         const isBoosted = !isDragging && !isGrabbed && extraActive?.has(i);
         // While a pointer holds this orb — or a grab does — it rides the
         // cursor directly (no ghost, iOS parity); on release the .settling
-        // transition eases it back onto its resolved dotXs spot.
+        // transition eases it back onto its resolved dotXs spot (zoom mode
+        // instead settles per-frame through orbPosByIndex, composed with the
+        // frame easing home).
         const dragPos = orbPosByIndex.get(i);
         const classes = ['fsb-dot'];
         if (muted[i]) classes.push('muted');
@@ -3594,6 +3889,12 @@ function FrequencySpectrumBar({
         // .fsb-sel-ring layer below, not here; the class stays as the
         // state hook on the orb.
         if (selectedVoice === i) classes.push('selected');
+        // Edge fade as a filter: composes with whatever opacity the orb's
+        // state classes set (muted, dragging, paused…) without touching
+        // them, and fades the glow with the disc. Applied only when < 1 so
+        // the everyday path keeps its filter-free rendering (plus-lighter
+        // blending stays untouched).
+        const fade = dragPos ? 1 : edgeFades[i];
         return (
           <div
             key={i}
@@ -3605,6 +3906,8 @@ function FrequencySpectrumBar({
               width: DOT_SIZE,
               height: DOT_SIZE,
               '--dot-color': color,
+              filter: fade < 1 ? `opacity(${fade})` : undefined,
+              pointerEvents: fade === 0 ? 'none' : undefined,
             }}
             onPointerDown={(e) => handlePointerDown(e, i)}
             onPointerMove={handlePointerMove}
@@ -3625,10 +3928,13 @@ function FrequencySpectrumBar({
           mounted — the CSS hover rule depends on that. */}
       {selectedVoice != null && selectedVoice >= 0 && selectedVoice < frequencies.length && (() => {
         const dragPos = orbPosByIndex.get(selectedVoice);
+        if (offRow[selectedVoice] && !dragPos) return null;
         return (
           <div
             className={`fsb-sel-ring${settlingDots.has(selectedVoice) ? ' settling' : ''}`}
             style={{
+              filter: !dragPos && edgeFades[selectedVoice] < 1
+                ? `opacity(${edgeFades[selectedVoice]})` : undefined,
               left: dragPos ? dragPos.x : dotXs[selectedVoice],
               top: dragPos ? dragPos.y : geo.dotCenterY,
               // Border-box, so the ring's 1.5px stroke lands entirely in
@@ -3653,6 +3959,7 @@ function FrequencySpectrumBar({
             left: dotXs[i],
             top: geo.kbdDotCenterY,
             '--dot-color': palette.oscColor(i, oscillatorCount),
+            filter: edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
           }}
         />
       ))}
@@ -3685,6 +3992,7 @@ function FrequencySpectrumBar({
                 ? lyCenter + DOT_SIZE / 2 + 2
                 : lyCenter - DOT_SIZE / 2 - 2,
               color,
+              filter: !dragPos && edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
             }}
           >
             {/* Octave columns flanking the number. Vertical stacks of
@@ -3701,7 +4009,7 @@ function FrequencySpectrumBar({
               <span className="fsb-octave-bubble" data-octave="-5" />
             </span>
             <span className="fsb-label-text">
-              {isActive ? formatActiveFreq(f) : i + 1}
+              {isActive ? formatActiveFreq(f * soundingRatio) : i + 1}
             </span>
             <span className="fsb-octave-col fsb-octave-col-right">
               <span className="fsb-octave-bubble" data-octave="+5" />
@@ -3722,11 +4030,11 @@ function FrequencySpectrumBar({
           the numbers stay put over the pitches they read out, stepping aside
           only for each other (see hzFloats' collision pass). The stems drawn
           in the SVG layer above are what tie them back to their markers. */}
-      {hzFloats.map(({ index: i, text, x, shown }) => (
+      {hzFloats.map(({ index: i, text, x, fade, shown }) => (
         <div
           key={`hz-float-${i}`}
           className={`fsb-hz-float${shown ? ' showing' : ''}`}
-          style={{ left: x, top: 0, color: palette.oscColor(i, oscillatorCount) }}
+          style={{ left: x, top: 0, color: palette.oscColor(i, oscillatorCount), '--edge-fade': fade }}
         >
           {text}
         </div>
@@ -3749,7 +4057,7 @@ function FrequencySpectrumBar({
               color: palette.oscColor(i, oscillatorCount),
             }}
           >
-            {formatActiveFreq(f)}
+            {formatActiveFreq(f * soundingRatio)}
           </div>
         );
       })}
@@ -3807,6 +4115,7 @@ function FrequencySpectrumBar({
               top: dragPos ? dragPos.y : geo.dotCenterY,
               '--dot-color': palette.oscColor(i, oscillatorCount),
               '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
+              filter: !dragPos && edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
             }}
           >
             <div className="fsb-status-arc" style={{ transform: `rotate(${pan * 90}deg)` }}>

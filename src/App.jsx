@@ -30,7 +30,7 @@ import MidiPanel from './components/MidiPanel';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
 import HydraOverlay from './components/HydraOverlay';
-import { startVisuals, stopVisuals, selectSketch, setVfxParams, consumesAudioFeatures, DEFAULT_SKETCH_ID } from './visuals/backend';
+import { startVisuals, stopVisuals, selectSketch, setVfxParams, setChromaParams, consumesAudioFeatures, DEFAULT_SKETCH_ID } from './visuals/backend';
 import { getAutosave, setAutosave } from './patches/storage';
 import { applyPatch, applyPatchSmooth, preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
@@ -550,6 +550,16 @@ function App() {
   const [vfxScale, setVfxScale] = useState(INITIAL_URL_STATE.vfxScale ?? lsNum('vfxScale', 1.05));
   const [vfxBlend, setVfxBlend] = useState(INITIAL_URL_STATE.vfxBlend ?? lsNum('vfxBlend', 0.23));
   useEffect(() => { setVfxParams(vfxScale, vfxBlend); }, [vfxScale, vfxBlend]);
+  // Per-channel RGB-split amounts — iOS's oscModR/G/B "rgb offset"
+  // params. Mobile defaults to the iOS device tuning (the lite shader's
+  // split reads subtler on small dense screens); desktop keeps the old
+  // web-parity 0.01. Same breakpoint as isMobile, read eagerly because
+  // that state initializes later in the component.
+  const chromaMobileDefault = window.matchMedia('(max-width: 768px)').matches;
+  const [vfxModR, setVfxModR] = useState(lsNum('vfxModR', chromaMobileDefault ? 0.019 : 0.01));
+  const [vfxModG, setVfxModG] = useState(lsNum('vfxModG', chromaMobileDefault ? 0.031 : 0.01));
+  const [vfxModB, setVfxModB] = useState(lsNum('vfxModB', chromaMobileDefault ? 0.015 : 0.01));
+  useEffect(() => { setChromaParams(vfxModR, vfxModG, vfxModB); }, [vfxModR, vfxModG, vfxModB]);
   // Persist every Visualizer / Feedback panel setting so the panel comes
   // back exactly as left after a reload. One effect covers them all; each
   // write is cheap and guarded. (vizQuality has its own effect above.)
@@ -570,6 +580,9 @@ function App() {
     lsSet('timelineAutoRange', timelineAutoRange ? '1' : '0');
     lsSet('vfxScale', vfxScale);
     lsSet('vfxBlend', vfxBlend);
+    lsSet('vfxModR', vfxModR);
+    lsSet('vfxModG', vfxModG);
+    lsSet('vfxModB', vfxModB);
     lsSet('faceScale', faceScale);
     lsSet('faceEyeSize', faceEyeSize);
     lsSet('faceEyeGap', faceEyeGap);
@@ -585,7 +598,7 @@ function App() {
     staticMode, staticPeriods, staticLineWidth, staticOutlineThickness,
     vizScale, vizLineWidth, vizOutline, vizRotation, vizMode, vizCycles,
     timelineWindowSec, timelineFreqMin, timelineFreqMax, timelineAutoRange,
-    vfxScale, vfxBlend,
+    vfxScale, vfxBlend, vfxModR, vfxModG, vfxModB,
     faceScale, faceEyeSize, faceEyeGap, faceMouthWidth, faceMouthLineWidth,
     faceStandingHeight, faceStandingPeriods, faceMouthGap,
     faceMouthCurve, faceMouthCurveWidth, faceMouthPauseNeutral,
@@ -706,7 +719,7 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('panDots', panDots ? '1' : '0'); } catch { /* ignore */ }
   }, [panDots]);
-  // Orb drag feel — three ways the vertical axis can read during a DRAG (the
+  // Orb drag feel — four ways the vertical axis can read during a DRAG (the
   // grab gesture is unaffected by all of them and keeps its volume drag):
   //   'linear'    — one pixel of horizontal drag is worth the same amount of
   //                 pitch wherever the pointer is.
@@ -716,13 +729,20 @@ function App() {
   //   'ios'       — the iOS "linear scaling" ramp (scrubSettings.js): fine at
   //                 the grab point, accelerating to a coarse sweep as you pull
   //                 away in EITHER direction. Its own sliders live in Settings.
+  //   'zoom'      — zoom-as-gain (FrequencySpectrumBar's zoom notes): vertical
+  //                 pull re-zooms the spectrum view around the grab point,
+  //                 and the visible span IS the drag gain — the ruler's tick
+  //                 density is the rate readout. Subtle + un-eased while
+  //                 dragging. The default for fresh profiles (Dan, 2026-08-04).
   // Persisted under "orbDragMode", migrating the older boolean "scrubPrecision".
   const [orbDragMode, setOrbDragMode] = useState(() => {
     try {
       const saved = localStorage.getItem('orbDragMode');
-      if (saved === 'linear' || saved === 'precision' || saved === 'ios') return saved;
-      return localStorage.getItem('scrubPrecision') === '1' ? 'precision' : 'linear';
-    } catch { return 'linear'; }
+      if (saved === 'linear' || saved === 'precision' || saved === 'ios' || saved === 'zoom') {
+        return saved;
+      }
+      return localStorage.getItem('scrubPrecision') === '1' ? 'precision' : 'zoom';
+    } catch { return 'zoom'; }
   });
   useEffect(() => {
     try { localStorage.setItem('orbDragMode', orbDragMode); } catch { /* ignore */ }
@@ -1679,6 +1699,12 @@ function App() {
             onVfxScaleChange={setVfxScale}
             vfxBlend={vfxBlend}
             onVfxBlendChange={setVfxBlend}
+            vfxModR={vfxModR}
+            onVfxModRChange={setVfxModR}
+            vfxModG={vfxModG}
+            onVfxModGChange={setVfxModG}
+            vfxModB={vfxModB}
+            onVfxModBChange={setVfxModB}
           />
           {(() => {
             // Two radio buttons: an "audio" group (modes 0–3, with an expand

@@ -20,26 +20,37 @@
  * actual nodes — see _applyNoise / _startNoiseSource there.
  */
 
+// Listed dark → bright (brown, pink, white) so the row reads as one
+// spectral sweep, and the tray's section header names the selected
+// color's character inline ("color: −6 dB per octave") instead of
+// carrying a sentence underneath — `short` is that fragment, `blurb`
+// the long form kept for tooltips.
 export const NOISE_TYPES = {
+  brown: {
+    id: 'brown',
+    label: 'Brown',
+    short: '−6 dB per octave',
+    blurb: 'Low-weighted rumble, like distant surf.',
+  },
   pink: {
     id: 'pink',
     label: 'Pink',
+    short: 'equal energy per octave',
     blurb: 'Equal energy per octave — the classic warm hiss.',
   },
   white: {
     id: 'white',
     label: 'White',
+    short: 'flat spectrum',
     blurb: 'Flat spectrum — bright, airy static.',
-  },
-  brown: {
-    id: 'brown',
-    label: 'Brown',
-    blurb: 'Low-weighted rumble, like distant surf.',
   },
 };
 
 export const NOISE_TYPE_IDS = Object.keys(NOISE_TYPES);
-export const DEFAULT_NOISE_TYPE = 'pink';
+// Brown since 2026-08-04 (was pink) — the darkest color is the one that
+// sits under a drone without masking it. Noise isn't in the patch schema
+// or URL state yet, so nothing stored has to migrate.
+export const DEFAULT_NOISE_TYPE = 'brown';
 
 const BUFFER_SECONDS = 2;
 // Target RMS per channel after normalization. 0.15 at full level sits

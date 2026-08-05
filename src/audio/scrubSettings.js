@@ -1,6 +1,13 @@
 /**
- * scrubSettings — the orb-drag "linear scaling" ramp (Settings → Orb drag →
- * 'ios scaling' mode).
+ * scrubSettings — orb-drag feel knobs. Two groups share this store (both are
+ * per-device preferences, both are read every drag frame):
+ *   scaleAmount / fineLimit  — the 'ios scaling' ramp (below).
+ *   zoomOffset / zoomScale / zoomInvert — the 'zoom' mode curve, exposed as
+ *     the y = mx + b it literally is in log-span space (Dan, 2026-08-04):
+ *     `zoomOffset` is b (the span change applied the instant a drag confirms,
+ *     zeroed by default), `zoomScale` is m (how hard vertical travel leans
+ *     the frame), `zoomInvert` swaps which direction zooms in.
+ *     FrequencySpectrumBar's zoomSpanMult consumes all three.
  *
  * The vertical axis of an orb drag no longer sets VOLUME (that moved to the
  * mixer console's faders — Dan, 2026-08-04). Instead, vertical position IS
@@ -25,26 +32,46 @@
  *   fineLimit      — the down side's far end: the ratio at full pull-down,
  *                    with 1x at the row held fixed. 0.05 = the precision
  *                    mode's 1/20 fine zone.
+ *   zoomOffset     — b: log2 span offset applied at drag-confirm. 0 = the
+ *                    view doesn't move when you grab; +0.14 is the 1.1x
+ *                    "breathe" the mode shipped with.
+ *   zoomScale      — m: multiplier on the pull→span exponent. 1 = the tuned
+ *                    curve (3x out / ~1/3 in at full travel), 0 = flat (the
+ *                    frame never leans), 2 = double the depth either way.
+ *   zoomInvert     — flip the axis: raise to zoom IN, pull down to zoom out.
  */
 
 const KEYS = {
   scaleAmount: 'scrubScaleAmount',
   fineLimit: 'scrubFineLimit',
+  zoomOffset: 'zoomGrabOffset',
+  zoomScale: 'zoomScaleAmount',
+  zoomInvert: 'zoomInvert',
 };
 
 export const SCRUB_DEFAULTS = {
   scaleAmount: 1.2,     // Dan's feel, 2026-07-21
   fineLimit: 0.05,
+  zoomOffset: 0,        // Dan, 2026-08-04: no zoom jump on grab by default
+  zoomScale: 1,
+  zoomInvert: false,
 };
 
 export const SCALE_AMOUNT_MIN = 0;
 export const SCALE_AMOUNT_MAX = 2;
 export const FINE_LIMIT_MIN = 0.01;
 export const FINE_LIMIT_MAX = 1;
+// Offset in log2 span units: ±1 is one octave of span (half / double frame).
+export const ZOOM_OFFSET_MIN = -1;
+export const ZOOM_OFFSET_MAX = 1;
+export const ZOOM_SCALE_MIN = 0;
+export const ZOOM_SCALE_MAX = 3;
 
 const RANGES = {
   scaleAmount: [SCALE_AMOUNT_MIN, SCALE_AMOUNT_MAX],
   fineLimit: [FINE_LIMIT_MIN, FINE_LIMIT_MAX],
+  zoomOffset: [ZOOM_OFFSET_MIN, ZOOM_OFFSET_MAX],
+  zoomScale: [ZOOM_SCALE_MIN, ZOOM_SCALE_MAX],
 };
 
 const _settings = { ...SCRUB_DEFAULTS };

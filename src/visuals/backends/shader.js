@@ -111,6 +111,12 @@ let startTimeMs = 0;
 // the visuals show a noticeable effect on first load.
 let vfxScale = 1.05;
 let vfxBlend = 0.23;
+// Per-channel RGB-split amounts (iOS's oscModR/G/B "rgb offset" params).
+// Defaults are the iOS device tuning; App overwrites them on mount with
+// its persisted values (0.01 flat on desktop = the old web-parity look).
+let vfxModR = 0.019;
+let vfxModG = 0.031;
+let vfxModB = 0.015;
 let texWidth = 0;
 let texHeight = 0;
 
@@ -130,6 +136,9 @@ uniform sampler2D u_o0;
 uniform float u_time;
 uniform float u_extraScale;
 uniform float u_extraBlend;
+uniform float u_modR;
+uniform float u_modG;
+uniform float u_modB;
 
 in vec2 v_uv;
 out vec4 fragColor;
@@ -198,15 +207,15 @@ void main() {
   // UV-displaced by an oscillating gradient at slightly different
   // frequencies — produces the chromatic-aberration shimmer.
   vec4 cR = colorize(
-    texture(u_s0, modulate(st, osc(st, 9.0,  0.04, 1.0), 0.01)),
+    texture(u_s0, modulate(st, osc(st, 9.0,  0.04, 1.0), u_modR)),
     1.0, 0.0, 0.0
   );
   vec4 cG = colorize(
-    texture(u_s0, modulate(st, osc(st, 10.0,  0.1, 1.0), 0.01)),
+    texture(u_s0, modulate(st, osc(st, 10.0,  0.1, 1.0), u_modG)),
     0.0, 1.0, 0.0
   );
   vec4 cB = colorize(
-    texture(u_s0, modulate(st, osc(st, 11.0, -0.1, 1.0), 0.01)),
+    texture(u_s0, modulate(st, osc(st, 11.0, -0.1, 1.0), u_modB)),
     0.0, 0.0, 1.0
   );
 
@@ -242,19 +251,21 @@ void main() {
 //   * Both u_o0 feedback terms are gone (the vfx layer AND the always-on
 //     noise-modulated one), which also removes the value-noise hash chain
 //     and, upstream, the per-frame copyTexSubImage2D of the whole canvas.
-// The modulation amount is a compile-time constant: 0.024 (iOS device
-// tuning — 0.01 is web parity but "reads far subtler on the small, dense
-// device screen" per the Metal port's notes).
+// The modulation amounts are per-channel runtime uniforms (u_modR/G/B),
+// mirroring iOS's oscModR/G/B "rgb offset" params. Defaults are the iOS
+// device tuning — 0.01 is web parity but "reads far subtler on the
+// small, dense device screen" per the Metal port's notes.
 const FRAG_SRC_LITE = `#version 300 es
 precision highp float;
 
 uniform sampler2D u_s0;
 uniform float u_time;
+uniform float u_modR;
+uniform float u_modG;
+uniform float u_modB;
 
 in vec2 v_uv;
 out vec4 fragColor;
-
-const float MOD_AMT = 0.024;
 
 // osc().xy — the only lanes modulate() ever reads (see FRAG_SRC's osc).
 vec2 oscWarp(vec2 st, float freq, float sync, float offset) {
@@ -266,9 +277,9 @@ vec2 oscWarp(vec2 st, float freq, float sync, float offset) {
 
 void main() {
   vec2 st = v_uv;
-  float r = texture(u_s0, st + oscWarp(st,  9.0,  0.04, 1.0) * MOD_AMT).r;
-  float g = texture(u_s0, st + oscWarp(st, 10.0,  0.1,  1.0) * MOD_AMT).g;
-  float b = texture(u_s0, st + oscWarp(st, 11.0, -0.1,  1.0) * MOD_AMT).b;
+  float r = texture(u_s0, st + oscWarp(st,  9.0,  0.04, 1.0) * u_modR).r;
+  float g = texture(u_s0, st + oscWarp(st, 10.0,  0.1,  1.0) * u_modG).g;
+  float b = texture(u_s0, st + oscWarp(st, 11.0, -0.1,  1.0) * u_modB).b;
   fragColor = vec4(r, g, b, 1.0);
 }`;
 
@@ -355,6 +366,9 @@ function render(timeMs) {
   gl.bindTexture(gl.TEXTURE_2D, s0Texture);
   gl.uniform1i(uniforms.u_s0, 0);
   gl.uniform1f(uniforms.u_time, (timeMs - startTimeMs) / 1000);
+  gl.uniform1f(uniforms.u_modR, vfxModR);
+  gl.uniform1f(uniforms.u_modG, vfxModG);
+  gl.uniform1f(uniforms.u_modB, vfxModB);
 
   if (!liteMode) {
     gl.activeTexture(gl.TEXTURE1);
@@ -386,6 +400,14 @@ function render(timeMs) {
 export function setVfxParams(scale, blend) {
   vfxScale = scale;
   vfxBlend = blend;
+}
+
+// iOS's oscModR/G/B "rgb offset" params — per-channel RGB-split amounts.
+// Live in both pipelines (desktop chromatic + mobile lite).
+export function setChromaParams(modR, modG, modB) {
+  vfxModR = modR;
+  vfxModG = modG;
+  vfxModB = modB;
 }
 
 export function selectSketch(id) {
@@ -423,6 +445,9 @@ export function startVisuals({ canvas, sourceCanvas } = {}) {
   uniforms = {
     u_s0: gl.getUniformLocation(program, 'u_s0'),
     u_time: gl.getUniformLocation(program, 'u_time'),
+    u_modR: gl.getUniformLocation(program, 'u_modR'),
+    u_modG: gl.getUniformLocation(program, 'u_modG'),
+    u_modB: gl.getUniformLocation(program, 'u_modB'),
   };
   if (!liteMode) {
     uniforms.u_o0 = gl.getUniformLocation(program, 'u_o0');

@@ -1626,6 +1626,14 @@ class AudioEngine {
     return 0.5 + 0.5 * Math.abs(this.getVoicePan(i));
   }
 
+  /** Public read of the per-slot equal-loudness comp for the synth
+   *  visualizer paths (fairy tail, synth XY, Hilbert) — without it a
+   *  centered voice draws ~2× the analyser figure and the tape-fairy
+   *  takeover/handoff steps in size. */
+  getSlotLoudnessScale(i) {
+    return this._slotLoudnessScale(i);
+  }
+
   /**
    * Steady-state gain target for the partner oscillator: the primary's
    * target scaled by panWidth — the partner fades out as the voice
@@ -4441,10 +4449,20 @@ class AudioEngine {
    * where (c_k, d_k) = (A_k·cos θ_k, A_k·sin θ_k). Since all ω_k are
    * known, x = M·p is linear in the 2M unknowns p = [c_0,d_0,c_1,d_1,…];
    * we solve the normal equations M^T M · p = M^T x jointly across all
-   * oscillators routed to the channel. This is the right approach (vs.
+   * oscillators audible on the channel. This is the right approach (vs.
    * per-osc Goertzel) because it EXACTLY accounts for the mutual
    * leakage between oscillators whose frequencies are within the
    * Goertzel bin width — e.g. two oscs 1 Hz apart that beat together.
+   *
+   * Mode-blind stereo: each channel's oscillator set follows the
+   * collapse-pan tap weights, not the discrete routingMap — a centered
+   * voice's L channel holds its PRIMARY (base + detune/2) and its R
+   * channel holds its PARTNER (base − detune/2), a separate oscillator
+   * with its own frequency and accumulator. Partner entries solve as
+   * independent columns and write back to phasesR[]. Fitting the old
+   * primary-only model against the partner's channel dragged phases[]
+   * toward the partner's phase every R pass, which is why the tape
+   * fairy's tail matched the live figure at hard pans but not centered.
    *
    * Implementation:
    * • M^T M has a closed-form expression via the Dirichlet kernel
@@ -4460,7 +4478,9 @@ class AudioEngine {
    *
    * Oscillators routed only to output channels > 1 (not visible on
    * analyzers 0/1) are skipped — their phases fall back to
-   * updatePhases()'s accumulator.
+   * updatePhases()'s accumulator. Likewise partners silenced by a hard
+   * pan (width ≈ 0): no columns are added for them, so the default lr
+   * preset costs exactly what the old primary-only gather did.
    */
   calibratePhases() {
     if (!this.isInitialized || !this.audioContext) return;
@@ -4476,29 +4496,62 @@ class AudioEngine {
     const N = signal.length;
     const TWO_PI = Math.PI * 2;
 
-    // Gather oscillators routed to this analyzer channel. Use
-    // smoothedFreqs (maintained by updatePhases with the same 0.016 s
-    // exponential tau Web Audio's setTargetAtTime uses internally)
-    // rather than frequencyValues (which is the LATEST scheduled
-    // target). During a glide or slider drag the audio buffer the LSQ
-    // is fitting contains the smoothed frequency, not the target —
-    // using smoothedFreqs keeps the LSQ basis aligned with the signal.
-    // At steady state the two are equal.
+    // Gather every oscillator audible on this analyzer channel. Use
+    // smoothedFreqs / smoothedFreqsR (maintained by updatePhases with
+    // the same 0.016 s exponential tau Web Audio's setTargetAtTime uses
+    // internally) rather than frequencyValues (which is the LATEST
+    // scheduled target). During a glide or slider drag the audio buffer
+    // the LSQ is fitting contains the smoothed frequency, not the
+    // target — using the smoothed values keeps the basis aligned with
+    // the signal. At steady state the two are equal.
+    //
+    // Stereo-pair slots contribute per the collapse-pan tap weights
+    // (see setVoicePan): primary at dronePanWeights(pan).primary[ch],
+    // partner — its own oscillator, frequency and accumulator — at
+    // partner[ch] × panWidth(pan). Both carry _slotLoudnessScale, the
+    // same equal-loudness comp the gain targets hold, so `weight` is
+    // the slot's true analyzer-side amplitude factor for the expected-
+    // amplitude confidence check below. Entries under the gate add no
+    // columns — a hard-panned voice is absent from its far channel and
+    // its silent partner is absent everywhere, so the lr preset builds
+    // the same-size system the old routing-based gather did.
+    // Beyond-stereo patch-bay slots keep the legacy discrete model
+    // (primary only, on its routed channels — pan is inert for them).
+    const WEIGHT_EPS = 1e-3;
     const oscs = [];
     for (let k = 0; k < this.oscillatorCount; k++) {
       const f = this.smoothedFreqs[k];
       if (!(f > 0)) continue;
       const ch = this.routingMap[k] || [];
-      if (ch.includes(channel)) oscs.push({ k, f });
+      if (ch.length === 0) continue; // unrouted → silent, same as the taps
+      if (this._usesBeyondStereo(ch)) {
+        if (ch.includes(channel)) oscs.push({ k, f, partner: false, weight: 1 });
+        continue;
+      }
+      const pan = this.getVoicePan(k);
+      const w = dronePanWeights(pan);
+      const loud = this._slotLoudnessScale(k);
+      const wPrim = w.primary[channel] * loud;
+      if (wPrim > WEIGHT_EPS) oscs.push({ k, f, partner: false, weight: wPrim });
+      const fR = this.smoothedFreqsR[k];
+      const wPart = w.partner[channel] * panWidth(pan) * loud;
+      if (fR > 0 && wPart > WEIGHT_EPS) {
+        oscs.push({ k, f: fR, partner: true, weight: wPart });
+      }
     }
     const M = oscs.length;
     if (M === 0) return;
     const P = 2 * M;
 
     // Cache signature: invalidate on any change to the osc set, their
-    // frequencies, or the analyzer buffer length.
+    // frequencies, or the analyzer buffer length. Weights are NOT part
+    // of the signature — they never enter M^T M (amplitude lives in the
+    // solved coefficients), only the confidence check, which reads the
+    // fresh `oscs` each call.
     let sig = N + '|';
-    for (let i = 0; i < M; i++) sig += oscs[i].k + ':' + oscs[i].f.toFixed(6) + ';';
+    for (let i = 0; i < M; i++) {
+      sig += (oscs[i].partner ? 'p' : '') + oscs[i].k + ':' + oscs[i].f.toFixed(6) + ';';
+    }
 
     const cacheKey = channel === 0 ? '_lsqCacheL' : '_lsqCacheR';
     let cache = this[cacheKey];
@@ -4551,7 +4604,7 @@ class AudioEngine {
         // phases[] as whatever updatePhases produced.
         return;
       }
-      cache = { sig, oscs, LL: MtM, P, N };
+      cache = { sig, LL: MtM, P, N };
       this[cacheKey] = cache;
     }
 
@@ -4559,7 +4612,7 @@ class AudioEngine {
     // (Σ x[s]·sin(ω_i·s), Σ x[s]·cos(ω_i·s)).
     const Mtx = new Float64Array(P);
     for (let i = 0; i < M; i++) {
-      const omega = TWO_PI * cache.oscs[i].f / sampleRate;
+      const omega = TWO_PI * oscs[i].f / sampleRate;
       const cosStep = Math.cos(omega);
       const sinStep = Math.sin(omega);
       let cosT = 1, sinT = 0;
@@ -4600,24 +4653,35 @@ class AudioEngine {
     // through the middle so the handoff is smooth — no thresholds.
     const masterScale = this._getScaledMasterGain();
     const droneSustain = droneEnvelope.sustain;
-    const twoOverN = 2 / N;
     for (let i = 0; i < M; i++) {
-      const oscIdx = cache.oscs[i].k;
+      const o = oscs[i];
+      const oscIdx = o.k;
       const c = p[2 * i];
       const d = p[2 * i + 1];
-      const aLsq = Math.sqrt(c * c + d * d) * twoOverN;
+      // p solves the NORMAL equations, so (c, d) are already in signal
+      // amplitude units (M^T M ≈ (N/2)·I absorbs the projection scale).
+      // The old extra ×2/N here shrank aLsq ~4000×, pinning confidence
+      // below the 1e-3 gate — the calibration never actually fired.
+      const aLsq = Math.sqrt(c * c + d * d);
       const muted = this.mutedStates[oscIdx];
-      // Steady-state gain at the slot is volume × droneEnvelope.sustain;
-      // multiply by masterScale to land on the analyzer-side amplitude.
-      const aExpected = (muted ? 0 : (this.volumeValues[oscIdx] || 0)) * droneSustain * masterScale;
+      // Steady-state gain at the slot is volume × droneEnvelope.sustain
+      // × the entry's channel weight (tap weight × loudness comp ×
+      // partner width); multiply by masterScale to land on the
+      // analyzer-side amplitude.
+      const aExpected = (muted ? 0 : (this.volumeValues[oscIdx] || 0))
+        * droneSustain * masterScale * o.weight;
       const confidence = aExpected > 1e-6 ? Math.min(1, aLsq / aExpected) : 0;
       if (confidence < 1e-3) continue; // accumulator owns it this frame
 
       const thetaAt0 = Math.atan2(d, c);
-      const omega = TWO_PI * cache.oscs[i].f / sampleRate;
+      const omega = TWO_PI * o.f / sampleRate;
       const phaseAtEnd = thetaAt0 + omega * (N - 1);
       const phaseLsq = ((phaseAtEnd % TWO_PI) + TWO_PI) % TWO_PI;
-      const phaseAcc = this.phases[oscIdx] || 0;
+      // Partner entries correct the partner's own accumulator; an osc
+      // audible in BOTH channels gets two ≤0.2 blends toward the same
+      // measured truth, which just converges a little faster.
+      const acc = o.partner ? this.phasesR : this.phases;
+      const phaseAcc = acc[oscIdx] || 0;
       // Shortest signed arc from accumulator toward LSQ, in (−π, π].
       // Scale by confidence so partial trust moves phase only partway.
       // Additionally cap the blend rate at MAX_BLEND so LSQ's
@@ -4635,7 +4699,7 @@ class AudioEngine {
       const blend = Math.min(confidence, MAX_BLEND);
       let next = phaseAcc + blend * delta;
       next = ((next % TWO_PI) + TWO_PI) % TWO_PI;
-      this.phases[oscIdx] = next;
+      acc[oscIdx] = next;
     }
   }
 

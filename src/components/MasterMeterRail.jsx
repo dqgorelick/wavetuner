@@ -17,20 +17,30 @@ function MasterMeterRail() {
   const [master, setMaster] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
   const [peaks, setPeaks] = useState({ pL: 0, pR: 0, hL: 0, hR: 0 });
 
-  // rAF meter loop — same decay math as the mixer panel's Main row
-  // (~1s to fall 50% at 60fps). State setters short-circuit when the
-  // frame's values are unchanged so a silent engine doesn't re-render.
+  // rAF meter loop — same decay behavior as the mixer panel's Main row
+  // (~1s to fall 50%). State setters short-circuit when the frame's
+  // values are unchanged so a silent engine doesn't re-render.
+  //
+  // Capped at 30 Hz: each peak read copies + scans 16k analyser samples,
+  // and a meter reads identically at 30 fps. On 120 Hz ProMotion phones
+  // an uncapped loop quadrupled that work for nothing.
   useEffect(() => {
     let raf;
-    const tick = () => {
+    const METER_MIN_MS = 1000 / 30 - 1.5;
+    let lastTs = 0;
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < METER_MIN_MS) return;
+      lastTs = now;
       if (!audioEngine.initialized) return;
       try {
         const nextMaster = audioEngine.getMasterVolume();
         setMaster((prev) => (Math.abs(prev - nextMaster) > 0.001 ? nextMaster : prev));
         const { peakL, peakR } = audioEngine.getMasterPeakLevels();
         setPeaks((prev) => {
-          const decay = 0.97;
+          // 0.97/frame at 60 fps ≈ 0.941 at 30 fps — same fall time.
+          const decay = 0.941;
           const hL = Math.max(prev.hL * decay, peakL);
           const hR = Math.max(prev.hR * decay, peakR);
           if (

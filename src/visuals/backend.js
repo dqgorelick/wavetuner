@@ -2,9 +2,11 @@
  * Visual backend — public surface for whichever rendering implementation
  * is active. Two backends live under ./backends/:
  *
- *   - hydra.js  — current default. AGPL (hydra-synth), full live-coding.
- *   - shader.js — stub for now; gains a real WebGL2 pipeline in step 3.
- *                 AGPL-free, 3 preset sketches, mirrors the iOS Metal API.
+ *   - shader.js — current default. AGPL-free WebGL2 pipeline, 3 preset
+ *                 sketches, mirrors the iOS Metal API. Much cheaper on
+ *                 mobile than hydra-synth.
+ *   - hydra.js  — opt-in (VITE_VISUAL_BACKEND=hydra). AGPL
+ *                 (hydra-synth), full live-coding.
  *
  * Contract (kept minimal so adding the shader backend later is mechanical):
  *
@@ -19,7 +21,7 @@
  *   DEFAULT_SKETCH_ID                                      → string
  *
  * `@visual-backend` is a Vite alias resolved at build time — see
- * vite.config.js. VITE_VISUAL_BACKEND=hydra (default) or =shader picks
+ * vite.config.js. VITE_VISUAL_BACKEND=shader (default) or =hydra picks
  * the implementation; the unselected file is tree-shaken from the bundle.
  */
 
@@ -32,5 +34,7 @@ export {
   selectSketch,
   getSketches,
   supportsLiveCode,
+  supportsFeedback,
+  consumesAudioFeatures,
   DEFAULT_SKETCH_ID,
 } from '@visual-backend';

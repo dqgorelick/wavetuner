@@ -17,6 +17,11 @@
  * shader reads o0 BEFORE we copy this frame's output into it — no read/
  * write hazard within a frame.
  *
+ * Mobile (≤768 px viewports) runs a "lite" pipeline instead: the
+ * feedback-free collapsed RGB-split ported from the iOS Metal renderer
+ * (HydraChromatic.metal). Steps 1–2 only — no o0 texture and no step-3
+ * copy — and a single Chromatic preset. See FRAG_SRC_LITE.
+ *
  * The GLSL math is reimplemented from first principles (sine, smoothstep-
  * blended hash noise, simple UV transforms). It does NOT vendor any code
  * from hydra-synth, which keeps this backend AGPL-free.
@@ -26,7 +31,27 @@
 // three fixed presets and exposes no editor.
 export const supportsLiveCode = false;
 
+// The fixed presets never read window.audio, so the per-frame FFT
+// feature pipeline (updateAudioFeatures — a 3×4096-bin walk plus a
+// pairwise dissonance pass) can stay off while this backend renders.
+// The hydra backend sets this true because user sketches may reference
+// `audio.dissonance` etc. as callback uniforms.
+export const consumesAudioFeatures = false;
+
 export const DEFAULT_SKETCH_ID = 'builtin_chromatic';
+
+// Mobile runs the "lite" pipeline: the collapsed feedback-free RGB-split
+// the iOS Metal port uses (HydraChromatic.metal, feedback removed
+// 2026-07-24 for perf). No o0 texture, no per-frame framebuffer→texture
+// copy, no noise field — three single-channel taps and six sines.
+// Persistence still reads correctly because the oscilloscope canvas
+// bakes its own fade trail into s0 (the rgba(0,0,0,0.6) clear), exactly
+// as iOS's pass A does. Same breakpoint App.jsx uses for isMobile.
+function isMobileViewport() {
+  return typeof window !== 'undefined'
+    && window.matchMedia('(max-width: 768px)').matches;
+}
+let liteMode = false;
 
 // Sketch metadata. Order matters — the panel renders them in this order.
 // `useExtraFeedback` gates the second feedback layer; vfx slider values
@@ -53,8 +78,20 @@ const SKETCHES = [
   },
 ];
 
+// Whether the running pipeline has a feedback layer for the panel's
+// Feedback sliders to drive. While stopped, predict from the viewport so
+// the panel renders correctly before the first enable.
+export function supportsFeedback() {
+  return gl ? !liteMode : !isMobileViewport();
+}
+
 export function getSketches() {
-  return SKETCHES.map(({ id, name, description }) => ({ id, name, description }));
+  // The feedback presets don't exist on mobile (the lite pipeline has no
+  // o0 buffer), so only Chromatic is offered there.
+  const list = isMobileViewport()
+    ? SKETCHES.filter((s) => !s.useExtraFeedback)
+    : SKETCHES;
+  return list.map(({ id, name, description }) => ({ id, name, description }));
 }
 
 let currentSketch = SKETCHES[0];
@@ -194,6 +231,47 @@ void main() {
   fragColor = result;
 }`;
 
+// Lite fragment shader — algebraic collapse of FRAG_SRC's chromatic path
+// with every feedback term removed, mirroring the iOS Metal port
+// (HydraChromatic.metal). The collapse:
+//   * colorize(c, 1,0,0) etc. with non-negative tints are pure channel
+//     masks, and addLayer(c0, c1, 1.0) = c0 + c1 — so each warped s0 tap
+//     only ever contributes one channel: rgb = (tapR.r, tapG.g, tapB.b).
+//   * modulate() only reads osc().xy, so each osc's third sine is dead —
+//     6 sines survive of 9.
+//   * Both u_o0 feedback terms are gone (the vfx layer AND the always-on
+//     noise-modulated one), which also removes the value-noise hash chain
+//     and, upstream, the per-frame copyTexSubImage2D of the whole canvas.
+// The modulation amount is a compile-time constant: 0.024 (iOS device
+// tuning — 0.01 is web parity but "reads far subtler on the small, dense
+// device screen" per the Metal port's notes).
+const FRAG_SRC_LITE = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_s0;
+uniform float u_time;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+const float MOD_AMT = 0.024;
+
+// osc().xy — the only lanes modulate() ever reads (see FRAG_SRC's osc).
+vec2 oscWarp(vec2 st, float freq, float sync, float offset) {
+  return vec2(
+    sin((st.x - offset * 2.0 / freq + u_time * sync) * freq),
+    sin((st.x + u_time * sync) * freq)
+  ) * 0.5 + 0.5;
+}
+
+void main() {
+  vec2 st = v_uv;
+  float r = texture(u_s0, st + oscWarp(st,  9.0,  0.04, 1.0) * MOD_AMT).r;
+  float g = texture(u_s0, st + oscWarp(st, 10.0,  0.1,  1.0) * MOD_AMT).g;
+  float b = texture(u_s0, st + oscWarp(st, 11.0, -0.1,  1.0) * MOD_AMT).b;
+  fragColor = vec4(r, g, b, 1.0);
+}`;
+
 function compileShader(type, source) {
   const sh = gl.createShader(type);
   gl.shaderSource(sh, source);
@@ -240,14 +318,24 @@ function ensureTexStorage(w, h) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 }
 
+// 60 fps cap, matching the iOS renderer's default preferredFramesPerSecond.
+// On ProMotion phones rAF fires at 120 Hz; every extra frame costs a full
+// s0 canvas texture upload + a full-canvas fragment pass + a feedback
+// copy, for no visible gain on these soft feedback effects. The 1.5 ms
+// tolerance keeps genuine 60 Hz displays from dropping frames to jitter.
+const FRAME_MIN_MS = 1000 / 60 - 1.5;
+let lastFrameMs = 0;
+
 function render(timeMs) {
   if (!gl || !canvasRef) return;
   rafHandle = requestAnimationFrame(render);
+  if (timeMs - lastFrameMs < FRAME_MIN_MS) return;
+  lastFrameMs = timeMs;
 
   const w = canvasRef.width;
   const h = canvasRef.height;
   if (w === 0 || h === 0) return;
-  ensureTexStorage(w, h);
+  if (!liteMode) ensureTexStorage(w, h);
 
   // 1. Upload the live oscilloscope pixels into s0.
   gl.activeTexture(gl.TEXTURE0);
@@ -266,26 +354,33 @@ function render(timeMs) {
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, s0Texture);
   gl.uniform1i(uniforms.u_s0, 0);
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, o0Texture);
-  gl.uniform1i(uniforms.u_o0, 1);
   gl.uniform1f(uniforms.u_time, (timeMs - startTimeMs) / 1000);
 
-  // Sliders drive the feedback uniforms; chromatic preset skips the
-  // layer entirely by zeroing them out at the binding site.
-  const useFb = currentSketch.useExtraFeedback;
-  gl.uniform1f(uniforms.u_extraScale, useFb ? vfxScale : 0);
-  gl.uniform1f(uniforms.u_extraBlend, useFb ? vfxBlend : 0);
+  if (!liteMode) {
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, o0Texture);
+    gl.uniform1i(uniforms.u_o0, 1);
+
+    // Sliders drive the feedback uniforms; chromatic preset skips the
+    // layer entirely by zeroing them out at the binding site.
+    const useFb = currentSketch.useExtraFeedback;
+    gl.uniform1f(uniforms.u_extraScale, useFb ? vfxScale : 0);
+    gl.uniform1f(uniforms.u_extraBlend, useFb ? vfxBlend : 0);
+  }
 
   gl.bindVertexArray(quadVAO);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-  // 3. Capture this frame's output as next frame's feedback. The shader
-  // already finished sampling o0 (last frame's pixels) before this copy,
-  // so there's no read/write hazard.
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, o0Texture);
-  gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+  // 3. Full pipeline only: capture this frame's output as next frame's
+  // feedback. The shader already finished sampling o0 (last frame's
+  // pixels) before this copy, so there's no read/write hazard. The lite
+  // pipeline has no feedback, so it skips this full-canvas GPU copy —
+  // on a phone that's the single largest per-frame saving of lite mode.
+  if (!liteMode) {
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, o0Texture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+  }
 }
 
 export function setVfxParams(scale, blend) {
@@ -317,16 +412,23 @@ export function startVisuals({ canvas, sourceCanvas } = {}) {
   // bottom-left convention end-to-end.
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 
+  // Pick the pipeline for this session. Evaluated at start (not module
+  // load) so a rotated tablet / resized window gets the right pipeline
+  // on the next visuals toggle.
+  liteMode = isMobileViewport();
+
   const vs = compileShader(gl.VERTEX_SHADER, VERT_SRC);
-  const fs = compileShader(gl.FRAGMENT_SHADER, FRAG_SRC);
+  const fs = compileShader(gl.FRAGMENT_SHADER, liteMode ? FRAG_SRC_LITE : FRAG_SRC);
   program = linkProgram(vs, fs);
   uniforms = {
     u_s0: gl.getUniformLocation(program, 'u_s0'),
-    u_o0: gl.getUniformLocation(program, 'u_o0'),
     u_time: gl.getUniformLocation(program, 'u_time'),
-    u_extraScale: gl.getUniformLocation(program, 'u_extraScale'),
-    u_extraBlend: gl.getUniformLocation(program, 'u_extraBlend'),
   };
+  if (!liteMode) {
+    uniforms.u_o0 = gl.getUniformLocation(program, 'u_o0');
+    uniforms.u_extraScale = gl.getUniformLocation(program, 'u_extraScale');
+    uniforms.u_extraBlend = gl.getUniformLocation(program, 'u_extraBlend');
+  }
 
   // Fullscreen quad — two triangles in NDC. Stays bound via the VAO for
   // every draw; we only call drawArrays after that.
@@ -343,7 +445,8 @@ export function startVisuals({ canvas, sourceCanvas } = {}) {
   gl.bindVertexArray(null);
 
   s0Texture = createTexture();
-  o0Texture = createTexture();
+  // The lite pipeline never reads previous-frame output — no o0 at all.
+  o0Texture = liteMode ? null : createTexture();
   texWidth = 0;
   texHeight = 0;
 

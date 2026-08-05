@@ -116,8 +116,18 @@ function MixerConsole({
   useEffect(() => {
     let raf;
     const arraysEqual = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
-    const tick = () => {
+    // 30 Hz cap — every setter below is equality-guarded, so the per-tick
+    // cost is the engine reads + small-array churn; the console is always
+    // mounted, so at 120 Hz rAF (ProMotion phones) that ran 4× as often
+    // as anything visible changes. Fader/mute mirroring at 30 Hz is
+    // indistinguishable.
+    const CONSOLE_MIN_MS = 1000 / 30 - 1.5;
+    let lastTs = 0;
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastTs < CONSOLE_MIN_MS) return;
+      lastTs = now;
       if (!audioEngine.isInitialized) return;
       try {
         const nextFreqs = audioEngine.getSoundingFrequencies().slice(0, oscillatorCount);

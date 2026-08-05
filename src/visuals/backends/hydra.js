@@ -26,6 +26,16 @@ import { BUILTIN_SKETCHES, DEFAULT_SKETCH_ID as HYDRA_DEFAULT_ID } from '../hydr
 // backend sets this to `false` and the editor disappears.
 export const supportsLiveCode = true;
 
+// Hydra sketches can reference `audio.dissonance` etc. via callback
+// uniforms (window.audio, wired in startVisuals), so the FFT feature
+// pipeline must run whenever this backend is on.
+export const consumesAudioFeatures = true;
+
+// Hydra always has the feedback chain (o0 + window.vfx), on any device.
+export function supportsFeedback() {
+  return true;
+}
+
 // Re-exported for callers that need the default at boot. Mirrors the
 // shader backend's identically named export — same id string so a
 // switched-out build still runs the same default sketch.

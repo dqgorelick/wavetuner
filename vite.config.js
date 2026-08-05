@@ -2,10 +2,12 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'node:url'
 
-// Which visual backend gets bundled. Default is hydra (current behavior);
-// set `VITE_VISUAL_BACKEND=shader` to swap in the AGPL-free WebGL stub.
+// Which visual backend gets bundled. Default is the AGPL-free WebGL2
+// shader backend (triple-RGB, mirrors the iOS Metal pipeline) — far
+// cheaper on mobile than hydra-synth. Set `VITE_VISUAL_BACKEND=hydra`
+// to swap in hydra-synth for live-coding sessions.
 // See src/visuals/backend.js for the contract both backends satisfy.
-const backend = process.env.VITE_VISUAL_BACKEND === 'shader' ? 'shader' : 'hydra'
+const backend = process.env.VITE_VISUAL_BACKEND === 'hydra' ? 'hydra' : 'shader'
 
 // https://vite.dev/config/
 export default defineConfig({

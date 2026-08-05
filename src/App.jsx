@@ -30,7 +30,7 @@ import MidiPanel from './components/MidiPanel';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
 import HydraOverlay from './components/HydraOverlay';
-import { startVisuals, stopVisuals, selectSketch, setVfxParams, DEFAULT_SKETCH_ID } from './visuals/backend';
+import { startVisuals, stopVisuals, selectSketch, setVfxParams, consumesAudioFeatures, DEFAULT_SKETCH_ID } from './visuals/backend';
 import { getAutosave, setAutosave } from './patches/storage';
 import { applyPatch, applyPatchSmooth, preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
@@ -1430,11 +1430,11 @@ function App() {
         vizRotation={vizRotation}
         vizQuality={vizQuality}
         scopeSaturation={scopeSaturation}
-        // Audio features (window.audio) are only consumed when Hydra is
-        // running (sketch uniforms) or the settings panel is open (its
-        // DissonanceMeter). In performance mode the scope skips the
-        // per-frame FFT entirely when neither is true.
-        featuresActive={isHydraEnabled || isSettingsOpen}
+        // Audio features (window.audio) are only consumed by hydra sketch
+        // uniforms — the shader backend never reads them, and the settings
+        // FFT meters are gone. The scope skips the per-frame FFT entirely
+        // unless a features-consuming backend is actually running.
+        featuresActive={isHydraEnabled && consumesAudioFeatures}
         onVfxDrag={handleVfxDrag}
       />
       <HydraOverlay ref={hydraCanvasRef} visible={isHydraEnabled} />

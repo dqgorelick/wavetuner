@@ -40,7 +40,7 @@ function formatKeyFreq(hz) {
  * per-frame DOM update (no React state on the hot path — same pattern
  * the existing oscilloscope uses).
  */
-export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKeyLabels = false, keyMode = 'chromatic' }) {
+export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKeyLabels = false, keyMode = 'chromatic', active = true }) {
   const containerRef = useRef(null);
   const keyRefs = useRef(new Map()); // midi → element
   const leftArrowRef = useRef(null);
@@ -265,9 +265,15 @@ export default function OnScreenKeyboard({ kbdRoot = 60, octaveCount = 2, showKe
 
       raf = requestAnimationFrame(tick);
     };
+    // Gate on tray visibility: the tray stays mounted while closed (it
+    // slides via CSS), so without this the glow loop writes a custom
+    // property per key per frame forever — including on mobile, where
+    // the tray can never even be opened. Glows snap to the live envelope
+    // state the moment the tray reopens.
+    if (!active) return undefined;
     tick();
     return () => { if (raf) cancelAnimationFrame(raf); };
-  }, [startMidi, endMidi]);
+  }, [startMidi, endMidi, active]);
 
   // Pointer handlers — pointerdown on a key triggers noteOn; pointerup
   // freezes (when kbd hold is on) or releases (when off). Dragging from

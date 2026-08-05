@@ -1338,6 +1338,10 @@ function _timelineAutoTarget(now, win) {
 // orbs). `now` is audioContext.currentTime. windowSec = X-range. When
 // autoRange is on the Y-range eases to frame the sounding content; otherwise
 // fMin / fMax (the manual sliders) set it.
+// Left-edge fade gradient cache for drawTimeline — rebuilt only when the
+// geometry it depends on changes (see the fade block below).
+const _tlGradCache = { grad: null, width: 0, xLeft: 0, fadeW: 0 };
+
 function drawTimeline(
   ctx, width, height, now, windowSec, fMin, fMax, autoRange, lineScale,
   r, g, b, outlineScale = 1, lineWidthScale = 1
@@ -1470,12 +1474,23 @@ function drawTimeline(
   // left margin, fading to clear over the inner `fadeW`, then clear all the
   // way to the right.
   const fadeW = bandW * 0.16;
-  const grad = ctx.createLinearGradient(0, 0, width, 0);
-  grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
-  grad.addColorStop(Math.max(0, xLeft / width), 'rgba(0, 0, 0, 1)');
-  grad.addColorStop(Math.min(1, (xLeft + fadeW) / width), 'rgba(0, 0, 0, 0)');
-  grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = grad;
+  // Cached: the gradient only depends on width/xLeft/fadeW, which change
+  // on resize, not per frame — and this runs every frame (creating a
+  // fresh gradient object per frame is measurable GC + Skia churn, and
+  // the timeline is also the 'off'-tier fallback mode).
+  const gc = _tlGradCache;
+  if (!gc.grad || gc.width !== width || gc.xLeft !== xLeft || gc.fadeW !== fadeW) {
+    const grad = ctx.createLinearGradient(0, 0, width, 0);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    grad.addColorStop(Math.max(0, xLeft / width), 'rgba(0, 0, 0, 1)');
+    grad.addColorStop(Math.min(1, (xLeft + fadeW) / width), 'rgba(0, 0, 0, 0)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    gc.grad = grad;
+    gc.width = width;
+    gc.xLeft = xLeft;
+    gc.fadeW = fadeW;
+  }
+  ctx.fillStyle = gc.grad;
   ctx.fillRect(0, bandTop, width, bandH);
 
   ctx.restore();
@@ -1542,9 +1557,9 @@ export default function Oscilloscope({
   // window (the analysers tap pre-master, so the audible saturation is
   // otherwise invisible here). See saturateInto.
   scopeSaturation = false,
-  // True when something actually reads window.audio this frame (Hydra
-  // running or the settings DissonanceMeter open). In performance mode
-  // the per-frame audio-feature FFT is skipped entirely when false.
+  // True when something actually reads window.audio this frame (a
+  // features-consuming visual backend running — hydra sketch uniforms).
+  // The per-frame audio-feature FFT is skipped entirely when false.
   featuresActive = true,
   // Drag-on-scope → Feedback sliders. App owns the slider state and
   // passes this callback; the pointer handlers below compute the slider
@@ -1677,11 +1692,16 @@ export default function Oscilloscope({
     // Resize handler. Sizes the backing store at devicePixelRatio so the
     // render stays crisp on HiDPI / Retina displays, while keeping the CSS
     // size and all drawing coordinates in CSS pixels via setTransform.
+    // DPR is capped at 2 — matching the iOS scope's "medium" render scale,
+    // which reads as sharp on 3× phones for roughly half the pixel work.
+    // At DPR 3 the full-viewport backing store is ~3 Mpx and every trail
+    // fill is a read-modify-write over all of it; the cap cuts fill and
+    // stroke rasterization cost by ~56% with no visible quality loss.
     const resizeCanvas = () => {
       readConsoleH();
       const cssWidth = window.innerWidth;
       const cssHeight = window.innerHeight;
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.round(cssWidth * dpr);
       canvas.height = Math.round(cssHeight * dpr);
       canvas.style.width = cssWidth + 'px';
@@ -1702,11 +1722,29 @@ export default function Oscilloscope({
     const TWO_PI = 2 * Math.PI;
     const PHASE_OFFSET = TWO_PI / 3;
     const CYCLE_TIME = 20 * 60 * 1000;
+
+    // #wrapper is the app root and stable for the page's lifetime; cache
+    // it so the draw loop doesn't run a DOM query per frame (re-fetched
+    // if it's ever remounted).
+    let wrapperEl = document.getElementById('wrapper');
     
     // Animation loop - runs independently of React
     // Matches original: iterates all points, no sampling
-    const drawScope = () => {
+    //
+    // Frame-rate cap: 60 fps, matching the iOS scope's default
+    // scopeMaxFPS. On ProMotion displays rAF fires at 120 Hz, which
+    // doubles every per-frame cost (analyser reads, FFT feature walk,
+    // full-viewport fills) for no perceptible gain — a major phone-heat
+    // contributor. The 1.5 ms tolerance keeps genuine 60 Hz displays
+    // from dropping frames to timer jitter.
+    const FRAME_MIN_MS = 1000 / 60 - 1.5;
+    let lastFrameTs = 0;
+    const drawScope = (ts) => {
       animationFrameRef.current = requestAnimationFrame(drawScope);
+
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - lastFrameTs < FRAME_MIN_MS) return;
+      lastFrameTs = now;
 
       if (!audioEngine.initialized) return;
 
@@ -1760,15 +1798,17 @@ export default function Oscilloscope({
       // Tier-3 audio features (dissonance, consonance, beating, centroid,
       // flux, …) for the dissonance meter under the spectrum and for Hydra
       // sketches referencing `audio.dissonance` etc. via callback uniforms.
-      // The scan is a full FFT walk every frame; in performance mode skip
-      // it unless something is actually reading window.audio (Hydra running
-      // or settings panel open), and when it is, run at half rate — the
-      // meter and sketches tween fine off ~30 Hz. Pretty mode runs it every
-      // frame as before.
-      let runFeatures = true;
-      if (perf) {
+      // The scan is a full FFT walk (3 × 4096-bin passes plus a pairwise
+      // dissonance sweep), so it only runs when something actually reads
+      // the result — featuresActive is false whenever the settings panel
+      // is closed and the active visual backend doesn't consume features
+      // (the shader backend never does). In performance mode it
+      // additionally runs at half rate — the meter and sketches tween
+      // fine off ~30 Hz.
+      let runFeatures = featuresActiveRef.current;
+      if (perf && runFeatures) {
         featuresTickRef.current = (featuresTickRef.current + 1) & 1;
-        runFeatures = featuresActiveRef.current && featuresTickRef.current === 0;
+        runFeatures = featuresTickRef.current === 0;
       }
       if (runFeatures) updateAudioFeatures(audioEngine);
 
@@ -1796,8 +1836,8 @@ export default function Oscilloscope({
       // both from usableHeight so the trace (drawStatic) and the
       // Lissajous scope (drawXY) center in the visible region rather
       // than the geometric viewport center.
-      const wrapper = document.getElementById('wrapper');
-      const kbdTrayH = wrapper && wrapper.classList.contains('kbd-tray-open') ? 120 : 0;
+      if (!wrapperEl || !wrapperEl.isConnected) wrapperEl = document.getElementById('wrapper');
+      const kbdTrayH = wrapperEl && wrapperEl.classList.contains('kbd-tray-open') ? 120 : 0;
       const usableHeight = Math.max(0, height - BOTTOM_RESERVED - kbdTrayH);
       const staticStyle = staticModeRef.current;
       const sampleRate = audioEngine.audioContext

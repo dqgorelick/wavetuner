@@ -1276,6 +1276,13 @@ class AudioEngine {
     if (!this.isInitialized || !this.analyserNode1 || !this.analyserNode2) {
       return { peakL: 0, peakR: 0, peak: 0 };
     }
+    // Short-TTL memo: each call copies 2 × 8192 samples (64 KB) out of the
+    // analysers and scans all 16 384 of them, and up to three independent
+    // rAF loops (master rail, mixer panel, and callers-to-come) ask for
+    // this within the same frame. One read per ~10 ms serves them all —
+    // the analyser buffer only advances per audio block anyway.
+    const nowMs = performance.now();
+    if (this._peakMemo && nowMs - this._peakMemoTs < 10) return this._peakMemo;
     this.analyserNode1.getFloatTimeDomainData(this.timeData1);
     this.analyserNode2.getFloatTimeDomainData(this.timeData2);
     let pL = 0;
@@ -1287,7 +1294,9 @@ class AudioEngine {
       if (a > pL) pL = a;
       if (b > pR) pR = b;
     }
-    return { peakL: pL, peakR: pR, peak: Math.max(pL, pR) };
+    this._peakMemo = { peakL: pL, peakR: pR, peak: Math.max(pL, pR) };
+    this._peakMemoTs = nowMs;
+    return this._peakMemo;
   }
 
   /**

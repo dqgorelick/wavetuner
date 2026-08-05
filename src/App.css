@@ -4643,18 +4643,6 @@ kbd {
 .fsb-side-left {
   position: relative;
 }
-/* DEBUG: consonance readout floating above the "move all" orb. */
-.fsb-cons-debug {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 10px;
-  color: rgba(240, 244, 255, 0.7);
-  white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
-}
 /* Transpose readout — iOS parity: two stacked monospace lines (root Hz
    shift + cents offset) floating in the orb row at the bar's top-left.
    Fades with the off-center state (opacity set inline); click glides the
@@ -7344,79 +7332,6 @@ kbd {
 /* Slider sits on the left side of the row, vertically centered — 40% of
    the row width (60% narrower than the old full-width fill). */
 .scope-timing .freq-rail-glide-slider { flex: 0 0 40%; min-width: 0; }
-
-.dissonance-meter {
-  width: calc(100% + 32px);
-  margin: 0 -16px;
-  padding: 6px 16px 8px;
-  background: rgba(0, 0, 0, 0.35);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.dissonance-meter-row {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.dissonance-meter-fill.amp {
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.85) 100%);
-}
-.dissonance-meter-fill.sat {
-  background: linear-gradient(90deg, #74e0a4 0%, #ffb84d 50%, #ff5a3c 100%);
-}
-.dissonance-meter-fill.cent {
-  background: linear-gradient(90deg, #6b4ea8 0%, #c578d6 50%, #ffb84d 100%);
-}
-.dissonance-meter-fill.flux {
-  background: linear-gradient(90deg, #5cc8ff 0%, #74e0a4 100%);
-}
-.dissonance-meter-fill.dens {
-  background: linear-gradient(90deg, #4a3a8c 0%, #8a5fff 50%, #ff6bd6 100%);
-}
-.dissonance-meter-fill.aura {
-  background: linear-gradient(90deg, #ffd86b 0%, #fff3c2 70%, #ffffff 100%);
-  box-shadow: 0 0 6px rgba(255, 220, 130, 0.55);
-}
-.dissonance-meter-value.cent {
-  min-width: 56px;
-}
-.dissonance-meter-head {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 10px;
-  letter-spacing: 0.4px;
-  font-variant-numeric: tabular-nums;
-}
-.dissonance-meter-label {
-  font-weight: 600;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-}
-.dissonance-meter-value {
-  color: rgba(255, 255, 255, 0.85);
-  min-width: 22px;
-}
-.dissonance-meter-beat {
-  margin-left: auto;
-  color: rgba(255, 255, 255, 0.45);
-}
-.dissonance-meter-track {
-  position: relative;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.dissonance-meter-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 0%;
-  background: linear-gradient(90deg, #5cc8ff 0%, #ffb84d 60%, #ff5a3c 100%);
-  transition: width 60ms linear;
-}
 
 /* Hide on narrow viewports — the rail would crowd the scope and
    FrequencySliders already serves as the primary input there. */

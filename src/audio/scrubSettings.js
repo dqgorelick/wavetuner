@@ -19,9 +19,11 @@
  * which superseded the earlier mirrored ramp AND its `inverse` flip in one
  * move (both are gone; git + memory hold the shapes).
  *
- * (iOS still runs the mirrored ramp — this direction-split is web-only for
- * now, so the module no longer claims iOS symbol parity, but the localStorage
- * keys it kept are still the iOS UserDefaults names.)
+ * (iOS runs the directional ramp too (its 2026-08-04 web-lockstep port) and,
+ * since 2026-08-05, the zoom mode as well — the localStorage keys here are
+ * the iOS UserDefaults names, so the two settings stores stay
+ * name-compatible: orbDragMode / zoomGrabOffset / zoomScaleAmount /
+ * zoomInvert read the same on both platforms.)
  *
  * The ramp's on/off switch is the Settings → Orb drag mode itself ('ios' vs
  * 'linear' / 'pull for precision'), which lives in App state.

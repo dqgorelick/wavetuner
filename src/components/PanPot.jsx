@@ -108,7 +108,7 @@ function PanPot({ pan = 0, index = 0, color, muted = false, size = 30, onChange,
         <path
           d={arcPath(c, c, r, -135, 135)}
           fill="none"
-          stroke="rgba(255,255,255,0.10)"
+          style={{ stroke: 'rgba(var(--ink-soft-rgb), 0.10)' }}
           strokeWidth={strokeW}
           strokeLinecap="round"
         />

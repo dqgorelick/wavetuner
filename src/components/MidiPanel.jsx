@@ -328,7 +328,7 @@ function MidiPanel({ isOpen, onClose, oscillatorCount, velocityCurve, onVelocity
             className="midi-row-dot"
             style={{ background: armed.kind === 'drone-volume'
               ? palette.oscColor(armed.slot, oscillatorCount)
-              : '#fff' }}
+              : 'var(--ink)' }}
           />
           <span className="midi-row-target">{formatTargetLabel(armed)}</span>
           <span className="midi-row-armed-text">waiting for CC…</span>
@@ -349,7 +349,7 @@ function MidiPanel({ isOpen, onClose, oscillatorCount, velocityCurve, onVelocity
           rows.map((r) => {
             const color = r.target.kind === 'drone-volume'
               ? palette.oscColor(r.target.slot, oscillatorCount)
-              : '#fff';
+              : 'var(--ink)';
             const inRange = r.target.kind !== 'drone-volume' || r.target.slot < oscillatorCount;
             const valuePct = Math.max(0, Math.min(1, r.lastValue / 127)) * 100;
             return (

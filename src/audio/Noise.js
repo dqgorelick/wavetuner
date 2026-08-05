@@ -25,23 +25,32 @@
 // color's character inline ("color: −6 dB per octave") instead of
 // carrying a sentence underneath — `short` is that fragment, `blurb`
 // the long form kept for tooltips.
+//
+// `slopeDb` is that same character as a number — dB per octave — and is
+// what NoiseSpectrumPreview tilts its chart by. These colors have no
+// filter and therefore no cutoff: the whole spectrum is present in all
+// three and only the tilt changes, so the picture in the menu is a
+// straight line on a log-frequency axis rather than a knee.
 export const NOISE_TYPES = {
   brown: {
     id: 'brown',
     label: 'Brown',
     short: '−6 dB per octave',
+    slopeDb: -6,
     blurb: 'Low-weighted rumble, like distant surf.',
   },
   pink: {
     id: 'pink',
     label: 'Pink',
     short: 'equal energy per octave',
+    slopeDb: -3,
     blurb: 'Equal energy per octave — the classic warm hiss.',
   },
   white: {
     id: 'white',
     label: 'White',
     short: 'flat spectrum',
+    slopeDb: 0,
     blurb: 'Flat spectrum — bright, airy static.',
   },
 };

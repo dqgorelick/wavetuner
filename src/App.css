@@ -12,6 +12,54 @@
    FrequencySpectrumBar.jsx) and the keyboard tray — so it's the
    established frame here, not a new number. */
 :root {
+  /* ─── Ink ──────────────────────────────────────────────────────────
+     The single neutral every piece of chrome is drawn from. Text,
+     hairlines, borders, glyph fills and dim fills all spend it at their
+     own alpha — the triple is the ONLY place the base value lives, so a
+     theme can cap the whole UI's brightness by moving one number.
+
+     duo / classic leave it at pure white (the historical literal), so
+     they render exactly as before. `mono` drops it to a mid gray, which
+     is what makes that theme's chrome recede behind the orbs. Kept as a
+     bare `r, g, b` triple rather than a color so `rgba(var(--ink-rgb),
+     α)` still works at every existing alpha. */
+  --ink-rgb: 255, 255, 255;
+  --ink: rgb(var(--ink-rgb));
+
+  /* A second neutral with a deliberate cool cast — native control
+     accents (accent-color), the detune viz, the ALL/bus orb. It reads as
+     "white, but a touch blue" against the black field, which is why it
+     isn't just --ink. mono folds it back into --ink, since a cool white
+     would still be a white. */
+  --ink-cool-rgb: 240, 244, 255;
+
+  /* The deliberate exemption from the cap. No theme lowers this — it's
+     for the handful of marks that must stay the brightest thing in the
+     UI regardless of how far the chrome has receded (today: the console's
+     selection corners). Anything spending it is opting OUT of the theme,
+     so reach for it rarely and on purpose. */
+  --ink-max: rgb(255, 255, 255);
+
+  /* The base for faint structural marks — control tracks, dividers, lane
+     labels — which are drawn at α ≤ 0.4 and so land at an EFFECTIVE 25–102
+     no matter what. It is deliberately uncapped, because the cap is about
+     how bright a mark ends up, not about the number it starts from:
+     compounding a theme cap with an already-tiny alpha doesn't make these
+     tasteful, it makes them invisible (mono had the fader tracks at an
+     effective 15/255).
+
+     duo and classic hold --ink-rgb at 255 too, so for them this is the
+     same value they already used — nothing moves. Only mono, which caps
+     the general ink at 150, sees these lift back to legibility. */
+  --ink-soft-rgb: 255, 255, 255;
+
+  /* The triple above is the pre-theme default. palette._stamp() writes
+     the live one as an inline --ink-rgb on <body>, which means --ink has
+     to be RE-DERIVED there: custom properties inherit their substituted
+     value, so the :root --ink froze at pure white before body's override
+     existed. The body rule below re-runs the substitution against the
+     value actually in force. */
+
   --stage-max: 1200px;
   --stage-gutter: max(0px, (100vw - var(--stage-max)) / 2);
   /* Edge rails (TransportRail left, NavRail right) — in-flow columns
@@ -23,11 +71,16 @@
      console (.side-menu-stack), reused by the edge rails and the master
      play/pause box so every console-facing edge is the same line. */
   --seam-w: 1px;
-  --seam-c: rgba(255, 255, 255, 0.14);
+  --seam-c: rgba(var(--ink-rgb), 0.14);
   /* Corner rows (help / patches / … left, settings / share / … right)
      measure from the stage edge — the rails no longer reach the top of
      the screen, so they need no clearance term. */
   --corner-inset: calc(var(--stage-gutter) + 16px);
+}
+
+body {
+  /* See the :root note — this is where --ink picks up the theme's cap. */
+  --ink: rgb(var(--ink-rgb));
 }
 
 html,
@@ -43,7 +96,7 @@ body {
      Condensed's default figures are tabular, so readouts don't jitter. */
   --font-narrow: 'IBM Plex Sans Condensed', 'Arial Narrow', system-ui, sans-serif;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  color: #fff;
+  color: var(--ink);
   overflow: hidden;
 }
 
@@ -126,7 +179,7 @@ p {
 .tuning-panel {
   padding: 9px 10px 9px 10px;
   background: #000;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   border-radius: 12px;
 }
 .mixer-panel { width: 275px; }
@@ -161,7 +214,7 @@ p {
    horizontal inset now that the panel root has no padding of its own. */
 .settings-panel.midi-menu .midi-panel-header {
   padding: 10px 16px 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 .settings-panel.midi-menu .midi-row-armed {
   margin: 6px 12px 0;
@@ -173,16 +226,16 @@ p {
   overflow-y: auto;
   padding: 8px 16px 12px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-color: rgba(var(--ink-rgb), 0.2) transparent;
 }
 .settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar { width: 6px; }
 .settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar-track { background: transparent; }
 .settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
   border-radius: 3px;
 }
 .settings-panel.midi-menu .midi-panel-body::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.32);
+  background: rgba(var(--ink-rgb), 0.32);
 }
 /* Row container — flows naturally inside the single scrolling panel. */
 .midi-panel-body {
@@ -197,12 +250,12 @@ p {
   justify-content: space-between;
   gap: 8px;
   padding-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 .midi-panel-title {
   font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   text-transform: uppercase;
 }
 .midi-panel-header-actions {
@@ -211,8 +264,8 @@ p {
 }
 .midi-panel-btn {
   appearance: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.06);
+  color: rgba(var(--ink-rgb), 0.85);
   border: none;
   border-radius: 4px;
   padding: 3px 8px;
@@ -221,13 +274,13 @@ p {
   transition: background 0.15s, color 0.15s;
 }
 .midi-panel-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.14);
+  color: var(--ink);
 }
 .midi-panel-empty {
   font-size: 11px;
   line-height: 1.4;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   padding: 6px 2px;
 }
 
@@ -239,10 +292,10 @@ p {
   gap: 6px;
   padding: 2px 0;
   font: 500 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: rgba(255, 255, 255, 0.92);
+  color: rgba(var(--ink-rgb), 0.92);
 }
 .midi-row.out-of-range {
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
 }
 .midi-row-dot {
   width: 8px;
@@ -250,17 +303,17 @@ p {
   border-radius: 50%;
 }
 .midi-row-target {
-  color: #fff;
+  color: var(--ink);
 }
 .midi-row-cc,
 .midi-row-ch {
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--ink-rgb), 0.65);
   font-size: 10px;
 }
 .midi-row-bar {
   position: relative;
   height: 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -269,7 +322,7 @@ p {
   left: 0;
   top: 0;
   bottom: 0;
-  background: var(--midi-row-color, #fff);
+  background: var(--midi-row-color, var(--ink));
   border-radius: 2px;
   transition: width 30ms linear;
 }
@@ -279,13 +332,13 @@ p {
   display: grid;
   place-items: center;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
 }
 .midi-row-x {
   appearance: none;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -296,7 +349,7 @@ p {
 }
 .midi-row-x:hover {
   background: rgba(255, 80, 80, 0.25);
-  color: #fff;
+  color: var(--ink);
 }
 
 /* Armed row — slightly inset, pulses to signal "waiting". Spans the
@@ -362,8 +415,8 @@ p {
   top: -7px;
   bottom: 50%;
   width: 12px;
-  border-left: 2px solid rgba(255, 255, 255, 0.16);
-  border-bottom: 2px solid rgba(255, 255, 255, 0.16);
+  border-left: 2px solid rgba(var(--ink-rgb), 0.16);
+  border-bottom: 2px solid rgba(var(--ink-rgb), 0.16);
   border-bottom-left-radius: 7px;
   pointer-events: none;
 }
@@ -390,7 +443,7 @@ p {
   font-size: 11px;
   letter-spacing: 0.3px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -422,7 +475,7 @@ p {
   padding: 0 2px;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 700;
@@ -432,10 +485,10 @@ p {
   transition: color 0.15s;
 }
 .tuning-follow-box:hover {
-  color: #fff;
+  color: var(--ink);
 }
 .tuning-follow-box.is-active {
-  color: #fff;
+  color: var(--ink);
 }
 
 /* Footer — system row (dropdown + scale radio + Load) on one line,
@@ -466,7 +519,7 @@ p {
   appearance: none;
   background: rgba(0, 0, 0, 0.4);
   color: var(--text-color, #e8e8e8);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 4px;
   padding: 3px 8px;
   font: inherit;
@@ -477,7 +530,7 @@ p {
 }
 .tuning-system-select:focus {
   outline: none;
-  border-color: rgba(255, 255, 255, 0.32);
+  border-color: rgba(var(--ink-rgb), 0.32);
 }
 
 /* Chip family — shared between TUNINGS −/+ rocker, the 7/12 scale
@@ -487,7 +540,7 @@ p {
 .tuning-chip-group {
   display: inline-flex;
   align-items: stretch;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   border-radius: 6px;
   height: 22px;
   overflow: hidden;
@@ -500,7 +553,7 @@ p {
   padding: 0 8px;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--ink-rgb), 0.65);
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -511,19 +564,19 @@ p {
   transition: color 0.15s, background 0.15s;
 }
 .tuning-chip + .tuning-chip {
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.06);
 }
 .tuning-chip:hover:not(:disabled) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.14);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 .tuning-chip:disabled {
   opacity: 0.35;
   cursor: default;
 }
 .tuning-chip.is-active {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.22);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.22);
 }
 
 /* Load button — own chassis (chip family palette but with icon+label
@@ -534,8 +587,8 @@ p {
   gap: 4px;
   height: 22px;
   padding: 0 10px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.12);
+  color: var(--ink);
   border: none;
   border-radius: 6px;
   font: inherit;
@@ -546,7 +599,7 @@ p {
   transition: background 0.15s, opacity 0.15s;
 }
 .tuning-load-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(var(--ink-rgb), 0.22);
 }
 .tuning-load-btn:disabled {
   opacity: 0.35;
@@ -568,7 +621,7 @@ p {
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
 }
 .tuning-ctl-btn {
   display: inline-flex;
@@ -576,8 +629,8 @@ p {
   justify-content: center;
   height: 22px;
   padding: 0 10px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.12);
+  color: var(--ink);
   border: none;
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -587,7 +640,7 @@ p {
   cursor: pointer;
   transition: background 0.15s;
 }
-.tuning-ctl-btn:hover { background: rgba(255, 255, 255, 0.2); }
+.tuning-ctl-btn:hover { background: rgba(var(--ink-rgb), 0.2); }
 .tuning-transpose {
   display: flex;
   align-items: center;
@@ -607,10 +660,10 @@ p {
   gap: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   cursor: pointer;
 }
-.tuning-transpose-snap input { accent-color: rgba(255, 255, 255, 0.75); }
+.tuning-transpose-snap input { accent-color: rgba(var(--ink-rgb), 0.75); }
 
 /* Tablet / mobile: lift both stacks above the spectrum bar's orb row
    so they aren't covered by the orbs at narrow widths, and clamp the
@@ -649,7 +702,7 @@ p {
   height: 26px;
   padding: 0 0;
   border-radius: 6px;
-  color: var(--mixer-color, rgba(255, 255, 255, 0.85));
+  color: var(--mixer-color, rgba(var(--ink-rgb), 0.85));
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
 }
@@ -674,7 +727,7 @@ p {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.4px;
-  color: var(--mixer-color, rgba(255, 255, 255, 0.85));
+  color: var(--mixer-color, rgba(var(--ink-rgb), 0.85));
   line-height: 1;
   white-space: nowrap;
 }
@@ -740,7 +793,7 @@ p {
   left: 0;
   right: 0;
   height: 2px;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--ink-rgb), 0.14);
   transform: translateY(-1px);
   pointer-events: none;
 }
@@ -750,7 +803,7 @@ p {
   top: 50%;
   left: 0;
   height: 3px;
-  background: var(--mixer-color, rgba(255, 255, 255, 0.6));
+  background: var(--mixer-color, rgba(var(--ink-rgb), 0.6));
   transform: translateY(-1.5px);
   opacity: 0.7;
   pointer-events: none;
@@ -765,7 +818,7 @@ p {
   width: 2px;
   height: 14px;
   border-radius: 0;
-  background: var(--mixer-color, #fff);
+  background: var(--mixer-color, var(--ink));
   border: none;
   transform: translate(-50%, -50%);
   pointer-events: none;
@@ -781,7 +834,7 @@ p {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  border: 1px solid var(--mixer-color, #fff);
+  border: 1px solid var(--mixer-color, var(--ink));
   background: transparent;
   opacity: 0.75;
   transform: translate(-50%, -50%);
@@ -810,8 +863,8 @@ p {
   letter-spacing: 0.3px;
   padding: 1px 2px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--ink-rgb), 0.08);
+  color: rgba(var(--ink-rgb), 0.7);
   text-align: center;
   justify-self: stretch;
 }
@@ -822,8 +875,8 @@ p {
 /* Ratio tag on partial rows — same shape as KBD/MIDI tag but a slightly
    subdued color so it reads as info, not a source label. */
 .mixer-source-tag.mixer-source-tag-ratio {
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.04);
+  color: rgba(var(--ink-rgb), 0.55);
   font-weight: 600;
 }
 
@@ -911,8 +964,8 @@ p {
   align-items: center;
   justify-content: center;
   border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--ink-rgb), 0.08);
+  color: rgba(var(--ink-rgb), 0.7);
   border-radius: 3px;
   padding: 0;
   cursor: pointer;
@@ -922,8 +975,8 @@ p {
   transition: background 0.12s, color 0.12s;
 }
 .mixer-btn:hover:not(:disabled) {
-  background: var(--mixer-color, rgba(255, 255, 255, 0.2));
-  color: #fff;
+  background: var(--mixer-color, rgba(var(--ink-rgb), 0.2));
+  color: var(--ink);
 }
 .mixer-btn:disabled {
   opacity: 0.3;
@@ -934,7 +987,7 @@ p {
    a different glyph from the octave / arrow buttons. */
 .mixer-btn-mute:hover:not(:disabled) {
   background: rgba(220, 80, 80, 0.55);
-  color: #fff;
+  color: var(--ink);
 }
 
 /* Released voices fade — strip stays visible during the release tail
@@ -953,7 +1006,7 @@ p {
   gap: 4px;
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 /* Bus + master rows inherit .mixer-row's grid so the fader column and
@@ -966,7 +1019,7 @@ p {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   font-weight: 700;
-  color: var(--mixer-color, rgba(255, 255, 255, 0.85));
+  color: var(--mixer-color, rgba(var(--ink-rgb), 0.85));
   letter-spacing: 0.2px;
   white-space: nowrap;
   overflow: hidden;
@@ -993,18 +1046,18 @@ p {
   padding: 0;
   border: none;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.1);
+  color: rgba(var(--ink-rgb), 0.85);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .mixer-bus-collapse:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.2);
+  color: var(--ink);
 }
 .mixer-bus-collapse.is-expanded {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.18);
+  color: var(--ink);
 }
 .mixer-bus-collapse-chevron {
   display: inline-block;
@@ -1063,19 +1116,19 @@ p {
   padding: 0 6px;
   border-radius: 3px;
   border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.75);
+  background: rgba(var(--ink-rgb), 0.06);
+  color: rgba(var(--ink-rgb), 0.75);
   cursor: pointer;
   line-height: 1;
   transition: background 0.12s, color 0.12s;
 }
 .mixer-stereo-toggle:hover {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.16);
+  color: var(--ink);
 }
 .mixer-stereo-toggle.is-stereo {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.18);
+  color: var(--ink);
 }
 
 /* The | or + between L and R is the actual mode indicator. Slightly
@@ -1102,7 +1155,7 @@ p {
   left: 44px;
   width: 1px;
   height: 8px;
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(var(--ink-rgb), 0.35);
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
@@ -1127,7 +1180,7 @@ p {
    slider area. A faint backdrop keeps the empty headroom readable. */
 .mixer-fader.mixer-fader-master {
   height: 18px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -1167,7 +1220,7 @@ p {
 .mixer-master-meter-hold {
   position: absolute;
   width: 2px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.9);
   pointer-events: none;
   transform: translateX(-1px);
 }
@@ -1185,7 +1238,7 @@ p {
 .mixer-fader.mixer-fader-master .mixer-fader-ball {
   height: 100%;
   width: 2px;
-  background: #fff;
+  background: var(--ink);
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
   z-index: 2;
 }
@@ -1193,10 +1246,10 @@ p {
 #start-button {
   font-size: 0.9rem;
   padding: 10px 28px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(var(--ink-rgb), 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.3);
   border-radius: 6px;
-  color: #fff;
+  color: var(--ink);
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: monospace;
@@ -1206,21 +1259,21 @@ p {
 }
 
 #start-button:hover {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.5);
-  box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+  background: rgba(var(--ink-rgb), 0.2);
+  border-color: rgba(var(--ink-rgb), 0.5);
+  box-shadow: 0 0 12px rgba(var(--ink-rgb), 0.2);
 }
 
 .headphones-note {
   font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   margin: 0.5rem 0;
   font-style: italic;
 }
 
 .created-by {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   margin-top: 0.5rem;
   max-width: 450px;
   text-align: center;
@@ -1228,20 +1281,20 @@ p {
 }
 
 .created-by a {
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   text-decoration: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.3);
   transition: all 0.2s ease;
 }
 
 .created-by a:hover {
-  color: #fff;
-  border-bottom-color: #fff;
+  color: var(--ink);
+  border-bottom-color: var(--ink);
 }
 
 .dev-note {
   font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--ink-rgb), 0.35);
   margin-top: 0.4rem;
   max-width: 360px;
   text-align: center;
@@ -1249,15 +1302,15 @@ p {
 }
 
 .dev-note a {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   text-decoration: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.25);
   transition: all 0.2s ease;
 }
 
 .dev-note a:hover {
-  color: #fff;
-  border-bottom-color: #fff;
+  color: var(--ink);
+  border-bottom-color: var(--ink);
 }
 
 /* Oscilloscope container - positions the canvas */
@@ -1303,12 +1356,12 @@ p {
   font-weight: 300;
   letter-spacing: 0.1em;
   margin-bottom: 0.25rem;
-  color: #fff;
+  color: var(--ink);
 }
 
 #start-subtitle {
   font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   margin-bottom: 0.75rem;
   font-weight: 400;
 }
@@ -1318,7 +1371,7 @@ p {
   max-width: 500px;
   margin: 0.5rem 0;
   line-height: 1.5;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--ink-rgb), 0.8);
 }
 
 #start-image {
@@ -1337,7 +1390,7 @@ p {
 
 .image-caption {
   font-size: 0.65rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   margin-top: 0.25rem;
   font-style: italic;
 }
@@ -1346,9 +1399,9 @@ p {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   margin: 0.75rem 0 0.4rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   padding-bottom: 0.3rem;
 }
 
@@ -1369,7 +1422,7 @@ p {
 .start-tagline {
   text-align: center;
   font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   margin: 0.5rem 0 1rem;
 }
 
@@ -1378,9 +1431,9 @@ kbd {
   padding: 0.2em 0.5em;
   font-family: monospace;
   font-size: 0.85em;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 4px;
   margin: 0 0.15em;
 }
@@ -1413,7 +1466,7 @@ kbd {
 }
 
 .osc-box.active {
-  color: white;
+  color: var(--ink);
 }
 
 #osc1-box.active {
@@ -1443,7 +1496,7 @@ kbd {
   max-width: calc(100vw - 32px);
   background: rgba(20, 20, 25, 0.95);
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   backdrop-filter: blur(10px);
   /* Above the dragging ghost-orb (z-index 1000) so the panel never gets
      occluded by an orb being detuned mid-edit. */
@@ -1471,7 +1524,7 @@ kbd {
   position: sticky;
   top: 0;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   background: rgba(20, 20, 25, 0.95);
   backdrop-filter: blur(10px);
   z-index: 1;
@@ -1484,7 +1537,7 @@ kbd {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1492,7 +1545,7 @@ kbd {
 .settings-close {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -1503,13 +1556,13 @@ kbd {
 }
 
 .settings-close:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.1);
 }
 
 .settings-section {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.05);
 }
 
 .settings-section:last-child {
@@ -1520,7 +1573,7 @@ kbd {
   display: block;
   font-size: 11px;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
@@ -1536,8 +1589,8 @@ kbd {
   gap: 6px;
 }
 .settings-toggle-btn {
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--ink-rgb), 0.04);
+  color: rgba(var(--ink-rgb), 0.7);
   border: none;
   border-radius: 4px;
   font-family: inherit;
@@ -1552,18 +1605,18 @@ kbd {
   text-transform: lowercase;
 }
 .settings-toggle-btn.on {
-  background: rgba(255, 255, 255, 0.22);
-  color: rgba(255, 255, 255, 0.98);
+  background: rgba(var(--ink-rgb), 0.22);
+  color: rgba(var(--ink-rgb), 0.98);
 }
 .settings-toggle-btn.off {
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.04);
+  color: rgba(var(--ink-rgb), 0.55);
 }
 .settings-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 .settings-toggle-btn.on:hover {
-  background: rgba(255, 255, 255, 0.30);
+  background: rgba(var(--ink-rgb), 0.30);
 }
 
 /* Inline label + toggle pair — "MIDI:  [on] [off]" / "Keys:  [all] [white]"
@@ -1579,7 +1632,7 @@ kbd {
 .settings-inline-label {
   font-size: 11px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--ink-rgb), 0.75);
   letter-spacing: 0.4px;
   text-transform: uppercase;
   min-width: 44px;
@@ -1596,7 +1649,7 @@ kbd {
   display: block;
   font-size: 10.5px;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
   letter-spacing: 0.3px;
   margin: 12px 0 6px;
 }
@@ -1604,10 +1657,10 @@ kbd {
 .settings-select {
   width: 100%;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(var(--ink-rgb), 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 6px;
-  color: #fff;
+  color: var(--ink);
   font-size: 13px;
   cursor: pointer;
   appearance: none;
@@ -1617,7 +1670,7 @@ kbd {
 }
 
 .settings-select:hover {
-  border-color: rgba(255, 255, 255, 0.3);
+  border-color: rgba(var(--ink-rgb), 0.3);
 }
 
 .settings-select:focus {
@@ -1628,7 +1681,7 @@ kbd {
 .settings-info {
   display: block;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   margin-top: 6px;
 }
 
@@ -1640,19 +1693,19 @@ kbd {
   display: block;
   width: 100%;
   height: 56px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.06);
   border-radius: 4px;
   margin: 0 0 4px;
 }
 .wave-preview-axis {
-  stroke: rgba(255, 255, 255, 0.1);
+  stroke: rgba(var(--ink-rgb), 0.1);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 .wave-preview-trace {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.75);
+  stroke: rgba(var(--ink-rgb), 0.75);
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
   stroke-linejoin: round;
@@ -1675,10 +1728,10 @@ kbd {
   box-sizing: border-box;
   width: 100%;
   height: 100%;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border: none;
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   font-family: monospace;
   font-size: 11px;
   font-weight: 600;
@@ -1689,8 +1742,8 @@ kbd {
   transition: background 0.15s, color 0.15s;
 }
 .osc-tune-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.14);
+  color: var(--ink);
 }
 .osc-tune-btn:disabled {
   opacity: 0.5;
@@ -1706,25 +1759,19 @@ kbd {
 }
 .tune-slider-label {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .tune-slider-value {
   font-family: monospace;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   text-align: right;
 }
 .tune-slider {
   width: 100%;
-  accent-color: rgba(240, 244, 255, 0.85);
-}
-/* Label-less variant — the slider IS the thing the menu is named for
-   (noise level, saturation level), so the word would only repeat the
-   menu title. Track takes the freed column; the value stays put. */
-.tune-slider-row.no-label {
-  grid-template-columns: 1fr 72px;
+  accent-color: rgba(var(--ink-cool-rgb), 0.85);
 }
 .tune-slider-row.disabled {
   opacity: 0.4;
@@ -1748,18 +1795,18 @@ kbd {
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   cursor: pointer;
 }
 .fold-type-option input {
-  accent-color: rgba(240, 244, 255, 0.85);
+  accent-color: rgba(var(--ink-cool-rgb), 0.85);
   cursor: pointer;
   margin: 0;
 }
 .fold-type-blurb {
   font-size: 11px;
   line-height: 1.45;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   margin: 6px 0 0;
 }
 
@@ -1771,7 +1818,7 @@ kbd {
   justify-content: space-between;
   align-items: baseline;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1783,7 +1830,7 @@ kbd {
 .curve-editor-ceiling {
   font-family: monospace;
   text-transform: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   letter-spacing: 0;
 }
 .curve-editor-random {
@@ -1791,65 +1838,65 @@ kbd {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 2px 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .curve-editor-random:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.9);
 }
 .curve-editor-random:active {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
 }
 .curve-editor-svg {
   display: block;
   width: 100%;
   height: 90px;
   margin-top: 4px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 6px;
   touch-action: none;
 }
 .curve-editor-frame {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.06);
+  stroke: rgba(var(--ink-rgb), 0.06);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 .curve-editor-mid {
-  stroke: rgba(255, 255, 255, 0.08);
+  stroke: rgba(var(--ink-rgb), 0.08);
   stroke-dasharray: 2 3;
   vector-effect: non-scaling-stroke;
 }
 .curve-editor-vgrid {
-  stroke: rgba(255, 255, 255, 0.05);
+  stroke: rgba(var(--ink-rgb), 0.05);
   vector-effect: non-scaling-stroke;
 }
 .curve-editor-area {
-  fill: rgba(240, 244, 255, 0.12);
+  fill: rgba(var(--ink-cool-rgb), 0.12);
   stroke: none;
 }
 .curve-editor-line {
   fill: none;
-  stroke: rgba(240, 244, 255, 0.85);
+  stroke: rgba(var(--ink-cool-rgb), 0.85);
   stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 .curve-editor-node {
-  fill: rgba(240, 244, 255, 0.95);
+  fill: rgba(var(--ink-cool-rgb), 0.95);
   stroke: rgba(0, 0, 0, 0.4);
   stroke-width: 1;
   cursor: ns-resize;
 }
 .curve-editor-node:hover {
-  fill: #fff;
+  fill: var(--ink);
   r: 5;
 }
 
@@ -1859,17 +1906,17 @@ kbd {
   height: 80px;
   margin-top: 6px;
   margin-bottom: 4px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 6px;
 }
 .envelope-graph-fill {
-  fill: rgba(240, 244, 255, 0.18);
+  fill: rgba(var(--ink-cool-rgb), 0.18);
   stroke: none;
 }
 .envelope-graph-line {
   fill: none;
-  stroke: rgba(240, 244, 255, 0.85);
+  stroke: rgba(var(--ink-cool-rgb), 0.85);
   stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
@@ -1899,10 +1946,10 @@ kbd {
   display: block;
   width: 100%;
   padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   border: none;
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--ink-rgb), 0.8);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -1911,7 +1958,7 @@ kbd {
 }
 
 .range-toggle-button:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
 }
 
 .range-toggle-button.active {
@@ -1935,8 +1982,8 @@ kbd {
   height: 36px;
   border-radius: 8px;
   border: none;
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.1);
+  color: var(--ink);
   font-size: 20px;
   font-weight: 300;
   cursor: pointer;
@@ -1947,7 +1994,7 @@ kbd {
 }
 
 .count-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(var(--ink-rgb), 0.2);
 }
 
 .count-button:disabled {
@@ -1958,7 +2005,7 @@ kbd {
 .count-display {
   font-size: 24px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
   min-width: 40px;
   text-align: center;
 }
@@ -2006,14 +2053,14 @@ kbd {
 }
 
 .out-node {
-  stroke: rgba(255, 255, 255, 0.3);
+  stroke: rgba(var(--ink-rgb), 0.3);
   stroke-width: 2;
 }
 
 .node-label {
   font-size: 10px;
   font-weight: bold;
-  fill: #fff;
+  fill: var(--ink);
   pointer-events: none;
 }
 
@@ -2049,7 +2096,7 @@ kbd {
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
 }
 
 #frequencies {
@@ -2067,6 +2114,10 @@ kbd {
      oscilloscope reads this too (Oscilloscope.jsx) so its opaque
      bottom strip tracks the taller panel. */
   --knob-band-h: 72px;
+  /* The gap half of the number above — split out so the band's own
+     height (--knob-band-h − gap) has ONE definition. The mobile source
+     tray stops at the band's top edge and needs the same figure. */
+  --knob-band-gap: 6px;
   /* Bottom offset of the spectrum-bar row: 8px panel inset + 6px console
      margin = 14px of chrome under the console, + 6px of head above it
      (the rails' top edge sits there; stripGeometry.CONSOLE_HEAD must
@@ -2219,7 +2270,7 @@ kbd {
   max-height: calc(var(--fsb-lift) - 8px);
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-color: rgba(var(--ink-rgb), 0.2) transparent;
   /* The stack owns the chassis (title bar + panel read as one surface);
      the panels inside drop their standalone borders below. No rounded box
      — the column is flush with the console/spectrum edges; a single light
@@ -2298,8 +2349,8 @@ kbd {
   font-size: 11px;
   letter-spacing: 1px;
   text-transform: lowercase;
-  color: rgba(255, 255, 255, 0.75);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.75);
+  color: rgba(var(--ink-rgb), 0.75);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.75);
   padding-bottom: 1px;
   white-space: nowrap;
   overflow: hidden;
@@ -2314,14 +2365,14 @@ kbd {
   padding: 0 4px;
   border: none;
   background: none;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   font-family: inherit;
   font-size: 15px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
 }
-.side-menu-close:hover { color: rgba(255, 255, 255, 1); }
+.side-menu-close:hover { color: rgba(var(--ink-rgb), 1); }
 /* Panels stretch to the stack's width (their standalone fixed widths
    would leave the mixer 5px narrower than its neighbors) and hand their
    chassis to the stack. */
@@ -2347,7 +2398,7 @@ kbd {
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-color: rgba(var(--ink-rgb), 0.2) transparent;
 }
 .side-menu-stack .mixer-panel .mixer-bus-stack {
   flex: 0 0 auto;
@@ -2372,8 +2423,8 @@ kbd {
      NO intrinsic width to .console-main: the mixer alone decides the
      column width and there's no measure → grow → measure loop. */
   align-self: stretch;
-  height: calc(var(--knob-band-h) - 6px);
-  margin-top: 6px;
+  height: calc(var(--knob-band-h) - var(--knob-band-gap));
+  margin-top: var(--knob-band-gap);
 }
 .source-knob-band {
   position: absolute;
@@ -2397,7 +2448,7 @@ kbd {
 .source-knob-link {
   position: absolute;
   height: 1px;
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(var(--ink-soft-rgb), 0.22);
   border-radius: 0.5px;
 }
 .source-knob {
@@ -2406,10 +2457,10 @@ kbd {
   flex-direction: column;
   align-items: center;
   gap: 1px;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
 }
-.source-knob.dimmed { color: rgba(255, 255, 255, 0.3); }
-.source-knob.tracking { color: rgba(255, 255, 255, 1); }
+.source-knob.dimmed { color: rgba(var(--ink-rgb), 0.3); }
+.source-knob.tracking { color: rgba(var(--ink-rgb), 1); }
 .source-knob-face {
   position: relative;
   display: block;
@@ -2445,17 +2496,22 @@ kbd {
   letter-spacing: 0.06em;
   white-space: nowrap;
   text-transform: lowercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   cursor: pointer;
-  /* Reserve the underline slot so selection doesn't shift the row. */
-  border-bottom: 1px solid transparent;
 }
-.source-knob.dimmed .source-knob-label { color: rgba(255, 255, 255, 0.28); }
-.source-knob.selected .source-knob-label {
-  color: rgba(255, 255, 255, 0.9);
-  border-bottom-color: rgba(255, 255, 255, 0.9);
-}
-.source-knob-label:hover { color: rgba(255, 255, 255, 0.85); }
+/* Selection bracket around the dial — the console's mark (.sel-corners),
+   sized to the circle's bounding box and pushed 2px out so the L's sit
+   clear of the track arc's ends rather than crossing them. A dimmed
+   source keeps a full-strength bracket: the bracket says "this menu is
+   open", which is true whether or not the source is making sound. */
+.source-knob-corners { inset: -2px; }
+.source-knob.dimmed .source-knob-label { color: rgba(var(--ink-rgb), 0.28); }
+/* An open source brightens its name, and that's all — the underline it
+   used to wear went with the selection bracket (Dan, 2026-08-05): the
+   corners already say which menu is open, and two marks for one state
+   read as two states. */
+.source-knob.selected .source-knob-label { color: rgba(var(--ink-rgb), 0.9); }
+.source-knob-label:hover { color: rgba(var(--ink-rgb), 0.85); }
 
 /* Per-source tray — no longer a box floating over the console: it opens
    in the side-menu column beside it (radio with mixer / tuning / perform
@@ -2488,7 +2544,7 @@ kbd {
   display: flex;
   gap: 14px;
   margin: 2px 0 2px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   padding-bottom: 6px;
 }
 .source-tab {
@@ -2499,14 +2555,14 @@ kbd {
   font-size: 11px;
   letter-spacing: 1px;
   text-transform: lowercase;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
   border-bottom: 1px solid transparent;
   cursor: pointer;
 }
-.source-tab:hover { color: rgba(255, 255, 255, 0.85); }
+.source-tab:hover { color: rgba(var(--ink-rgb), 0.85); }
 .source-tab.active {
-  color: rgba(255, 255, 255, 0.9);
-  border-bottom-color: rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.9);
+  border-bottom-color: rgba(var(--ink-rgb), 0.9);
 }
 /* Section heading inside a tray body. `.settings-label` already carries
    the caps/tracking; this only re-establishes the air above it, since
@@ -2521,7 +2577,7 @@ kbd {
   font-style: normal;
   text-transform: none;
   letter-spacing: 0;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
 }
 
 /* Two-up tray section (iOS SoundDesignViews parity): the picture on the
@@ -2550,9 +2606,77 @@ kbd {
 .tray-split .envelope-graph {
   display: block;
   height: 72px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 6px;
+}
+
+/* Full-width tray visualizers — the noise spectrum and the saturation
+   sine, which sit between a menu's level row and its buttons rather
+   than beside a lever column. Same box as the ADSR graph so all four
+   pictures in the app read as one family; the height matches their
+   84-unit viewBox, which keeps preserveAspectRatio="none" from
+   distorting vertically (there's no text in either, so the horizontal
+   stretch to the column width is free). */
+.tray-viz {
+  display: block;
+  width: 100%;
+  height: 84px;
+  margin-top: 10px;
+  background: rgba(var(--ink-rgb), 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
+  border-radius: 6px;
+}
+.tray-viz-grid {
+  stroke: rgba(var(--ink-rgb), 0.09);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Noise: dim fill under the spectral tilt = the energy in the band. */
+.noise-spectrum-fill {
+  fill: rgba(var(--ink-rgb), 0.16);
+  stroke: none;
+}
+.noise-spectrum-line {
+  fill: none;
+  stroke: rgba(var(--ink-rgb), 0.6);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+/* Saturation: dashed ±1 rails, the input sine as a ghost, the shaped
+   output over it. */
+.sat-preview-rail {
+  stroke: rgba(var(--ink-rgb), 0.16);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+.sat-preview-ghost {
+  fill: none;
+  stroke: rgba(var(--ink-rgb), 0.22);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+.sat-preview-trace {
+  fill: none;
+  stroke: rgba(var(--ink-cool-rgb), 0.85);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* A section heading parked at the top of a split column (the waves
+   menu's "envelope") gives up its own top margin — the split carries
+   that air instead, so the heading's cap-line and the first lever's in
+   the column beside it start at the same y. */
+.envelope-section.tray-split {
+  margin-top: 16px;
+}
+.tray-split-col > .tray-section-label:first-child {
+  margin-top: 0;
 }
 
 /* Stacked label-over-slider control (CompactSlider) — the half-width
@@ -2579,14 +2703,14 @@ kbd {
 }
 .compact-slider-label {
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .compact-slider-value {
   font-family: monospace;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   white-space: nowrap;
 }
 .compact-slider.disabled { opacity: 0.4; }
@@ -2618,8 +2742,8 @@ kbd {
   padding: 4px;
   border-radius: 6px;
   border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--ink-rgb), 0.06);
+  color: rgba(var(--ink-rgb), 0.7);
   backdrop-filter: blur(10px);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -2650,10 +2774,10 @@ kbd {
 .settings-toggle:hover,
 .share-toggle:hover,
 .hydra-toggle:hover,
-.midi-toggle:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.midi-toggle:hover { background: rgba(var(--ink-rgb), 0.14); color: var(--ink); }
 .patches-toggle.active,
 .settings-toggle.active,
-.hydra-toggle.active { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.hydra-toggle.active { background: rgba(var(--ink-rgb), 0.22); color: var(--ink); }
 
 /* MIDI toggle — text label instead of an icon, plus two activity
    dots floating just outside the right edge (upper = note, lower =
@@ -2682,7 +2806,7 @@ kbd {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
   pointer-events: none;
   transition: background 80ms ease-out;
 }
@@ -2693,8 +2817,8 @@ kbd {
    even if the panel is closed — same gray-on/gray-off treatment as
    the MIDI and Hold buttons inside the tray. */
 .hydra-toggle.hydra-on {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.16);
+  color: var(--ink);
 }
 .help-toggle { left: var(--corner-inset); }
 
@@ -2702,18 +2826,18 @@ kbd {
    on/off treatment as the keyboard tray's MIDI button — lighter when
    the synth is running, dimmer when it's stopped. */
 .hydra-enable-btn.on {
-  background: rgba(255, 255, 255, 0.22);
-  color: rgba(255, 255, 255, 0.98);
+  background: rgba(var(--ink-rgb), 0.22);
+  color: rgba(var(--ink-rgb), 0.98);
 }
 .hydra-enable-btn.on:hover {
-  background: rgba(255, 255, 255, 0.30);
+  background: rgba(var(--ink-rgb), 0.30);
 }
 .hydra-enable-btn.off {
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.04);
+  color: rgba(var(--ink-rgb), 0.55);
 }
 .hydra-enable-btn.off:hover {
-  background: rgba(255, 255, 255, 0.10);
+  background: rgba(var(--ink-rgb), 0.10);
 }
 
 /* Visualizer-mode dropdown. The container itself is just the trigger
@@ -2758,19 +2882,19 @@ kbd {
 
 .help-toggle:hover,
 .scope-mode-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.14);
+  color: var(--ink);
 }
 
 .scope-mode-btn.active {
-  background: rgba(255, 255, 255, 0.22);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.22);
+  color: var(--ink);
 }
 /* Trigger gets a stronger highlight while the dropdown is open so it
    reads as "this is the menu I'm in" rather than just the active mode. */
 .scope-mode-btn.active.open {
-  background: rgba(255, 255, 255, 0.32);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.32);
+  box-shadow: 0 0 0 1px rgba(var(--ink-rgb), 0.18);
 }
 
 /* Compact strip — shown in 'simple' uiMode. Single-row, full-screen-width
@@ -2794,7 +2918,7 @@ kbd {
   height: 4px;
 }
 .compact-strip::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(var(--ink-rgb), 0.2);
   border-radius: 2px;
 }
 
@@ -2803,10 +2927,10 @@ kbd {
   width: 50px;
   height: 50px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.06);
+  color: rgba(var(--ink-rgb), 0.85);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2819,7 +2943,7 @@ kbd {
 }
 
 .compact-cell:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
 }
 
 .compact-play .button-icon {
@@ -2842,7 +2966,7 @@ kbd {
 }
 
 .compact-expand {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--ink-rgb), 0.04);
 }
 
 .compact-expand .button-icon {
@@ -2926,7 +3050,7 @@ kbd {
   padding: 5px 8px;
   border-radius: 13px;
   background: rgba(0, 0, 0, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   backdrop-filter: blur(8px);
 }
 
@@ -2959,13 +3083,13 @@ kbd {
   padding: 5px 8px;
   border-radius: 13px;
   background: rgba(0, 0, 0, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   backdrop-filter: blur(8px);
 }
 .cap-bar-sep {
   width: 1px;
   height: 24px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
   margin: 0 2px;
 }
 .cap-bar-btn {
@@ -2976,11 +3100,11 @@ kbd {
   cursor: pointer;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.08);
+  color: rgba(var(--ink-rgb), 0.85);
   transition: background 0.14s, color 0.14s;
 }
-.cap-bar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.cap-bar-btn:hover:not(:disabled) { background: rgba(var(--ink-rgb), 0.16); color: var(--ink); }
 .cap-bar-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 /* Each slot is a fixed-width RECTANGLE carrying the state chrome (border/bg).
    Empty slots show a + (click to save here); filled slots show the numeral
@@ -2993,29 +3117,29 @@ kbd {
   border-radius: 7px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   overflow: hidden;
   transition: color 0.15s, background 0.15s, box-shadow 0.15s;
 }
 /* Empty slot: a ghost + (no bg until hover) — reads as "add here". */
 .cap-slot-wrap.empty {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   background: transparent;
 }
 .cap-slot-wrap.empty:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.08);
 }
 /* Saved (not selected) slot: brighter filled chip matching the play button. */
-.cap-slot-wrap.filled { color: rgba(255, 255, 255, 0.95); background: rgba(255, 255, 255, 0.12); }
-.cap-slot-wrap.filled:hover { color: #fff; background: rgba(255, 255, 255, 0.2); }
+.cap-slot-wrap.filled { color: rgba(var(--ink-rgb), 0.95); background: rgba(var(--ink-rgb), 0.12); }
+.cap-slot-wrap.filled:hover { color: var(--ink); background: rgba(var(--ink-rgb), 0.2); }
 /* Selected slot: solid fill = "active" (matches the drone tray's on-state),
    no outline. */
-.cap-slot-wrap.staged { color: #14161a; background: rgba(255, 255, 255, 0.92); }
-.cap-slot-wrap.staged:hover { background: #fff; }
+.cap-slot-wrap.staged { color: #14161a; background: rgba(var(--ink-rgb), 0.92); }
+.cap-slot-wrap.staged:hover { background: var(--ink); }
 /* Empty recall scope: numerals are non-performing (dim, flat). */
 .cap-slot-wrap.inert {
-  color: rgba(255, 255, 255, 0.28);
+  color: rgba(var(--ink-rgb), 0.28);
   background: transparent;
   box-shadow: none;
 }
@@ -3046,8 +3170,8 @@ kbd {
   place-items: center;
   border-radius: 7px;
   border: none;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.95);
+  background: rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.95);
   font-family: inherit;
   font-size: 11px;
   font-weight: 600;
@@ -3056,7 +3180,7 @@ kbd {
   cursor: pointer;
   transition: background 0.14s, color 0.14s, opacity 0.14s;
 }
-.cap-launch:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); color: #fff; }
+.cap-launch:hover:not(:disabled) { background: rgba(var(--ink-rgb), 0.2); color: var(--ink); }
 .cap-launch:disabled { opacity: 0.3; cursor: default; }
 /* Trailing DELETE button — removes the selected save (red on hover). */
 .cap-x {
@@ -3065,8 +3189,8 @@ kbd {
   border-radius: 7px;
   cursor: pointer;
   border: none;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.3);
+  background: rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.3);
   display: grid;
   place-items: center;
   transition: color 0.14s, background 0.14s;
@@ -3188,25 +3312,39 @@ kbd {
   color: color-mix(in srgb, var(--osc-color), transparent 60%);
 }
 
-/* Corner-bracket selection marker — four sharp white L corners (the
-   iOS SelectionCornersShape). */
-.console-corners {
+/* Corner-bracket selection marker — sharp L corners (the iOS
+   SelectionCornersShape). ONE styling for every surface that wears the
+   mark: the console's note cells and the source-knob band below them.
+
+   These numbers were mono's override (--ink-max, 2px, full opacity);
+   2026-08-05 they were promoted to the base so the mark reads identically
+   in every theme. It's the deliberate exemption from the ink cap: the
+   corners are the only thing saying "this is the one you're editing", so
+   they win on brightness regardless of how far the chrome has receded.
+
+   Corners are placed by class, not nth-child — a marker can render a
+   SUBSET (the shape/fold pair each draw only their outer pair, so the two
+   dials read as one bracket spanning both). */
+.sel-corners {
   position: absolute;
   inset: 0.75px;
   pointer-events: none;
-  opacity: 0.9;
+  opacity: 1;
 }
-.console-corners i {
+.sel-corners i {
   position: absolute;
   width: 6px;
   height: 6px;
-  border: 0 solid rgba(255, 255, 255, 0.9);
+  border: 0 solid var(--ink-max);
 }
-.console-corners i:nth-child(1) { top: 0; left: 0; border-top-width: 1.5px; border-left-width: 1.5px; }
-.console-corners i:nth-child(2) { top: 0; right: 0; border-top-width: 1.5px; border-right-width: 1.5px; }
-.console-corners i:nth-child(3) { bottom: 0; left: 0; border-bottom-width: 1.5px; border-left-width: 1.5px; }
-.console-corners i:nth-child(4) { bottom: 0; right: 0; border-bottom-width: 1.5px; border-right-width: 1.5px; }
-.console-corners.dimmed { opacity: 0.5; }
+.sel-corners .c-tl { top: 0; left: 0; border-top-width: 2px; border-left-width: 2px; }
+.sel-corners .c-tr { top: 0; right: 0; border-top-width: 2px; border-right-width: 2px; }
+.sel-corners .c-bl { bottom: 0; left: 0; border-bottom-width: 2px; border-left-width: 2px; }
+.sel-corners .c-br { bottom: 0; right: 0; border-bottom-width: 2px; border-right-width: 2px; }
+/* The quieter variant — worn by the lanes of orbs currently being dragged
+   or grabbed, so the console says which voice is under the finger. It has
+   to read against the full-strength corners on the selected lane. */
+.sel-corners.dimmed { opacity: 0.75; }
 
 /* MUTE row — numbered cell, same grammar as the old drone-tray squares
    (solid = sounding, hollow = muted). --cell-color aliases the lane
@@ -3219,6 +3357,10 @@ kbd {
 }
 .console-mute {
   --cell-color: var(--osc-color);
+  /* The one colour both states are built from: the sounding cell's fill,
+     and the outline BOTH states wear. Defined once so they can't drift —
+     the whole point is that the ring and the fill are the same value. */
+  --cell-fill: color-mix(in srgb, var(--cell-color), transparent 50%);
   box-sizing: border-box;
   /* One side from cellGeometry (stripGeometry.js) — the cell is always
      square; aspect-ratio backstops the var if it ever goes missing. */
@@ -3228,8 +3370,17 @@ kbd {
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.85);
+  background-color: transparent;
+  /* padding-box, so the background stops at the border's INNER edge
+     rather than painting under it. With a translucent fill and a
+     translucent border of the SAME colour, the default border-box clip
+     stacks the two (0.45 over 0.45 ≈ 0.70) and rings the cell in a
+     denser edge — the exact seam this outline is meant not to have.
+     Has to sit after every background declaration here AND in the state
+     rules below, which is why those all use background-COLOR: the
+     `background` shorthand silently resets this back to border-box. */
+  background-clip: padding-box;
+  color: rgba(var(--ink-rgb), 0.85);
   font-family: inherit;
   font-size: calc(13px * var(--console-control, 1));
   font-weight: 700;
@@ -3245,23 +3396,52 @@ kbd {
   transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s,
     opacity 0.4s ease;
 }
+/* Both states wear the SAME thin outline, in --cell-fill (Dan,
+   2026-08-05). The cell is always a square of the lane colour; muting
+   only empties it.
+
+   Muted: outline alone. The square is still there and still says which
+   lane it belongs to — it's just hollow.
+
+   Sounding: that same square filled with the same colour, so the outline
+   and the fill are one shape rather than a ring around a wash. What made
+   the old version heavy wasn't having a border, it was the border being
+   BRIGHTER than what it enclosed; matched to the fill, it reads as a
+   crisp edge instead of a frame. The number goes light rather than
+   knocked-out black — against a half-strength fill it's the more legible
+   of the two, and it leaves the colour undivided. */
 .console-mute.off {
-  background: transparent;
-  border-color: color-mix(in srgb, var(--cell-color), transparent 70%);
-  color: color-mix(in srgb, var(--cell-color), transparent 30%);
+  /* background-COLOR, not the `background` shorthand: the shorthand
+     resets background-clip back to border-box and undoes the padding-box
+     clip set above. Same reason in the three rules below. */
+  background-color: transparent;
+  /* EVERY mark on the hollow cell — ring AND number — is exactly
+     --cell-fill, the colour the cell takes when it sounds (Dan,
+     2026-08-05). The number used to run at 0.7 against a 0.5 ring and a
+     0.5 fill, so the muted cell advertised a brighter colour than
+     unmuting actually delivered. Nothing here may sit above the fill: a
+     hollow cell is the sounding cell with its middle taken out, not a
+     lit outline. */
+  border-color: var(--cell-fill);
+  color: var(--cell-fill);
 }
 .console-mute.off:hover {
-  border-color: color-mix(in srgb, var(--cell-color), transparent 40%);
-  color: color-mix(in srgb, var(--cell-color), transparent 10%);
+  /* Previews the state the cell is about to enter by FILLING, never by
+     brightening: a hint of the wash arrives inside while the ring and
+     number stay pinned at --cell-fill. (They used to firm up to 0.7/0.9
+     on hover — overshooting the very fill they were previewing.) */
+  background-color: color-mix(in srgb, var(--cell-color), transparent 84%);
+  border-color: var(--cell-fill);
+  color: var(--cell-fill);
 }
 .console-mute.on {
-  background: var(--cell-color);
-  border-color: var(--cell-color);
-  color: #000;
-  box-shadow: 0 0 6px color-mix(in srgb, var(--cell-color), transparent 55%);
+  background-color: var(--cell-fill);
+  border-color: var(--cell-fill);
+  color: var(--ink);
 }
 .console-mute.on:hover {
-  background: color-mix(in srgb, var(--cell-color), white 15%);
+  background-color: color-mix(in srgb, var(--cell-color), transparent 34%);
+  border-color: color-mix(in srgb, var(--cell-color), transparent 34%);
 }
 
 /* PAN row — the rotary PanPot (SVG arcs drawn by PanPot.jsx). */
@@ -3315,7 +3495,7 @@ kbd {
 .vfader-track {
   top: 0;
   bottom: 0;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-soft-rgb), 0.1);
 }
 .vfader-fill {
   bottom: 0;
@@ -3330,7 +3510,7 @@ kbd {
   transform: translate(-50%, 50%);
   width: 13px;
   height: 1px;
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(var(--ink-soft-rgb), 0.25);
 }
 .vfader-ball-slot {
   position: absolute;
@@ -3349,7 +3529,7 @@ kbd {
   /* Colored ball painted over an opaque black backing (the iOS black
      backing circle) so the track never shows through — the tint goes in
      as a background-IMAGE over a black background-COLOR. color-mix alone
-     isn't enough: the ALL lane's color is rgba(255,255,255,0.55) and
+     isn't enough: the ALL lane's color is rgba(var(--ink-rgb),0.55) and
      that alpha survives the mix. Muting shifts the tint darker rather
      than fading it, keeping the hue and the opaque backing. */
   background-color: #000;
@@ -3399,7 +3579,7 @@ kbd {
   font-size: 9px;
   font-weight: 500;
   letter-spacing: 0.4px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-soft-rgb), 0.4);
 }
 .console-rail-note { height: var(--console-note-h); }
 .console-rail-mute { height: var(--console-mute-h); }
@@ -3426,7 +3606,7 @@ kbd {
   padding: 0;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--ink-rgb), 0.8);
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -3440,9 +3620,9 @@ kbd {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.console-pager button:hover:not(:disabled) { color: #fff; }
+.console-pager button:hover:not(:disabled) { color: var(--ink); }
 .console-pager button:disabled {
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(var(--ink-rgb), 0.22);
   cursor: default;
 }
 
@@ -3466,7 +3646,7 @@ kbd {
   justify-content: center;
   gap: 1px;
 }
-.console-all .console-note-name { color: rgba(255, 255, 255, 0.7); }
+.console-all .console-note-name { color: rgba(var(--ink-rgb), 0.7); }
 .console-all-kill,
 .console-all-stereo {
   width: 100%;
@@ -3474,7 +3654,7 @@ kbd {
   padding: 0;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   font-family: inherit;
   cursor: pointer;
   display: flex;
@@ -3483,13 +3663,13 @@ kbd {
   transition: color 0.15s ease;
 }
 .console-all-kill:hover,
-.console-all-stereo:hover { color: rgba(255, 255, 255, 0.95); }
+.console-all-stereo:hover { color: rgba(var(--ink-rgb), 0.95); }
 .console-all-kill .button-icon {
   width: 16px;
   height: 16px;
   fill: currentColor;
 }
-.console-all-kill.all-muted { color: rgba(255, 255, 255, 0.35); }
+.console-all-kill.all-muted { color: rgba(var(--ink-rgb), 0.35); }
 .console-all-stereo {
   font-size: 12px;
   font-weight: 700;
@@ -3507,10 +3687,10 @@ kbd {
   width: 20px;
   height: 20px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 4px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -3518,13 +3698,13 @@ kbd {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .console-drone-play:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(var(--ink-rgb), 0.1);
+  color: var(--ink);
+  border-color: rgba(var(--ink-rgb), 0.4);
 }
 .console-drone-play.paused {
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.5);
+  color: var(--ink);
+  border-color: rgba(var(--ink-rgb), 0.5);
 }
 .console-drone-play .button-icon {
   width: 12px;
@@ -3591,15 +3771,21 @@ kbd {
   height: 48px;
   flex: 0 0 auto;
   border: none;
+  /* Kill the UA button padding (1px 6px). It left a 23px content box in
+     the 36px mobile rail — narrower than the 30px glyph, which then
+     overflowed and got clamped to the start edge, sitting 3px right of
+     centre. Invisible on desktop only because the 44px rail's content
+     box still cleared 30px. */
+  padding: 0;
   background: none;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--ink-rgb), 0.75);
   cursor: pointer;
   display: grid;
   place-items: center;
   transition: color 0.15s, background 0.15s;
 }
-.rail-play:hover { background: rgba(255, 255, 255, 0.08); }
-.rail-play.paused { color: #fff; }
+.rail-play:hover { background: rgba(var(--ink-rgb), 0.08); }
+.rail-play.paused { color: var(--ink); }
 /* Big glyph — with the frame gone the icon carries the slot on its own.
    The 24-unit viewBox is mostly padding (the pause bars span 6→18), so
    the drawn ink is ~half this figure. */
@@ -3638,7 +3824,7 @@ kbd {
   width: 4px;
   height: 100%;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   overflow: hidden;
 }
 .master-meter-fill {
@@ -3660,7 +3846,7 @@ kbd {
   width: 22px;
   height: 3px;
   border-radius: 1.5px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.9);
   pointer-events: none;
 }
 
@@ -3673,14 +3859,14 @@ kbd {
   border: none;
   background: none;
   padding: 0;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
   cursor: pointer;
   display: grid;
   place-items: center;
   transition: color 0.15s;
 }
-.rail-tab:hover { color: rgba(255, 255, 255, 0.8); }
-.rail-tab.active { color: rgba(255, 255, 255, 0.95); }
+.rail-tab:hover { color: rgba(var(--ink-rgb), 0.8); }
+.rail-tab.active { color: rgba(var(--ink-rgb), 0.95); }
 .rail-tab-face {
   position: relative;
   width: 36px;
@@ -3701,7 +3887,7 @@ kbd {
   position: absolute;
   inset: 0;
   fill: none;
-  stroke: rgba(255, 255, 255, 0.9);
+  stroke: rgba(var(--ink-rgb), 0.9);
   stroke-width: 1.5;
   pointer-events: none;
 }
@@ -3720,13 +3906,13 @@ kbd {
   cursor: pointer;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.08);
+  color: rgba(var(--ink-rgb), 0.85);
   transition: background 0.14s, color 0.14s;
 }
 .rail-history-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.16);
+  color: var(--ink);
 }
 .rail-history-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
@@ -3737,7 +3923,7 @@ kbd {
 }
 
 .osc-all-col-label .freq-hz {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   font-size: 10px;
   letter-spacing: 0.5px;
 }
@@ -3749,7 +3935,7 @@ kbd {
   flex-shrink: 0;
 }
 .osc-kbd-col-label {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   font-size: 10px;
   letter-spacing: 0.5px;
 }
@@ -3776,10 +3962,10 @@ kbd {
 .osc-kbd-hold-btn {
   width: 100%;
   padding: 4px 0;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   border: 1px solid transparent;
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   cursor: pointer;
   font-family: inherit;
   font-size: 11px;
@@ -3788,7 +3974,7 @@ kbd {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .osc-kbd-hold-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
 }
 .osc-kbd-hold-btn.on {
   background: rgba(46, 204, 64, 0.22);
@@ -3838,7 +4024,7 @@ kbd {
 }
 
 .global-detune-orb {
-  --all-color: rgba(240, 244, 255, 0.95);
+  --all-color: rgba(var(--ink-cool-rgb), 0.95);
   width: 22px;
   height: 22px;
   border-radius: 50%;
@@ -3893,7 +4079,7 @@ kbd {
 /* Ghost orb that follows the cursor during drag. Portaled to document.body,
    position:fixed → tracks the viewport. Brighter + bigger glow = "grabbed". */
 .global-detune-orb-ghost {
-  --all-color: rgba(240, 244, 255, 0.95);
+  --all-color: rgba(var(--ink-cool-rgb), 0.95);
   position: fixed;
   border-radius: 50%;
   background: var(--all-color);
@@ -3913,7 +4099,7 @@ kbd {
 }
 
 .osc-more-col-label .freq-hz {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   font-size: 10px;
   letter-spacing: 0.5px;
 }
@@ -3923,10 +4109,10 @@ kbd {
   box-sizing: border-box;
   width: 100%;
   padding: 4px 0;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border: 1px solid transparent;
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   font-family: monospace;
   font-size: 13px;
   font-weight: 600;
@@ -3939,8 +4125,8 @@ kbd {
 }
 
 .osc-more-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.14);
+  color: var(--ink);
 }
 
 .osc-more-btn:disabled {
@@ -3949,8 +4135,8 @@ kbd {
 }
 
 .osc-more-btn.active {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.18);
+  color: var(--ink);
 }
 
 .osc-more-btn.icon-btn .button-icon {
@@ -3981,7 +4167,7 @@ kbd {
   font-size: 9px;
   line-height: 1;
   letter-spacing: 0.4px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   text-align: center;
   text-transform: lowercase;
   font-family: monospace;
@@ -3996,8 +4182,8 @@ kbd {
   padding: 0;
   border: 1px solid transparent;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.08);
+  color: rgba(var(--ink-rgb), 0.85);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -4007,8 +4193,8 @@ kbd {
 }
 
 .osc-more-chevron:hover {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.18);
+  color: var(--ink);
 }
 
 .osc-more-chevron .button-icon {
@@ -4021,10 +4207,10 @@ kbd {
 .osc-all-playpause {
   width: 40px;
   height: 28px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(var(--ink-rgb), 0.35);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.08);
+  color: rgba(var(--ink-rgb), 0.9);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4035,8 +4221,8 @@ kbd {
 }
 
 .osc-all-playpause:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.15);
+  border-color: rgba(var(--ink-rgb), 0.55);
 }
 
 .osc-all-playpause .button-icon {
@@ -4046,10 +4232,10 @@ kbd {
 
 /* Master volume fader — neutral white, no per-osc color. */
 .volume-fader.master-fader .volume-fader-fill {
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(var(--ink-rgb), 0.28);
 }
 .volume-fader.master-fader .volume-fader-thumb {
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(var(--ink-rgb), 0.75);
 }
 
 
@@ -4068,10 +4254,10 @@ kbd {
   align-items: center;
   justify-content: center;
   padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(var(--ink-rgb), 0.05);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   font-size: 0.65rem;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -4080,15 +4266,15 @@ kbd {
 }
 
 .control-toggle:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--ink-rgb), 0.1);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 
 .control-toggle.active {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.5);
-  color: #fff;
-  box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+  background: rgba(var(--ink-rgb), 0.15);
+  border-color: rgba(var(--ink-rgb), 0.5);
+  color: var(--ink);
+  box-shadow: 0 0 8px rgba(var(--ink-rgb), 0.3);
 }
 
 /* Icon buttons (gear, save) */
@@ -4113,7 +4299,7 @@ kbd {
 .osc-controls-hint {
   text-align: center;
   font-size: 0.65rem;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(var(--ink-rgb), 0.25);
   margin-top: 4px;
 }
 
@@ -4135,10 +4321,10 @@ kbd {
 .osc-all-octave-btn {
   height: 26px;
   padding: 0 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(var(--ink-rgb), 0.05);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   font-family: monospace;
   font-size: 10px;
   font-weight: 600;
@@ -4149,18 +4335,18 @@ kbd {
 }
 
 .osc-all-octave-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(var(--ink-rgb), 0.12);
+  color: var(--ink);
+  border-color: rgba(var(--ink-rgb), 0.3);
 }
 
 .osc-count-btn {
   width: 28px;
   height: 28px;
   border-radius: 5px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--ink-rgb), 0.06);
+  color: rgba(var(--ink-rgb), 0.75);
   font-family: monospace;
   font-size: 17px;
   font-weight: 600;
@@ -4174,9 +4360,9 @@ kbd {
 }
 
 .osc-count-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.4);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.12);
+  border-color: rgba(var(--ink-rgb), 0.4);
+  color: var(--ink);
 }
 
 .osc-count-btn:disabled {
@@ -4243,15 +4429,15 @@ kbd {
    columns. */
 .osc-all-col .osc-octave-btn,
 .osc-more-col .osc-octave-btn {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border: 1px solid transparent;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 
 .osc-all-col .osc-octave-btn:hover,
 .osc-more-col .osc-octave-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.14);
+  color: var(--ink);
 }
 
 /* Mute indicator square - lit when unmuted, compact */
@@ -4303,7 +4489,7 @@ kbd {
   color: var(--row-color, #ccc);
 }
 .readout-cell .freq-note {
-  color: var(--row-color, rgba(255, 255, 255, 0.55));
+  color: var(--row-color, rgba(var(--ink-rgb), 0.55));
 }
 .readout-cell .freq-cents {
   color: color-mix(in srgb, var(--row-color, white), transparent 35%);
@@ -4311,7 +4497,7 @@ kbd {
 
 /* Active freq text: white on desktop, osc color on mobile. */
 .osc-col.active .freq-hz {
-  color: #fff;
+  color: var(--ink);
 }
 
 .freq-note-cents {
@@ -4323,11 +4509,11 @@ kbd {
 
 .freq-note {
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
 }
 
 .freq-cents {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
 }
 
 /* Volume gauge - vertical drag = volume, horizontal drag = fine-tune freq.
@@ -4338,8 +4524,8 @@ kbd {
   box-sizing: border-box;
   width: 50px;
   height: 80px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 6px;
   overflow: hidden;
   cursor: crosshair;
@@ -4365,7 +4551,7 @@ kbd {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
   pointer-events: none;
   /* background is snapped (not transitioned) — interpolating rgba-white →
      osc-color blends through a bright midpoint that reads as a flash. */
@@ -4376,7 +4562,7 @@ kbd {
   left: 0;
   right: 0;
   height: 2px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.55);
   transform: translateY(1px);
   pointer-events: none;
   transition: box-shadow 0.2s;
@@ -4398,11 +4584,11 @@ kbd {
 /* Master + keyboard fader hover: brighten the white fill instead of dimming. */
 .osc-all-col .volume-fader.master-fader:hover .volume-fader-fill,
 .osc-kbd-col .volume-fader.kbd-fader:hover .volume-fader-fill {
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(var(--ink-rgb), 0.45);
 }
 .osc-all-col .volume-fader.master-fader:hover .volume-fader-thumb,
 .osc-kbd-col .volume-fader.kbd-fader:hover .volume-fader-thumb {
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(var(--ink-rgb), 0.95);
 }
 
 /* Active (dragging or grabbed) — fader takes on full osc color. Glow stays
@@ -4427,6 +4613,21 @@ kbd {
      of visible column (44 minus the 12pt gutter bleed); 36px keeps the
      lane usable without starving the console between them. */
   :root { --rail-w: 36px; }
+
+  /* Distance from the viewport bottom up to the KNOB BAND'S TOP EDGE —
+     the console row's own bottom offset plus the band's height (the band
+     sits at the row's bottom). Source-tray sheets stop here so the band
+     stays uncovered; it shifts up with everything else when the keyboard
+     tray is open. */
+  #wrapper {
+    --knob-band-top: calc(max(8px, env(safe-area-inset-bottom))
+                          + var(--knob-band-h) - var(--knob-band-gap));
+  }
+  #wrapper.kbd-tray-open {
+    --knob-band-top: calc(max(8px, env(safe-area-inset-bottom))
+                          + var(--kbd-tray-h)
+                          + var(--knob-band-h) - var(--knob-band-gap));
+  }
 
   /* Mobile stack (top → bottom): spectrum bar, faders, control buttons.
      Use dvh-safe positioning (fixed bottom values), so the mobile browser
@@ -4488,14 +4689,17 @@ kbd {
     left: var(--rail-w);
     right: var(--rail-w);
     width: auto;
-    /* Hang from just under the spectrum bar (its bottom edge sits at
-       --fsb-lift + safe-inset above the viewport bottom): the title bar
-       lands in a fixed spot and short content stays top-aligned, with the
-       console peeking out underneath. Content taller than the area below
-       the bar scrolls inside. */
+    /* Fill the whole area under the spectrum bar: the top edge hangs from
+       the bar (its bottom sits at --fsb-lift + safe-inset above the
+       viewport bottom) and the sheet runs to the screen bottom, so it
+       covers the console instead of shrink-wrapping its content and
+       letting a slice of the knob band show through underneath. Short
+       content top-aligns against the black (desktop's align-self:stretch
+       grammar); taller content scrolls inside. */
     top: calc(100dvh - var(--fsb-lift) - env(safe-area-inset-bottom));
+    bottom: 0;
     align-self: auto;
-    max-height: calc(var(--fsb-lift) + env(safe-area-inset-bottom));
+    max-height: none;
     /* Full-bleed sheet between the rails: no chassis outline, and no
        leading hairline either (nothing sits beside it here). */
     border: none;
@@ -4513,13 +4717,20 @@ kbd {
      freq buttons (and the ALL word) stay visible above it and the selected
      readout's corner brackets mark whose panel is open. The console's top
      edge sits exactly on the --fsb-lift line, so the drop is one NOTE row.
-     Runs to the screen bottom from there (opaque, covering the rest of the
-     console) rather than shrink-wrapping like the other sheets. */
+     (The run to the screen bottom is the shared behavior above.) */
   .side-menu-stack:has(.voice-panel) {
     top: calc(100dvh - var(--fsb-lift) - env(safe-area-inset-bottom)
              + var(--console-note-h, 51px));
-    bottom: 0;
-    max-height: none;
+  }
+  /* …and the source trays (waves / shape / fold / noise / saturate),
+     which STOP at the knob band's top edge instead of the screen bottom.
+     This is iOS's rule (see the SourceTray overlay in ContentView.swift):
+     the band that opened the tray stays visible and live underneath it,
+     so a pill tap can switch trays or close this one without going up to
+     the ✕. Trays are taller than the shortened window, so they scroll on
+     the stack's own overflow-y. */
+  .side-menu-stack:has(.source-tray-panel) {
+    bottom: var(--knob-band-top);
   }
   /* Sheet children take the sheet's own (viewport-derived) width back. */
   .side-menu-stack > *,
@@ -4765,7 +4976,7 @@ kbd {
   font-size: 9px;
   font-weight: 600;
   line-height: 1.1;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--ink-rgb), 0.8);
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
@@ -4794,14 +5005,14 @@ kbd {
   font-size: 18px;
   font-weight: 600;
   line-height: 1;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   cursor: pointer;
   transition: color 0.15s, text-shadow 0.15s;
 }
 .fsb-count-btn:hover:not(:disabled) {
-  color: rgba(255, 255, 255, 0.98);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.7),
-               0 0 2px rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.98);
+  text-shadow: 0 0 8px rgba(var(--ink-rgb), 0.7),
+               0 0 2px rgba(var(--ink-rgb), 0.9);
 }
 .fsb-count-btn:disabled {
   opacity: 0.25;
@@ -4815,7 +5026,7 @@ kbd {
   padding: 2px 5px;
 }
 .fsb-help-btn.is-active {
-  color: rgba(255, 255, 255, 0.95);
+  color: rgba(var(--ink-rgb), 0.95);
 }
 
 /* Settings panel overlays the spectrum bar without shifting it — the
@@ -4878,7 +5089,7 @@ kbd {
   top: 0;
   width: 1px;
   height: 100%;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
   pointer-events: none;
 }
 
@@ -4890,7 +5101,7 @@ kbd {
   bottom: 0;
   width: 1px;
   height: 3px;
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(var(--ink-rgb), 0.2);
   pointer-events: none;
 }
 .fsb-tick-minor.tall {
@@ -4906,7 +5117,7 @@ kbd {
   font-family: monospace;
   font-size: 10px;
   /* matches iOS FrequencySpectrumBar tick labels: .white.opacity(0.65) */
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--ink-rgb), 0.65);
   white-space: nowrap;
   letter-spacing: 0;
 }
@@ -4932,39 +5143,27 @@ kbd {
 }
 
 /* Dotted boundary lines for the edge-pan auto-scroll zone. Span the full
-   viewport height — the whole page is the dragging canvas — and sit at
-   min(10vw, 120px) from each edge so on wide screens the inset stays a
-   fixed 120px instead of growing without bound. Low opacity so they read
-   as a subtle hint, not a hard divider. */
+   viewport height — the whole page is the dragging canvas — at the
+   BAR-anchored zone boundaries (inline `left` from edgeZoneGeometry in
+   FrequencySpectrumBar; the zone moved off the old 1200px-canvas inset
+   2026-08-05 — the row had shrunk well inside it and the pan sat in dead
+   space). Low opacity so they read as a subtle hint, not a hard divider.
+   They stop at the foot of the orb row — the inline `height` comes from
+   edgeZoneGeometry too (Dan, 2026-08-05). Below the orbs there is nothing the
+   boundary applies to, and a full-height rule cut straight through the mixer
+   console and the knob band. */
 .fsb-edge-zone-line {
   position: fixed;
   top: 0;
-  bottom: 0;
   width: 0;
-  border-left: 1px dashed rgba(255, 255, 255, 0.18);
+  border-left: 1px dashed rgba(var(--ink-rgb), 0.18);
   pointer-events: none;
   z-index: 200;
 }
 
-/* Canvas inset = the stage gutter outside the centered canvas, plus 10% of
-   the canvas width (capped at 120px). Mirrors the math in computeEdgeRate()
-   — CANVAS_MAX_WIDTH there must stay in step with --stage-max. */
-.fsb-edge-zone-line-left {
-  left: calc(var(--stage-gutter) + min(10vw, 120px));
-}
-
-.fsb-edge-zone-line-right {
-  right: calc(var(--stage-gutter) + min(10vw, 120px));
-}
-
-/* On phones the zone eats most of a narrow screen, so the hint lines read as
-   two hard dividers through the whole UI instead of a subtle edge marker.
-   Auto-pan still works — only the visual is dropped. */
-@media (max-width: 768px) {
-  .fsb-edge-zone-line {
-    display: none;
-  }
-}
+/* (The old .fsb-edge-zone-line-left/-right canvas-inset rules and the phone
+   display:none are gone 2026-08-05: the zone is bar-anchored now, so the
+   lines sit inside the lane at sensible spots on every width.) */
 
 /* (.fsb-ghost retired 2026-08-04: nothing on the bar ghosts any more. The
    real orb rides the cursor in a DRAG and in a GRAB alike — iOS parity, see
@@ -5041,11 +5240,19 @@ kbd {
    (iOS parity — a +4pt ring laid on its 3pt rim). Above the dragged orb's
    z-index 30. Near-white voice colors nearly swallow it, the same trade
    iOS took. */
+/* The orb-row half of the selection mark. It has to match the corners
+   stroke for stroke — they're one signal split across two surfaces, so a
+   dimmer or thinner ring would read as a weaker claim on the same voice.
+   Same --ink-max, same 2px (promoted out of mono 2026-08-05).
+
+   It stays bright on a MUTED selected orb for free: the ring is its own
+   layer rather than an outline on .fsb-dot, and muting dims the orb by
+   element opacity — which never reaches here. */
 .fsb-sel-ring {
   position: absolute;
   transform: translate(-50%, -50%);
   box-sizing: border-box;
-  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border: 2px solid var(--ink-max);
   border-radius: 50%;
   pointer-events: none;
   z-index: 31;
@@ -5309,7 +5516,7 @@ kbd {
   letter-spacing: 0.2px;
   white-space: nowrap;
   pointer-events: none;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
   z-index: 40;
 }
@@ -5444,7 +5651,11 @@ kbd {
   height: 6px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: color-mix(in srgb, var(--dot-color) 40%, #fff);
+  /* --ink-max, not --ink: this mix is the dot's whole legibility
+     mechanism (lighten the orb's own color until it reads as a mark on
+     top of it), so its white end has to stay white however far the
+     theme has pulled the chrome down. No-op in duo/classic. */
+  background: color-mix(in srgb, var(--dot-color) 40%, var(--ink-max));
 }
 /* Detune indicator: the same rim dot, smaller — its own 2px radius pulls
    it in, keeping it flush like the pan dot. Two of these ride mirrored
@@ -5454,7 +5665,7 @@ kbd {
   top: calc(2px - var(--status-arc-r, 17.5px));
   width: 4px;
   height: 4px;
-  box-shadow: 0 0 4px color-mix(in srgb, var(--dot-color) 30%, #fff);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--dot-color) 30%, var(--ink-max));
 }
 
 .fsb-active-freq {
@@ -5512,8 +5723,8 @@ kbd {
   bottom: 16px;
   z-index: 600;
   background: rgba(20, 20, 20, 0.85);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: var(--ink);
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
   border-radius: 6px;
   padding: 6px 12px;
   font-size: 12px;
@@ -5526,7 +5737,7 @@ kbd {
 }
 .kbd-tray-handle:hover {
   background: rgba(40, 40, 40, 0.95);
-  border-color: rgba(255, 255, 255, 0.5);
+  border-color: rgba(var(--ink-rgb), 0.5);
 }
 
 .kbd-tray {
@@ -5550,9 +5761,9 @@ kbd {
   grid-template-columns: 150px 1fr 150px;
   align-items: stretch;
   background: rgba(15, 15, 15, 0.92);
-  border-top: 1px solid rgba(255, 255, 255, 0.15);
-  border-left: 1px solid rgba(255, 255, 255, 0.15);
-  border-right: 1px solid rgba(255, 255, 255, 0.15);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.15);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.15);
+  border-right: 1px solid rgba(var(--ink-rgb), 0.15);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   user-select: none;
@@ -5576,7 +5787,7 @@ kbd {
   align-items: stretch;
   gap: 3px;
   padding: 0 10px;
-  color: #fff;
+  color: var(--ink);
   font-size: 12px;
   overflow: hidden;
   min-width: 0;
@@ -5599,7 +5810,7 @@ kbd {
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.3px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 .kbd-range-num {
   flex: 0 0 auto;
@@ -5610,7 +5821,7 @@ kbd {
   flex: 1 1 auto;
   align-items: center;
   min-width: 0;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
   font-family: monospace;
   font-weight: 500;
 }
@@ -5653,7 +5864,7 @@ kbd {
   align-items: stretch;
   gap: 3px;
   padding: 0 10px;
-  color: #fff;
+  color: var(--ink);
   font-size: 12px;
 }
 .kbd-midi-caption {
@@ -5661,11 +5872,11 @@ kbd {
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 .kbd-midi-btn {
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.06);
+  color: var(--ink);
   border: none;
   border-radius: 4px;
   font-family: inherit;
@@ -5686,18 +5897,18 @@ kbd {
    (sits flat / muted). Borders and text scale with the same axis so
    either state still reads at a glance. */
 .kbd-midi-btn.on {
-  background: rgba(255, 255, 255, 0.22);
-  color: rgba(255, 255, 255, 0.98);
+  background: rgba(var(--ink-rgb), 0.22);
+  color: rgba(var(--ink-rgb), 0.98);
 }
 .kbd-midi-btn.on:hover {
-  background: rgba(255, 255, 255, 0.30);
+  background: rgba(var(--ink-rgb), 0.30);
 }
 .kbd-midi-btn.off {
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.04);
+  color: rgba(var(--ink-rgb), 0.55);
 }
 .kbd-midi-btn.off:hover {
-  background: rgba(255, 255, 255, 0.10);
+  background: rgba(var(--ink-rgb), 0.10);
 }
 .kbd-tray-octave-row {
   display: flex;
@@ -5710,8 +5921,8 @@ kbd {
   width: 30px;
   height: 22px;
   padding: 0 6px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.08);
+  color: var(--ink);
   border: none;
   border-radius: 4px;
   font-family: inherit;
@@ -5727,11 +5938,11 @@ kbd {
   flex: none;
 }
 .kbd-octave-btn:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(var(--ink-rgb), 0.16);
 }
 .kbd-octave-btn.is-active {
-  background: rgba(255, 255, 255, 0.32);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.32);
+  color: var(--ink);
 }
 
 /* Octave shift buttons — share the .kbd-octave-btn size (30 × 22) with
@@ -5750,7 +5961,7 @@ kbd {
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   line-height: 1;
 }
 
@@ -5762,7 +5973,7 @@ kbd {
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   min-width: 44px;
   text-align: center;
 }
@@ -5783,11 +5994,11 @@ kbd {
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 .kbd-hold-btn {
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.04);
+  color: rgba(var(--ink-rgb), 0.55);
   border: none;
   border-radius: 4px;
   font-family: inherit;
@@ -5808,14 +6019,14 @@ kbd {
   transition: background 0.12s, color 0.12s;
 }
 .kbd-hold-btn:hover {
-  background: rgba(255, 255, 255, 0.10);
+  background: rgba(var(--ink-rgb), 0.10);
 }
 .kbd-hold-btn.on {
-  background: rgba(255, 255, 255, 0.22);
-  color: rgba(255, 255, 255, 0.98);
+  background: rgba(var(--ink-rgb), 0.22);
+  color: rgba(var(--ink-rgb), 0.98);
 }
 .kbd-hold-btn.on:hover {
-  background: rgba(255, 255, 255, 0.30);
+  background: rgba(var(--ink-rgb), 0.30);
 }
 
 /* Voice-count pill — a single rounded slab with [−  N  +] laid out
@@ -5824,7 +6035,7 @@ kbd {
 .kbd-voice-pill {
   display: inline-flex;
   align-items: center;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   border-radius: 6px;
   padding: 2px 4px;
   gap: 4px;
@@ -5832,7 +6043,7 @@ kbd {
 .kbd-voice-btn {
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   font-family: inherit;
   font-size: 14px;
   font-weight: 700;
@@ -5843,15 +6054,15 @@ kbd {
   transition: color 0.15s, background 0.15s;
 }
 .kbd-voice-btn:hover:not(:disabled) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.08);
 }
 .kbd-voice-btn:disabled {
   opacity: 0.35;
   cursor: default;
 }
 .kbd-voice-num {
-  color: #fff;
+  color: var(--ink);
   font-weight: 800;
   font-size: 13px;
   letter-spacing: 0.4px;
@@ -5863,8 +6074,8 @@ kbd {
 
 .kbd-input-toggle,
 .kbd-tray-close {
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.06);
+  color: var(--ink);
   border: none;
   border-radius: 4px;
   font-family: inherit;
@@ -5877,10 +6088,10 @@ kbd {
   justify-content: center;
 }
 .kbd-input-toggle.on {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(var(--ink-rgb), 0.22);
 }
 .kbd-input-toggle.off {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--ink-rgb), 0.04);
   opacity: 0.7;
 }
 .kbd-tray-close {
@@ -5889,7 +6100,7 @@ kbd {
 }
 .kbd-input-toggle:hover,
 .kbd-tray-close:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 
 /* Keys area — relative parent for the absolute-positioned key elements
@@ -5965,7 +6176,7 @@ kbd {
      under a black is created by a 0.5px shrinkage built into each
      white's clip-path on both bottom corners; the dark tray bg shows
      through the 1px gap as a piano-style seam line. */
-  border-bottom: 1px solid rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.55);
 }
 /* Diatonic layout (white-only mode) — whites are equal-width per WHITE
    count (7 per octave) and don't use a clip-path. Add a 1px right inset
@@ -5999,7 +6210,7 @@ kbd {
   /* Blacks should still be visibly darker than whites — picked so the
      piano stripe pattern reads at a glance even in the dark theme. */
   background: #0a0a0a;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(var(--ink-rgb), 0.35);
   border-top: none;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
@@ -6030,7 +6241,7 @@ kbd {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background: var(--key-color, #fff);
+  background: var(--key-color, var(--ink));
   opacity: calc(0.6 * var(--glow-alpha, 0));
   transition: opacity 0.04s linear;
 }
@@ -6114,20 +6325,20 @@ kbd {
   /* Layered glow in the slot color so the small triangle still reads as
      a bright LED rather than a flat sliver. */
   filter:
-    drop-shadow(0 0 2px var(--arrow-color, rgba(255, 255, 255, 0.9)))
-    drop-shadow(0 0 5px var(--arrow-color, rgba(255, 255, 255, 0.6)));
+    drop-shadow(0 0 2px var(--arrow-color, rgba(var(--ink-rgb), 0.9)))
+    drop-shadow(0 0 5px var(--arrow-color, rgba(var(--ink-rgb), 0.6)));
 }
 .osk-arrow-left {
   left: 6px;
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  border-right: 6px solid var(--arrow-color, #fff);
+  border-right: 6px solid var(--arrow-color, var(--ink));
 }
 .osk-arrow-right {
   right: 6px;
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  border-left: 6px solid var(--arrow-color, #fff);
+  border-left: 6px solid var(--arrow-color, var(--ink));
 }
 
 /* Per-key frequency readout (textContent written by OnScreenKeyboard's
@@ -6151,11 +6362,11 @@ kbd {
   z-index: 2;
 }
 .osk-white .key-freq {
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
 }
 .osk-black .key-freq {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
 }
 /* Silent keys sound nothing — refresh() blanks the text, this hides the box. */
@@ -6181,11 +6392,11 @@ kbd {
   font-family: inherit;
 }
 .osk-white .key-letter {
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.55);
 }
 .osk-black .key-letter {
-  color: rgba(255, 255, 255, 0.88);
+  color: rgba(var(--ink-rgb), 0.88);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.65);
   bottom: 11px;
   font-size: 9px;
@@ -6237,7 +6448,7 @@ kbd {
   width: 360px;
   max-width: calc(100vw - 32px);
   background: rgba(20, 20, 25, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 12px;
   backdrop-filter: blur(10px);
   display: flex;
@@ -6264,7 +6475,7 @@ kbd {
    Visuals panel reads the same as Settings. */
 .hydra-panel-header {
   padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6276,12 +6487,12 @@ kbd {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #fff;
+  color: var(--ink);
 }
 
 .hydra-header {
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6294,7 +6505,7 @@ kbd {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
 }
 .hydra-header-actions {
   display: flex;
@@ -6306,26 +6517,26 @@ kbd {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border: none;
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--ink-rgb), 0.75);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
-.hydra-action-btn:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.hydra-action-btn:hover { background: rgba(var(--ink-rgb), 0.16); color: var(--ink); }
 .hydra-close {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   cursor: pointer;
   padding: 2px;
   display: flex;
 }
-.hydra-close:hover { color: #fff; }
+.hydra-close:hover { color: var(--ink); }
 
 .hydra-editor-wrap {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.08);
   flex: 0 0 auto;
 }
 /* CodeMirror's own theme handles the editor chrome — we just set
@@ -6338,8 +6549,8 @@ kbd {
   padding: 6px 14px;
   font-size: 11px;
   font-family: 'SF Mono', Menlo, monospace;
-  color: rgba(255, 255, 255, 0.55);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(var(--ink-rgb), 0.55);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.06);
   flex: 0 0 auto;
   white-space: nowrap;
   overflow: hidden;
@@ -6350,7 +6561,7 @@ kbd {
 
 .hydra-section {
   padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.06);
   /* Keep natural height and let the whole panel scroll — without this
      flex-shrink compresses sections below their content and the rows
      of adjacent sections overlap. */
@@ -6367,7 +6578,7 @@ kbd {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
 }
 .hydra-sketch-card {
   display: flex;
@@ -6377,23 +6588,23 @@ kbd {
   text-align: left;
   padding: 8px 10px;
   margin-bottom: 4px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.06);
   border-radius: 6px;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--ink-rgb), 0.8);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
 .hydra-sketch-card:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--ink-rgb), 0.08);
+  border-color: rgba(var(--ink-rgb), 0.14);
 }
 .hydra-sketch-card.user,
 .hydra-sketch-card.builtin {
   flex-direction: row;
   align-items: center;
   padding: 0;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--ink-rgb), 0.03);
 }
 .hydra-sketch-load {
   flex: 1 1 auto;
@@ -6408,24 +6619,24 @@ kbd {
   padding: 4px 10px;
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   font-size: 16px;
   cursor: pointer;
 }
 .hydra-sketch-delete:hover { color: #ff8a80; }
 .hydra-sketch-name {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.9);
 }
 .hydra-sketch-desc {
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   margin-top: 2px;
 }
 .hydra-empty {
   margin: 0;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
 }
 
 /* The Shape toggle row inside the Visualizer section. Reuses the
@@ -6452,7 +6663,7 @@ kbd {
   /* Match the section rows below: same 14px side padding so QUALITY lines
      up with SCALE / OUTLINE, plus a separator under it. */
   padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.06);
 }
 .hydra-quality-top .tune-slider-label {
   flex: 0 0 auto;
@@ -6477,7 +6688,7 @@ kbd {
   width: 320px;
   max-width: calc(100vw - 32px);
   background: rgba(20, 20, 25, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 12px;
   backdrop-filter: blur(10px);
   display: flex;
@@ -6502,7 +6713,7 @@ kbd {
 
 .patches-header {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6514,12 +6725,12 @@ kbd {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #fff;
+  color: var(--ink);
 }
 .patches-close {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -6528,8 +6739,8 @@ kbd {
   transition: background 0.15s, color 0.15s;
 }
 .patches-close:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.1);
 }
 
 .patches-body {
@@ -6552,7 +6763,7 @@ kbd {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
 }
 .patches-section-head {
   display: flex;
@@ -6567,22 +6778,22 @@ kbd {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
   background: none;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 4px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .patches-export-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.28);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.08);
+  border-color: rgba(var(--ink-rgb), 0.28);
+  color: var(--ink);
 }
 .patches-empty {
   margin: 4px 4px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
   line-height: 1.4;
 }
 
@@ -6597,23 +6808,23 @@ kbd {
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px dashed rgba(255, 255, 255, 0.18);
+  color: rgba(var(--ink-rgb), 0.85);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px dashed rgba(var(--ink-rgb), 0.18);
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .patch-save-current:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.3);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.12);
+  border-color: rgba(var(--ink-rgb), 0.3);
+  color: var(--ink);
 }
 .patch-save-form .patch-rename-input { flex: 1 1 auto; }
 
 .patch-card {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.04);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 8px;
   padding: 10px 12px;
   display: flex;
@@ -6630,18 +6841,18 @@ kbd {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
 }
 .patch-author {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   font-style: italic;
 }
 .patch-desc {
   margin: 0;
   font-size: 11px;
   line-height: 1.4;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
 }
 
 .patch-preview-strip {
@@ -6651,7 +6862,7 @@ kbd {
   border-radius: 4px;
 }
 .patch-preview-baseline {
-  fill: rgba(255, 255, 255, 0.08);
+  fill: rgba(var(--ink-rgb), 0.08);
 }
 
 .patch-ratios {
@@ -6663,15 +6874,15 @@ kbd {
   gap: 1px 12px;
   font-family: monospace;
   font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 .patch-ratios li {
   display: flex;
   justify-content: space-between;
   gap: 6px;
 }
-.patch-ratio-name { color: rgba(255, 255, 255, 0.85); }
-.patch-ratio-cents { color: rgba(255, 255, 255, 0.5); }
+.patch-ratio-name { color: rgba(var(--ink-rgb), 0.85); }
+.patch-ratio-cents { color: rgba(var(--ink-rgb), 0.5); }
 
 .patch-card-actions {
   display: flex;
@@ -6684,27 +6895,27 @@ kbd {
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 600;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
 .patch-load-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(var(--ink-rgb), 0.18);
+  border-color: rgba(var(--ink-rgb), 0.28);
 }
 .patch-osc-hint {
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
 }
 
 .patch-icon-btn {
   flex: 0 0 auto;
   background: none;
   border: 1px solid transparent;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   padding: 5px;
   border-radius: 4px;
   cursor: pointer;
@@ -6713,8 +6924,8 @@ kbd {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .patch-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.08);
+  color: var(--ink);
 }
 .patch-delete-btn:hover {
   color: #ff6b6b;
@@ -6723,8 +6934,8 @@ kbd {
 
 .patch-rename-input {
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #fff;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  color: var(--ink);
   font-size: 13px;
   padding: 5px 8px;
   border-radius: 4px;
@@ -6733,7 +6944,7 @@ kbd {
   min-width: 0;
 }
 .patch-rename-input:focus {
-  border-color: rgba(255, 255, 255, 0.4);
+  border-color: rgba(var(--ink-rgb), 0.4);
   background: rgba(0, 0, 0, 0.6);
 }
 
@@ -6753,7 +6964,7 @@ kbd {
   font-weight: 600;
   letter-spacing: 0.5px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--ink-rgb), 0.35);
 }
 
 .tuning-rows {
@@ -6774,7 +6985,7 @@ kbd {
   bottom: 2px;
   width: 2px;
   transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(var(--ink-rgb), 0.16);
   pointer-events: none;
 }
 
@@ -6794,7 +7005,7 @@ kbd {
   align-items: center;
   height: 26px;
   padding: 0 2px;
-  color: var(--osc-color, rgba(255, 255, 255, 0.85));
+  color: var(--osc-color, rgba(var(--ink-rgb), 0.85));
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
 }
@@ -6809,7 +7020,7 @@ kbd {
 .freq-rail-rocker {
   display: inline-flex;
   align-items: stretch;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   border-radius: 6px;
   width: 100%;
   height: 22px;
@@ -6824,7 +7035,7 @@ kbd {
   background: transparent;
   border: none;
   padding: 0;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
@@ -6832,11 +7043,11 @@ kbd {
    border on the right-hand button so the hover highlight stays
    flush to the divider on both sides. */
 .freq-rail-rocker-btn + .freq-rail-rocker-btn {
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.06);
 }
 .freq-rail-rocker-btn:hover:not(:disabled) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.14);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 .freq-rail-rocker-btn:disabled {
   opacity: 0.35;
@@ -6880,18 +7091,18 @@ kbd {
   height: 6px;
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(var(--ink-rgb), 0.5);
   box-sizing: border-box;
   transition: width 0.15s, height 0.15s, background 0.15s, box-shadow 0.15s;
 }
 .freq-rail-root-radio:hover .freq-rail-root-radio-dot {
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.85);
 }
 .freq-rail-root-radio.on .freq-rail-root-radio-dot {
   width: 13px;
   height: 13px;
-  background: var(--osc-color, rgba(255, 255, 255, 0.95));
-  box-shadow: 0 0 5px color-mix(in srgb, var(--osc-color, #fff), transparent 50%);
+  background: var(--osc-color, rgba(var(--ink-rgb), 0.95));
+  box-shadow: 0 0 5px color-mix(in srgb, var(--osc-color, var(--ink)), transparent 50%);
 }
 
 /* Row marker — small colored square mirroring .console-mute. The
@@ -6909,7 +7120,7 @@ kbd {
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   font-weight: 700;
@@ -7003,7 +7214,7 @@ kbd {
   width: 100%;
   background: transparent;
   border: none;
-  color: #fff;
+  color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
   padding: 2px 0;
@@ -7013,18 +7224,18 @@ kbd {
   transition: color 0.15s ease, background 0.15s ease;
 }
 .freq-rail-input:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--ink-rgb), 0.04);
   border-radius: 3px;
 }
 .freq-rail-input:focus {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   border-radius: 3px;
 }
 .freq-rail-input.invalid {
   color: #ff8174;
 }
 .freq-rail-input:disabled {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   cursor: default;
 }
 /* Frozen variant: a <span> rendered in place of the <input> while an orb
@@ -7041,11 +7252,11 @@ kbd {
 
 .freq-rail-ratio.exact {
   text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.55);
+  text-decoration-color: rgba(var(--ink-rgb), 0.55);
   text-underline-offset: 2px;
 }
 .freq-rail-ratio.locked {
-  color: #fff;
+  color: var(--ink);
   font-weight: 600;
 }
 .freq-rail-ratio:not(.locked):not(:focus) {
@@ -7062,7 +7273,7 @@ kbd {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
   line-height: 1;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--ink-rgb), 0.75);
   white-space: nowrap;
   overflow: hidden;
   min-width: 0;
@@ -7073,11 +7284,11 @@ kbd {
    here. The cents column is dimmer + lighter weight to reproduce the
    prior visual hierarchy (note name primary, cents secondary). */
 .freq-rail-note-name {
-  color: #fff;
+  color: var(--ink);
   font-weight: 600;
 }
 .freq-rail-note-cents {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   font-weight: 500;
   font-size: 11px;
 }
@@ -7088,7 +7299,7 @@ kbd {
 .freq-rail-footer {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -7110,9 +7321,9 @@ kbd {
   justify-content: center;
   gap: 5px;
   height: 22px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
   border: none;
-  color: #fff;
+  color: var(--ink);
   padding: 0 10px;
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -7122,13 +7333,13 @@ kbd {
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
-.freq-rail-action:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); }
+.freq-rail-action:hover:not(:disabled) { background: rgba(var(--ink-rgb), 0.2); }
 .freq-rail-action:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(var(--ink-rgb), 0.2);
+  color: var(--ink);
 }
 .freq-rail-action:active:not(:disabled) {
-  background: rgba(255, 255, 255, 0.26);
+  background: rgba(var(--ink-rgb), 0.26);
 }
 .freq-rail-action:disabled {
   opacity: 0.4;
@@ -7167,15 +7378,15 @@ kbd {
   justify-content: center;
   width: 24px;
   padding: 0;
-  color: rgba(255, 255, 255, 0.6);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(var(--ink-rgb), 0.6);
+  background: rgba(var(--ink-rgb), 0.05);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 4px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .freq-rail-release:hover {
-  color: #fff;
+  color: var(--ink);
   background: rgba(255, 120, 120, 0.16);
   border-color: rgba(255, 140, 140, 0.6);
 }
@@ -7183,15 +7394,15 @@ kbd {
   display: flex;
   align-items: stretch;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.05);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 4px;
   overflow: hidden;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .freq-rail-slot:hover {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(var(--ink-rgb), 0.09);
+  border-color: rgba(var(--ink-rgb), 0.22);
 }
 /* Staged: first click armed this slot — target dots preview on the spectrum
    bar and a second click launches (recalls) it. */
@@ -7208,7 +7419,7 @@ kbd {
   min-width: 0;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   font-family: inherit;
   font-size: 11px;
   padding: 4px 6px;
@@ -7219,14 +7430,14 @@ kbd {
   text-align: left;
 }
 .freq-rail-slot-name:hover {
-  color: #fff;
+  color: var(--ink);
 }
 .freq-rail-slot-input {
   flex: 1 1 auto;
   min-width: 0;
   background: rgba(0, 0, 0, 0.25);
   border: none;
-  color: #fff;
+  color: var(--ink);
   font-family: inherit;
   font-size: 11px;
   padding: 4px 6px;
@@ -7235,8 +7446,8 @@ kbd {
 .freq-rail-slot-delete {
   background: transparent;
   border: none;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.5);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.1);
+  color: rgba(var(--ink-rgb), 0.5);
   font-size: 13px;
   line-height: 1;
   padding: 0 6px;
@@ -7245,7 +7456,7 @@ kbd {
 }
 .freq-rail-slot-delete:hover {
   background: rgba(255, 80, 80, 0.18);
-  color: #fff;
+  color: var(--ink);
 }
 
 /* Recall-glide slider — sits underneath the save-slot grid. Reads as
@@ -7257,7 +7468,7 @@ kbd {
   gap: 6px;
   margin-top: 4px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
 }
 .freq-rail-glide-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -7265,7 +7476,7 @@ kbd {
   text-transform: none;
   letter-spacing: 0.3px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   min-width: 62px;
   flex: none;
 }
@@ -7286,8 +7497,8 @@ kbd {
   border-radius: 0;
   background: linear-gradient(
     to right,
-    rgba(255, 255, 255, 0.7) var(--glide-fill, 0%),
-    rgba(255, 255, 255, 0.14) var(--glide-fill, 0%)
+    rgba(var(--ink-rgb), 0.7) var(--glide-fill, 0%),
+    rgba(var(--ink-rgb), 0.14) var(--glide-fill, 0%)
   );
 }
 .freq-rail-glide-slider::-webkit-slider-thumb {
@@ -7298,37 +7509,37 @@ kbd {
   margin-top: -6px;
   border: none;
   border-radius: 0;
-  background: #fff;
+  background: var(--ink);
   transition: box-shadow 0.15s;
 }
 .freq-rail-glide-slider:hover::-webkit-slider-thumb {
-  box-shadow: 0 0 9px rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 9px rgba(var(--ink-rgb), 0.85);
 }
 .freq-rail-glide-slider::-moz-range-track {
   height: 2px;
   border-radius: 0;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 .freq-rail-glide-slider::-moz-range-progress {
   height: 2px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--ink-rgb), 0.7);
 }
 .freq-rail-glide-slider::-moz-range-thumb {
   width: 2px;
   height: 14px;
   border: none;
   border-radius: 0;
-  background: #fff;
+  background: var(--ink);
   transition: box-shadow 0.15s;
 }
 .freq-rail-glide-slider:hover::-moz-range-thumb {
-  box-shadow: 0 0 9px rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 9px rgba(var(--ink-rgb), 0.85);
 }
 .freq-rail-glide-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
   min-width: 40px;
   text-align: right;
@@ -7343,8 +7554,8 @@ kbd {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.4px;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.12);
   border: none;
   border-radius: 6px;
   padding: 0 10px;
@@ -7352,7 +7563,7 @@ kbd {
   white-space: nowrap;
   transition: background 0.15s;
 }
-.freq-rail-glide-curve:hover { background: rgba(255, 255, 255, 0.2); }
+.freq-rail-glide-curve:hover { background: rgba(var(--ink-rgb), 0.2); }
 
 /* ── Parameter-lock (capture scope) panel ─────────────────────────── */
 /* PERFORM panel chassis — same look/width as the tuning panel so the two
@@ -7361,7 +7572,7 @@ kbd {
   width: 280px;
   padding: 9px 10px;
   background: #000;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   border-radius: 12px;
 }
 .perform-panel .scope-panel { margin-top: 0; }
@@ -7382,7 +7593,7 @@ kbd {
   font-size: 10px;
   letter-spacing: 0.11em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.42);
+  color: rgba(var(--ink-rgb), 0.42);
 }
 /* Separated toggle pills, left-aligned in a narrow column (~20% of the
    panel width). Each pill is its own control rather than a joined
@@ -7402,10 +7613,10 @@ kbd {
   justify-content: center;
   height: 22px;
   padding: 0 10px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.06);
   border-radius: 6px;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--ink-rgb), 0.65);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 700;
@@ -7414,15 +7625,15 @@ kbd {
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
-.scope-chip.on { color: #fff; background: rgba(255, 255, 255, 0.22); }
-.scope-chip:hover:not(.on) { color: rgba(255, 255, 255, 0.92); }
+.scope-chip.on { color: var(--ink); background: rgba(var(--ink-rgb), 0.22); }
+.scope-chip:hover:not(.on) { color: rgba(var(--ink-rgb), 0.92); }
 .scope-timing { display: flex; align-items: center; gap: 8px; }
 .scope-timing-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.3px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
   min-width: 62px;
 }
 /* Match the seconds readout to the row label ("snapshot"/"undo/redo"). */
@@ -7431,7 +7642,7 @@ kbd {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.3px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--ink-rgb), 0.6);
 }
 /* Slider sits on the left side of the row, vertically centered — 40% of
    the row width (60% narrower than the old full-width fill). */
@@ -7465,18 +7676,137 @@ kbd {
     bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--kbd-tray-h));
   }
   /* The sheet rides up with the console + rails so its top edge stays
-     glued to the rail tops (it hangs from the bar, not the viewport). */
+     glued to the rail tops (it hangs from the bar, not the viewport), and
+     its bottom stops at the keyboard tray's top edge rather than running
+     behind the keys. Source trays are excluded from the bottom half:
+     they stop at the knob band instead, and --knob-band-top already
+     carries the same lift. */
   #wrapper.kbd-tray-open .side-menu-stack {
     top: calc(100dvh - var(--fsb-lift) - var(--kbd-tray-h) - env(safe-area-inset-bottom));
   }
-  /* Frequency panels keep their NOTE-row drop with the tray open, and
-     stop at the tray's top edge instead of the screen bottom (the other
-     sheets do the same via their max-height). */
+  #wrapper.kbd-tray-open .side-menu-stack:not(:has(.source-tray-panel)) {
+    bottom: var(--kbd-tray-h);
+  }
+  /* Frequency panels keep their NOTE-row drop with the tray open. */
   #wrapper.kbd-tray-open .side-menu-stack:has(.voice-panel) {
     top: calc(100dvh - var(--fsb-lift) - var(--kbd-tray-h)
              - env(safe-area-inset-bottom) + var(--console-note-h, 51px));
-    bottom: var(--kbd-tray-h);
   }
 }
 
 
+
+/* ─── mono theme ─────────────────────────────────────────────────────
+   The orbs are the whole show. Two mechanisms carry it:
+
+   1. The ink cap. palette._stamp() writes --ink-rgb: 150,150,150 onto
+      <body>, and every neutral in this file spends that token, so all of
+      the app's chrome — text, hairlines, borders, glyph fills, dim fills
+      — tops out at a mid gray in one move. Nothing below re-states a
+      neutral; the token already did it. The orbs opt OUT by asking the
+      palette for orbColor() instead, which stays near-white, and that
+      gap is the theme.
+
+   2. Chroma removal. The ink token can't reach the app's saturated
+      accents (danger reds, active blues, meter greens) because those
+      aren't neutrals. Rather than restate ~45 colors — which would drift
+      the moment one of them changes — mono desaturates them in place
+      with grayscale(1). Each selector below is a leaf: a dot, a badge, a
+      meter segment, a small button, so the filter costs nothing and
+      creates no stacking context anything depends on.
+
+   The mute cells are the deliberate exception to BOTH: palette.muteColor
+   hands them the duo accents, and they appear nowhere in the grayscale
+   list. They're the only color left in the app, and they're what says
+   which row is which. */
+
+body[data-theme="mono"] :is(
+  .midi-row-x:hover,
+  .midi-row-armed,
+  .midi-row-armed-text,
+  .mixer-row.mixer-row-drone.midi-targetable,
+  .mixer-btn-mute:hover:not(:disabled),
+  .mixer-master-meter-row,
+  .osc-box.active,
+  .settings-select:focus,
+  .permission-button,
+  .range-toggle-button.active,
+  .midi-toggle.active,
+  .midi-dot,
+  .cap-x,
+  .osc-kbd-hold-btn.on,
+  .hydra-status,
+  .hydra-sketch-delete,
+  .patch-delete-btn:hover,
+  .freq-rail-input.invalid,
+  .freq-rail-release:hover,
+  .freq-rail-slot.staged,
+  .freq-rail-slot-delete:hover,
+  .ekp-buffer.invalid
+) {
+  filter: grayscale(1);
+}
+
+/* The master meter's level segments (green → amber → red) gray out with
+   the row above, but grayscale alone would leave them brighter than the
+   cap — a lit meter would out-shine the orbs. Pull them under it. */
+body[data-theme="mono"] .mixer-master-meter-row {
+  filter: grayscale(1) brightness(0.62);
+}
+
+/* The cool near-white collapses into the plain ink: a cool white is
+   still a white, and at 0.85–0.95 alpha it would sit above the cap —
+   second only to the orbs, which are meant to be alone up there. This
+   one line covers the native slider accents, the detune viz arcs and
+   the ALL/bus orb, since they all spend the same token. */
+body[data-theme="mono"] {
+  --ink-cool-rgb: var(--ink-rgb);
+
+  /* The legibility tier: above the chrome cap, below the orbs. For the
+     console's few load-bearing readouts — the frequency numbers and the
+     mute cells' voice numbers — which carry the row identity now that no
+     hue does. One value so they stay in step. */
+  --ink-hi-rgb: 215, 215, 215;
+}
+
+/* ── The selection corners ────────────────────────────────────────────
+   Mono used to push the brackets (and the orb ring that pairs with them)
+   above the ink cap on its own: --ink-max, 2px, full opacity, because
+   with no hue anywhere they were the only thing saying "this row is the
+   one you're editing".
+
+   2026-08-05 that treatment became the BASE for every theme (see
+   .sel-corners and .fsb-sel-ring), so there is nothing left to override
+   here — duo and classic now wear the same mark. */
+
+/* A muted voice's pan dot sits on an orb that has already dimmed itself
+   to 0.45, so the base 0.55 was compounding two dimmings and burying a
+   readout that's still true — a muted voice's pan is worth reading. Only
+   a small lift: it should stay quieter than a sounding one. */
+body[data-theme="mono"] .fsb-status.muted .fsb-status-arc-dot {
+  opacity: 0.72;
+}
+
+/* The frequency readouts. They're the densest information in the console
+   and the cap left them muddy, so they get their own level — above the
+   chrome, below the orbs.
+
+   Applied to EVERY cell, selected or not (Dan, 2026-08-05). Scoping this
+   to the unselected ones made selection change the text color, which
+   left the open cell reading as the dimmest in the row — the corners
+   already say which voice is open, and they say it far more loudly. The
+   text stays out of it. Mute state still dims on top of this. */
+body[data-theme="mono"] .console-note-freq {
+  color: rgba(var(--ink-hi-rgb), 0.95);
+}
+body[data-theme="mono"] .console-note-name {
+  color: rgba(var(--ink-hi-rgb), 0.62);
+}
+
+/* The wash itself now lives in the base rule — every theme got it. All
+   that's left here is the number: the base takes it from --cell-color,
+   which in mono is the chrome gray and would leave it dim. Lift it onto
+   the same legibility tier as the frequency readouts instead. */
+body[data-theme="mono"] .console-mute.on {
+  color: rgba(var(--ink-hi-rgb), 0.95);
+}

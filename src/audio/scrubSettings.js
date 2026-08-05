@@ -2,11 +2,15 @@
  * scrubSettings — orb-drag feel knobs. Two groups share this store (both are
  * per-device preferences, both are read every drag frame):
  *   scaleAmount / fineLimit  — the 'ios scaling' ramp (below).
- *   zoomOffset / zoomScale / zoomInvert — the 'zoom' mode curve, exposed as
+ *   zoomOffset / zoomScale / zoomInMax — the 'zoom' mode curve, exposed as
  *     the y = mx + b it literally is in log-span space (Dan, 2026-08-04):
  *     `zoomOffset` is b (the span change applied the instant a drag confirms,
  *     zeroed by default), `zoomScale` is m (how hard vertical travel leans
- *     the frame), `zoomInvert` swaps which direction zooms in.
+ *     the frame), `zoomInMax` the span multiplier at a full zoom-in pull.
+ *     The direction is layout-relative — moving the orb TOWARD the spectrum
+ *     zooms IN, away zooms out (Dan, 2026-08-05: was a `zoomInvert` toggle,
+ *     deleted; with orbs below the bar that's raise = in, and it reverses
+ *     with the classic orbs-above layout).
  *     FrequencySpectrumBar's zoomSpanMult consumes all three.
  *
  * The vertical axis of an orb drag no longer sets VOLUME (that moved to the
@@ -35,10 +39,31 @@
  *   zoomOffset     — b: log2 span offset applied at drag-confirm. 0 = the
  *                    view doesn't move when you grab; +0.14 is the 1.1x
  *                    "breathe" the mode shipped with.
- *   zoomScale      — m: multiplier on the pull→span exponent. 1 = the tuned
- *                    curve (3x out / ~1/3 in at full travel), 0 = flat (the
- *                    frame never leans), 2 = double the depth either way.
- *   zoomInvert     — flip the axis: raise to zoom IN, pull down to zoom out.
+ *   zoomScale      — m: multiplier on the pull→span exponent. STORED value:
+ *                    1 = the original tuned curve; the DEFAULT is 1.8 (Dan's
+ *                    2026-08-05 feel), and the Settings slider displays
+ *                    value/1.8 so the default reads 1.00×. 0 = flat (the
+ *                    frame never leans).
+ *   zoomInMax      — the span multiplier a full zoom-in pull reaches (the
+ *                    far end of the IN side, before the zoomScale exponent
+ *                    and the MIN_ZOOM_SPAN floor). 0.35 = the tuned ~1/3
+ *                    span; smaller = deeper microscope; 1 = zoom-in does
+ *                    nothing. Shown in Settings as the magnification
+ *                    (1/value)×.
+ *   zoomInTravel   — viewport px of travel TOWARD the spectrum over which
+ *                    the whole zoom-in happens; past it the frame holds at
+ *                    the end stop (Dan, 2026-08-05: was a hard-coded 15).
+ *                    Small = the zoom snaps in the first few px of the lift;
+ *                    large = a long gradual pull. Only the IN side reads it —
+ *                    the OUT side still normalizes against its own viewport
+ *                    headroom.
+ *   zoomMove       — flat multiplier on the horizontal TUNING gain in zoom
+ *                    mode, DISJOINT from the frame (Dan, 2026-08-05: zoom
+ *                    and movement were welded — the span was the only gain).
+ *                    STORED value: 1 = pure zoom-as-gain (span sets the
+ *                    speed); the DEFAULT is 3 (Dan's 2026-08-05 feel), and
+ *                    the Settings slider displays value/3 so the default
+ *                    reads 1.00×.
  */
 
 const KEYS = {
@@ -46,15 +71,19 @@ const KEYS = {
   fineLimit: 'scrubFineLimit',
   zoomOffset: 'zoomGrabOffset',
   zoomScale: 'zoomScaleAmount',
-  zoomInvert: 'zoomInvert',
+  zoomMove: 'zoomMoveScale',
+  zoomInMax: 'zoomInMax',
+  zoomInTravel: 'zoomInTravelPx',
 };
 
 export const SCRUB_DEFAULTS = {
   scaleAmount: 1.2,     // Dan's feel, 2026-07-21
   fineLimit: 0.05,
   zoomOffset: 0,        // Dan, 2026-08-04: no zoom jump on grab by default
-  zoomScale: 1,
-  zoomInvert: false,
+  zoomScale: 1.8,       // Dan's feel, 2026-08-05 (slider shows this as 1.00×)
+  zoomMove: 3,          // Dan's feel, 2026-08-05 (slider shows this as 1.00×)
+  zoomInMax: 0.35,      // the tuned ~1/3-span end stop, now a live setting
+  zoomInTravel: 15,     // px of lift the whole zoom-in spans (Dan, 2026-08-05)
 };
 
 export const SCALE_AMOUNT_MIN = 0;
@@ -64,14 +93,30 @@ export const FINE_LIMIT_MAX = 1;
 // Offset in log2 span units: ±1 is one octave of span (half / double frame).
 export const ZOOM_OFFSET_MIN = -1;
 export const ZOOM_OFFSET_MAX = 1;
+// Zoom-curve ranges sized around the NEW defaults so the normalized display
+// (value / default) runs 0–2× and 0.1–3× respectively — the defaults sit
+// mid-slider with room to fine-tune both ways.
 export const ZOOM_SCALE_MIN = 0;
-export const ZOOM_SCALE_MAX = 3;
+export const ZOOM_SCALE_MAX = 3.6;
+export const ZOOM_MOVE_MIN = 0.3;
+export const ZOOM_MOVE_MAX = 9;
+// Span multiplier at a full zoom-in pull: 0.05 = a 20× microscope (in
+// practice saturating on MIN_ZOOM_SPAN), 1 = zooming in does nothing.
+export const ZOOM_IN_MAX_MIN = 0.05;
+export const ZOOM_IN_MAX_MAX = 1;
+// Zoom-in throw in viewport px: 2 = the frame snaps the moment the orb
+// leaves the row, 600 = a long deliberate lift across most of a screen.
+export const ZOOM_IN_TRAVEL_MIN = 2;
+export const ZOOM_IN_TRAVEL_MAX = 600;
 
 const RANGES = {
   scaleAmount: [SCALE_AMOUNT_MIN, SCALE_AMOUNT_MAX],
   fineLimit: [FINE_LIMIT_MIN, FINE_LIMIT_MAX],
   zoomOffset: [ZOOM_OFFSET_MIN, ZOOM_OFFSET_MAX],
   zoomScale: [ZOOM_SCALE_MIN, ZOOM_SCALE_MAX],
+  zoomMove: [ZOOM_MOVE_MIN, ZOOM_MOVE_MAX],
+  zoomInMax: [ZOOM_IN_MAX_MIN, ZOOM_IN_MAX_MAX],
+  zoomInTravel: [ZOOM_IN_TRAVEL_MIN, ZOOM_IN_TRAVEL_MAX],
 };
 
 const _settings = { ...SCRUB_DEFAULTS };

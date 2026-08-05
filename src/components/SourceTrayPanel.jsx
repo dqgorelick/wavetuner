@@ -4,8 +4,11 @@ import { droneWave, keyboardWave } from '../audio/Wave';
 import { droneFold, keyboardFold, FOLD_TYPES } from '../audio/Fold';
 import { noise, NOISE_TYPES, NOISE_TYPE_IDS } from '../audio/Noise';
 import { droneEnvelope, keyboardEnvelope, computerKbdEnvelope } from '../audio/Envelope';
+import { SAT_STYLES } from '../audio/saturationCurve';
 import useBusGains, { BUS_MAX } from '../hooks/useBusGains';
 import WaveShapePreview from './WaveShapePreview';
+import NoiseSpectrumPreview from './NoiseSpectrumPreview';
+import SaturationPreview from './SaturationPreview';
 import EnvelopeControls from './EnvelopeControls';
 import CompactSlider from './CompactSlider';
 
@@ -25,17 +28,38 @@ import CompactSlider from './CompactSlider';
 //
 //   waves     level · envelope (drone | midi | kbd) with the ADSR graph
 //             beside its levers
-//   shape /   ONE merged "shape and fold" menu — both dials open it —
-//   fold      with a drone | midi/kbd pool selector over the wave
+//   shape /   ONE merged "wave shape and fold" menu — both dials open
+//   fold      it — with a drone | midi/kbd pool selector over the wave
 //             preview + shape/fold levers, and the fold-character
-//             radio spanning underneath
-//   noise     level (unlabeled) · color: <character> · route + viz
-//   saturate  level 0–100 · style: <character> · viz
+//             radio spanning underneath. The menu's TITLE names the
+//             section, so there's no heading over the picture.
+//   noise     spectrum chart · level · color: <character> · route + viz
+//   saturate  sine in/out · level 0–100 · style: <character> · viz
+//
+// The two picture-less menus got theirs 2026-08-05 (Dan), and with them
+// every menu now runs the same three-beat shape:
+//
+//   [ picture ]
+//   Level [ slider ] [ amount ]
+//   [ buttons ]
+//
+// Picture first, then the levers that move it — same order the two-up
+// menus read in (graph left, levers right). That's also why the level
+// rows wear the word "Level" again: they'd been unlabeled since 08-04,
+// which reads as a stray slider once a chart sits above it.
+
+// shape and fold are ONE menu wearing two dials. Anything that reasons
+// about which tray is open has to collapse them to a single identity —
+// the band (both dials light up, and they share one selection bracket)
+// and App's toggle (a click on EITHER dial closes the menu the other
+// one opened; without this, switching keys between them and closing
+// took two clicks).
+export const SHAPE_FOLD = new Set(['shape', 'fold']);
 
 const TRAY_TITLES = {
   waves: 'waves',
-  shape: 'shape and fold',
-  fold: 'shape and fold',
+  shape: 'wave shape and fold',
+  fold: 'wave shape and fold',
   noise: 'noise',
   saturate: 'saturate',
 };
@@ -47,24 +71,9 @@ const TRAY_TITLES = {
 export const DRIVE_MIN = 0.5;
 export const DRIVE_MAX = 3;
 
-// Saturation styles = the web curve set. Each gets the same one-line
-// character fragment the noise colors carry, shown inline after the
-// "style" label instead of as a paragraph underneath.
-//
-// TODO(unify): iOS ships a different vocabulary here — four named
-// styles (tape / smooth / crunch / fuzz, each with its own ADAA1 curve)
-// plus a separate `punish` macro that pushes extra level-compensated
-// drive on top, and its own enabled flag rather than an "off" style.
-// Web has five raw curves, no punish. Pick one model and port it both
-// ways: the style names + blurbs (SaturationStyle.swift), the punish
-// slider (SourceTray.saturateSections), and the amount/enabled split.
-const SAT_STYLES = [
-  { id: 'off', label: 'off', short: 'bypassed — the chain is out of the way' },
-  { id: 'tanh', label: 'soft', short: 'smooth symmetric squash' },
-  { id: 'cubic', label: 'cubic', short: 'gentle knee, warm odd harmonics' },
-  { id: 'sine', label: 'sine', short: 'sine transfer — folds over at the top' },
-  { id: 'hard', label: 'hard', short: 'brick-wall clip, buzzy edges' },
-];
+// SAT_STYLES (the style radios' labels + character fragments) now lives
+// beside the curve math in audio/saturationCurve.js, which is also what
+// SaturationPreview draws — one list, one shape.
 
 // Fold algorithms, in the menu's order with short names (the full
 // labels — "Buchla 259" — don't fit a three-up radio row at 310px).
@@ -173,15 +182,16 @@ function SourceTrayPanel({
           <span className="tune-slider-value">{Math.round(bus.waves * 100)}</span>
         </div>
 
-        <span className="settings-label tray-section-label">Envelope</span>
-        {/* The target radio rides UNDER the curve in the left column,
-            not above the whole split — the levers on the right start at
-            the section's top that way, and the four of them fit the
-            column without it scrolling (Dan, 2026-08-04). */}
+        {/* Both the heading and the target radio ride in the LEFT
+            column — above and under the curve — rather than spanning
+            the split: the levers on the right start at the section's
+            top that way, so attack sits level with "envelope" and the
+            four of them fit the column without it scrolling. */}
         <EnvelopeControls
           envelope={env.envelope}
           mode={env.mode}
           split
+          aboveGraph={<span className="settings-label tray-section-label">Envelope</span>}
           belowGraph={(
             <WordRadio
               options={ENV_POOLS}
@@ -198,7 +208,6 @@ function SourceTrayPanel({
     const { wave, fold } = pool;
     body = (
       <div className="settings-section">
-        <span className="settings-label tray-section-label">Wave shape</span>
         <WordRadio
           options={WAVE_POOLS}
           value={wavePool}
@@ -248,9 +257,12 @@ function SourceTrayPanel({
   } else if (kind === 'noise') {
     body = (
       <div className="settings-section">
-        {/* No "level" label — the slider IS the level, and the menu is
-            already named for the dial it belongs to (iOS parity). */}
-        <div className="tune-slider-row no-label">
+        {/* The color's tilt, always drawn at full level — see the note
+            in NoiseSpectrumPreview. The slider under it is the level. */}
+        <NoiseSpectrumPreview />
+
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Level</span>
           <input
             type="range"
             min="0"
@@ -314,7 +326,13 @@ function SourceTrayPanel({
     const style = SAT_STYLES.find((s) => s.id === saturationCurve) ?? SAT_STYLES[0];
     body = (
       <div className="settings-section">
-        <div className="tune-slider-row no-label">
+        {/* Unit sine in (ghost) → the same curve the worklet runs, out
+            (bright). Fixed reference, not the live mix: the point is the
+            difference between the styles as you click across them. */}
+        <SaturationPreview style={saturationCurve} drive={saturationDrive} />
+
+        <div className="tune-slider-row">
+          <span className="tune-slider-label">Level</span>
           <input
             type="range"
             min="0"

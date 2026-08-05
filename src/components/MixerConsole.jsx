@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import { FREQ_CEIL } from '../audio/freqRange';
 import frequencyManager from '../audio/FrequencyManager';
 import conductor from '../audio/GenerativeConductor';
 import { droneStereo } from '../audio/StereoMode';
@@ -39,7 +40,7 @@ const EDGE_INSET = 8;
 // stripGeometry() function — columns stretch to fill the row up to 1.35×
 // and page by whole columns (◀ ▶ in the LEVEL label slot) on overflow.
 
-const BUS_COLOR = 'rgba(255,255,255,0.55)';
+const BUS_COLOR = 'rgba(var(--ink-rgb),0.55)';
 
 const SpeakerIcon = ({ slashed }) => (
   <svg viewBox="0 0 24 24" className="button-icon" aria-hidden="true">
@@ -52,10 +53,12 @@ const SpeakerIcon = ({ slashed }) => (
 );
 
 // Corner-bracket selection marker (iOS SelectionCornersShape): four
-// sharp white L corners over the selected note cell.
+// sharp L corners over the selected note cell. Shared styling with the
+// source-knob band below (.sel-corners in App.css) — corners are placed
+// by class so a marker can draw a subset of them.
 const CornerMarker = ({ dimmed }) => (
-  <span className={`console-corners${dimmed ? ' dimmed' : ''}`} aria-hidden="true">
-    <i /><i /><i /><i />
+  <span className={`sel-corners console-corners${dimmed ? ' dimmed' : ''}`} aria-hidden="true">
+    <i className="c-tl" /><i className="c-tr" /><i className="c-bl" /><i className="c-br" />
   </span>
 );
 
@@ -389,7 +392,7 @@ function MixerConsole({
                 // clamp keeps a 20-lane pull from crossing zero, where the
                 // linear form would otherwise invert.
                 const hz = startHz * (1 + dxFrac * 0.05);
-                frequencyManager.setSlotHz(i, Math.max(0.1, Math.min(20000, hz)));
+                frequencyManager.setSlotHz(i, Math.max(0.1, Math.min(FREQ_CEIL, hz)));
               }}
               ariaLabel={`Voice ${i + 1} level`}
             />

@@ -27,6 +27,7 @@
  */
 
 import audioEngine from './AudioEngine';
+import { FREQ_CEIL } from './freqRange';
 import keyboardVoiceManager from './KeyboardVoiceManager';
 import {
   SUPPORTED_SYSTEMS,
@@ -280,7 +281,7 @@ class FrequencyManager {
     for (const n of arr) {
       if (!n || !Number.isFinite(n.hz) || !(n.hz > 0)) continue;
       out.push({
-        hz: Math.min(20000, n.hz / (divisor || 1)),
+        hz: Math.min(FREQ_CEIL, n.hz / (divisor || 1)),
         level: Number.isFinite(n.level) ? Math.max(0, Math.min(1, n.level)) : 0.5,
         source: n.source === 'kbd' ? 'kbd' : 'midi',
         slot: Number.isFinite(n.slot) ? n.slot : null,

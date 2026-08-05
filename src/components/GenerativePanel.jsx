@@ -61,7 +61,7 @@ function btn(active, disabled) {
     flex: 1,
     padding: '5px 6px',
     background: active ? '#3a6ea5' : '#2a2a30',
-    color: '#fff',
+    color: 'var(--ink)',
     border: '1px solid #555',
     borderRadius: 5,
     cursor: disabled ? 'default' : 'pointer',
@@ -129,7 +129,7 @@ function RangeSlider({ spec, lo, hi, onChange }) {
 
   return (
     <span ref={trackRef} style={{ flex: 1, position: 'relative', height: 16 }}>
-      <span style={{ position: 'absolute', top: 7, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.15)', borderRadius: 2 }} />
+      <span style={{ position: 'absolute', top: 7, left: 0, right: 0, height: 3, background: 'rgba(var(--ink-rgb),0.15)', borderRadius: 2 }} />
       {/* Grab strip: taller invisible hit area carrying the visible 3px fill. */}
       <span
         onPointerDown={dragBar}
@@ -198,7 +198,7 @@ function MoveRow({ mv, plan, now, liveCents }) {
           : `glide ${fmtS(mv.durMs)}`}
       </span>
       <span style={{ flex: '0 0 44px', textAlign: 'right' }}>@{fmtS(mv.departMs)}</span>
-      <span style={{ flex: 1, height: 4, background: 'rgba(255,255,255,0.12)', borderRadius: 2, overflow: 'hidden' }}>
+      <span style={{ flex: 1, height: 4, background: 'rgba(var(--ink-rgb),0.12)', borderRadius: 2, overflow: 'hidden' }}>
         <span style={{ display: 'block', height: '100%', width: `${Math.round(progress * 100)}%`, background: arrived || progress >= 1 ? '#6fbf73' : '#3a6ea5' }} />
       </span>
     </div>
@@ -319,7 +319,7 @@ export default function GenerativePanel() {
           })}
 
           {/* ── Rules — musical heuristics, slider = chance each applies ── */}
-          <div style={{ margin: '6px 0 3px', opacity: 0.6, borderTop: '1px solid rgba(255,255,255,0.12)', paddingTop: 5 }}>
+          <div style={{ margin: '6px 0 3px', opacity: 0.6, borderTop: '1px solid rgba(var(--ink-rgb),0.12)', paddingTop: 5 }}>
             rules <span style={{ opacity: 0.7 }}>· chance each applies per transition</span>
           </div>
           {schema.filter((s) => s.section === 'rules').map((s) => (
@@ -341,7 +341,7 @@ export default function GenerativePanel() {
       )}
 
       {/* ── The plan: what the conductor rolled, live progress while it runs ── */}
-      <div style={{ marginBottom: 6, padding: '6px 8px', background: 'rgba(255,255,255,0.05)', borderRadius: 6 }}>
+      <div style={{ marginBottom: 6, padding: '6px 8px', background: 'rgba(var(--ink-rgb),0.05)', borderRadius: 6 }}>
         {count === 0 && (
           <div style={{ color: '#e0b25a' }}>
             no save states — transitions travel between saves, so save at least
@@ -379,7 +379,7 @@ export default function GenerativePanel() {
             ))}
           </>
         )}
-        <div style={{ marginTop: 5, maxHeight: 84, overflow: 'auto', opacity: 0.75, borderTop: '1px solid rgba(255,255,255,0.12)', paddingTop: 4 }}>
+        <div style={{ marginTop: 5, maxHeight: 84, overflow: 'auto', opacity: 0.75, borderTop: '1px solid rgba(var(--ink-rgb),0.12)', paddingTop: 4 }}>
           {log.length === 0 && <div style={{ opacity: 0.5 }}>no events yet</div>}
           {[...log].reverse().map((e) => (
             <div key={e.n} style={{ whiteSpace: 'nowrap' }}>

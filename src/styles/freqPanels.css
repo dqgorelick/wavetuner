@@ -21,7 +21,7 @@
   padding: 8px 14px 12px;
   box-sizing: border-box;
   font-family: var(--font-narrow, inherit);
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   user-select: none;
   -webkit-user-select: none;
 }
@@ -53,13 +53,13 @@
   font-weight: 500;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   line-height: 1.1;
   white-space: nowrap;
   text-align: center;
 }
 .vp-caption .vp-caption-value {
-  color: rgba(255, 255, 255, 0.95);
+  color: rgba(var(--ink-rgb), 0.95);
   font-variant-numeric: tabular-nums;
 }
 
@@ -121,9 +121,9 @@
 .vp-chip {
   height: 36px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.9);
   font-family: inherit;
   font-size: 16px;
   font-weight: 600;
@@ -136,8 +136,8 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .vp-chip.active {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: color-mix(in srgb, var(--vp-color, #fff), transparent 40%);
+  background: rgba(var(--ink-rgb), 0.12);
+  border-color: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 40%);
 }
 
 /* Corner ✕ — bare glyph trailing-aligned (iOS closeCell). The slot is
@@ -156,12 +156,12 @@
   padding: 0 4px;
   border: none;
   background: none;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--ink-rgb), 0.7);
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
 }
-.vp-close:hover { color: rgba(255, 255, 255, 1); }
+.vp-close:hover { color: rgba(var(--ink-rgb), 1); }
 
 /* Body row: [lane 44][center flex][rail] */
 .vp-body {
@@ -204,8 +204,8 @@
 .ojog {
   display: flex;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   overflow: hidden;
 }
 .ojog.vertical { flex-direction: column; width: 38px; }
@@ -214,15 +214,15 @@
   flex: 1 1 0;
   border: none;
   background: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   font-family: inherit;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   padding: 0;
 }
-.ojog-half:disabled { color: rgba(255, 255, 255, 0.25); cursor: default; }
-.ojog-sep { background: rgba(255, 255, 255, 0.12); }
+.ojog-half:disabled { color: rgba(var(--ink-rgb), 0.25); cursor: default; }
+.ojog-sep { background: rgba(var(--ink-rgb), 0.12); }
 .ojog:not(.vertical) .ojog-sep { width: 1px; margin: 7px 0; }
 .ojog.vertical .ojog-sep { height: 1px; margin: 0 7px; }
 
@@ -241,7 +241,7 @@
   position: relative;
   height: 40px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   overflow: hidden;
   touch-action: none;
   cursor: ew-resize;
@@ -255,7 +255,7 @@
   transform: translateY(-50%);
   background-image: repeating-linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.28) 0 1px,
+    rgba(var(--ink-rgb), 0.28) 0 1px,
     transparent 1px 7px
   );
 }
@@ -267,7 +267,7 @@
   width: 1.5px;
   height: 20px;
   transform: translate(-50%, -50%);
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(var(--ink-rgb), 0.5);
 }
 .fscrub-thumb {
   position: absolute;
@@ -275,7 +275,7 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.9);
   transform: translateY(-50%);
   pointer-events: none;
 }
@@ -287,7 +287,7 @@
   width: 1.5px;
   height: 18px;
   transform: translate(-50%, -50%);
-  background: var(--vp-color, #fff);
+  background: var(--vp-color, var(--ink));
   pointer-events: none;
 }
 
@@ -296,7 +296,7 @@
   position: relative;
   height: 28px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   overflow: hidden;
   touch-action: none;
   cursor: ew-resize;
@@ -306,7 +306,7 @@
   left: 0;
   top: 0;
   bottom: 0;
-  background: rgba(255, 255, 255, 0.13);
+  background: rgba(var(--ink-rgb), 0.13);
 }
 .vp-detune-handle {
   position: absolute;
@@ -314,7 +314,7 @@
   bottom: 0;
   width: 32px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.85);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }
@@ -343,7 +343,7 @@
   padding: 0 8px;
   box-sizing: border-box;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   border: 1px solid transparent;
   align-items: center;
 }
@@ -352,7 +352,7 @@
   font-size: 20px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.95);
+  color: rgba(var(--ink-rgb), 0.95);
   white-space: nowrap;
   overflow: hidden;
   min-width: 4px;
@@ -360,29 +360,29 @@
 .ekp-caret {
   width: 2px;
   height: 18px;
-  background: var(--vp-color, #fff);
+  background: var(--vp-color, var(--ink));
   opacity: 0.8;
 }
 .ekp-unit {
   margin-left: auto;
   font-size: 11px;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--ink-rgb), 0.45);
 }
 .ekp-sidebtn {
   height: 38px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.85);
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
 .ekp-sidebtn.em {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(var(--ink-rgb), 0.12);
+  border-color: rgba(var(--ink-rgb), 0.25);
 }
 /* clear + "[ ] apply transpose" — bare underlined words below SET (the
    ALL panel's .ap-word grammar; the checkbox rides along un-underlined).
@@ -400,11 +400,11 @@
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.6px;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--ink-rgb), 0.75);
   white-space: nowrap;
   cursor: pointer;
 }
-.ekp-word.on { color: rgba(255, 255, 255, 0.9); }
+.ekp-word.on { color: rgba(var(--ink-rgb), 0.9); }
 .ekp-word-label {
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -414,17 +414,17 @@
   height: 14px;
   box-sizing: border-box;
   border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(var(--ink-rgb), 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 10px;
   line-height: 1;
-  color: rgba(255, 255, 255, 0.95);
+  color: rgba(var(--ink-rgb), 0.95);
 }
 .ekp-word.on .ekp-checkbox {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb), 0.14);
+  border-color: rgba(var(--ink-rgb), 0.55);
 }
 .ekp {
   flex: 1 1 0;
@@ -437,9 +437,9 @@
   flex: 1 1 0;
   height: 38px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.9);
   font-family: inherit;
   font-size: 17px;
   font-weight: 500;
@@ -474,9 +474,9 @@
   flex: 1 1 0;
   margin: 0 1px;
   border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.6);
   font-family: inherit;
   font-size: 11px;
   font-weight: 600;
@@ -487,29 +487,29 @@
   cursor: pointer;
 }
 .nkb-white.sel {
-  border: 1.5px solid var(--vp-color, #fff);
-  background: color-mix(in srgb, var(--vp-color, #fff), transparent 45%);
-  color: #fff;
+  border: 1.5px solid var(--vp-color, var(--ink));
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 45%);
+  color: var(--ink);
 }
 .nkb-white.sel.off {
-  background: color-mix(in srgb, var(--vp-color, #fff), transparent 78%);
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 78%);
 }
 .nkb-black {
   position: absolute;
   top: 0;
   height: 58%;
   border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(var(--ink-rgb), 0.35);
   background: rgb(10, 10, 10);
   cursor: pointer;
   padding: 0;
 }
 .nkb-black.sel {
-  border: 1.5px solid var(--vp-color, #fff);
-  background: color-mix(in srgb, var(--vp-color, #fff), transparent 30%);
+  border: 1.5px solid var(--vp-color, var(--ink));
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 30%);
 }
 .nkb-black.sel.off {
-  background: color-mix(in srgb, var(--vp-color, #fff), transparent 65%);
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 65%);
 }
 .nkb-cluster {
   flex: 0 0 auto;
@@ -524,21 +524,21 @@
   font-size: 22px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.9);
 }
 .nkb-chevrons { display: flex; gap: 2px; }
 .nkb-chev {
   width: 34px;
   height: 30px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.75);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.75);
   font-size: 13px;
   cursor: pointer;
   padding: 0;
 }
-.nkb-chev:disabled { color: rgba(255, 255, 255, 0.15); cursor: default; }
+.nkb-chev:disabled { color: rgba(var(--ink-rgb), 0.15); cursor: default; }
 
 /* Cents dial — bipolar ±50¢ rotary (iOS CentsDial). */
 .cents-dial {
@@ -558,10 +558,10 @@
   font-size: 9px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   pointer-events: none;
 }
-.cents-dial.tracking .cents-dial-label { color: rgba(255, 255, 255, 1); }
+.cents-dial.tracking .cents-dial-label { color: rgba(var(--ink-rgb), 1); }
 
 /* Tuning cluster (just / equal). */
 .nkb-tuning {
@@ -575,13 +575,13 @@
   gap: 4px;
   font-size: 10px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   text-transform: lowercase;
 }
 .nkb-tuning-info {
   border: none;
   background: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
   font-size: 11px;
   cursor: pointer;
   padding: 2px 6px;
@@ -589,9 +589,9 @@
 .nkb-tuning-tip {
   font-size: 11px;
   line-height: 1.5;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(var(--ink-rgb), 0.85);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 6px;
   padding: 8px 10px;
   white-space: pre-line;
@@ -601,25 +601,25 @@
   flex: 1 1 0;
   height: 32px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.6);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 0.6);
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
 .tuning-chip.active {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: color-mix(in srgb, var(--vp-color, #fff), transparent 40%);
-  color: color-mix(in srgb, var(--vp-color, #fff), transparent 5%);
+  background: rgba(var(--ink-rgb), 0.12);
+  border-color: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 40%);
+  color: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 5%);
 }
-.tuning-chip:disabled { color: rgba(255, 255, 255, 0.25); cursor: default; }
+.tuning-chip:disabled { color: rgba(var(--ink-rgb), 0.25); cursor: default; }
 .nkb-tuning-root {
   font-size: 10px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--ink-rgb), 0.5);
 }
 
 /* ── ALL panel ── */
@@ -638,9 +638,9 @@
   /* The head top-aligns its slots; centre the 30px pill against the
      36px mute cell beside it. */
   margin: 3px auto 0;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--ink-rgb), 0.08);
   overflow: hidden;
 }
 .ap-voices-chip {
@@ -649,16 +649,16 @@
   height: 100%;
   border: none;
   background: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--ink-rgb), 0.85);
   font-family: inherit;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   padding: 0;
 }
-.ap-voices-chip:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.ap-voices-chip:hover:not(:disabled) { background: rgba(var(--ink-rgb), 0.1); }
 .ap-voices-chip:disabled {
-  color: rgba(255, 255, 255, 0.2);
+  color: rgba(var(--ink-rgb), 0.2);
   cursor: default;
 }
 .ap-voices-label {
@@ -668,17 +668,17 @@
   justify-content: center;
   padding: 0 12px;
   /* Segment seams — the pill's own border draws the outside. */
-  border-left: 1px solid rgba(255, 255, 255, 0.2);
-  border-right: 1px solid rgba(255, 255, 255, 0.2);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-right: 1px solid rgba(var(--ink-rgb), 0.2);
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.9);
   white-space: nowrap;
 }
 .ap-voices-label em {
   font-style: normal;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   /* The label is a flex row, so the literal space in " VOICES" is
      trimmed off the head of the flex item — draw the gap ourselves or
      the count runs straight into the word ("8VOICES"). */
@@ -708,14 +708,14 @@
   height: 36px;
   border: none;
   background: none;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--ink-rgb), 0.55);
   font-family: inherit;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   padding: 0;
 }
-.ap-bus-toggle:hover { color: rgba(255, 255, 255, 0.95); }
+.ap-bus-toggle:hover { color: rgba(var(--ink-rgb), 0.95); }
 .ap-transpose-row {
   display: flex;
   align-items: flex-end;
@@ -732,7 +732,7 @@
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.4px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--ink-rgb), 0.4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -741,13 +741,13 @@
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.9);
 }
 .ap-dial {
   position: relative;
   height: 32px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   overflow: hidden;
   touch-action: none;
   cursor: ew-resize;
@@ -766,13 +766,13 @@
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.6px;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(var(--ink-rgb), 0.9);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
   padding: 0;
 }
-.ap-word:disabled { color: rgba(255, 255, 255, 0.3); cursor: default; }
+.ap-word:disabled { color: rgba(var(--ink-rgb), 0.3); cursor: default; }
 .ap-word.inline { flex: 0 0 auto; padding: 0 4px; }
 .ap-detune {
   display: flex;

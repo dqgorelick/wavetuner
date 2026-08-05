@@ -8,6 +8,7 @@ import {
   getShapeTable, getHilbertTables, wtLookup, wtLookupRad,
 } from '../audio/visualShape';
 import { updateAudioFeatures } from '../audio/AudioFeatures';
+import { dprCap, maxFrameMs, onRenderTierChange } from '../visuals/renderTier';
 import palette from '../theme/palette';
 
 // Synth-buffer length policy for the XY / Hilbert / face scopes.
@@ -1716,16 +1717,16 @@ export default function Oscilloscope({
     // Resize handler. Sizes the backing store at devicePixelRatio so the
     // render stays crisp on HiDPI / Retina displays, while keeping the CSS
     // size and all drawing coordinates in CSS pixels via setTransform.
-    // DPR is capped at 2 — matching the iOS scope's "medium" render scale,
-    // which reads as sharp on 3× phones for roughly half the pixel work.
-    // At DPR 3 the full-viewport backing store is ~3 Mpx and every trail
-    // fill is a read-modify-write over all of it; the cap cuts fill and
-    // stroke rasterization cost by ~56% with no visible quality loss.
+    // DPR is capped by the active render tier (2 on 'pretty', 1.5 on
+    // 'performance' — see renderTier.js). At a phone's native DPR 3 the
+    // full-viewport backing store is ~3 Mpx and every trail fill is a
+    // read-modify-write over all of it; the cap cuts fill and stroke
+    // rasterization cost proportionally with no visible quality loss.
     const resizeCanvas = () => {
       readConsoleH();
       const cssWidth = window.innerWidth;
       const cssHeight = window.innerHeight;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = dprCap();
       canvas.width = Math.round(cssWidth * dpr);
       canvas.height = Math.round(cssHeight * dpr);
       canvas.style.width = cssWidth + 'px';
@@ -1741,7 +1742,10 @@ export default function Oscilloscope({
 
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
-    
+    // A tier change moves the DPR ceiling, so the backing store has to be
+    // re-sized for it even though nothing about the layout moved.
+    const offTier = onRenderTierChange(resizeCanvas);
+
     // Pre-calculate constants for color cycling
     const TWO_PI = 2 * Math.PI;
     const PHASE_OFFSET = TWO_PI / 3;
@@ -1755,19 +1759,19 @@ export default function Oscilloscope({
     // Animation loop - runs independently of React
     // Matches original: iterates all points, no sampling
     //
-    // Frame-rate cap: 60 fps, matching the iOS scope's default
-    // scopeMaxFPS. On ProMotion displays rAF fires at 120 Hz, which
+    // Frame-rate cap from the active render tier: 60 fps on 'pretty'
+    // (matching the iOS scope's default scopeMaxFPS), 30 fps on
+    // 'performance'. On ProMotion displays rAF fires at 120 Hz, which
     // doubles every per-frame cost (analyser reads, FFT feature walk,
     // full-viewport fills) for no perceptible gain — a major phone-heat
-    // contributor. The 1.5 ms tolerance keeps genuine 60 Hz displays
-    // from dropping frames to timer jitter.
-    const FRAME_MIN_MS = 1000 / 60 - 1.5;
+    // contributor. Read live, so flipping the tier in settings applies
+    // without remounting the scope.
     let lastFrameTs = 0;
     const drawScope = (ts) => {
       animationFrameRef.current = requestAnimationFrame(drawScope);
 
       const now = typeof ts === 'number' ? ts : performance.now();
-      if (now - lastFrameTs < FRAME_MIN_MS) return;
+      if (now - lastFrameTs < maxFrameMs()) return;
       lastFrameTs = now;
 
       if (!audioEngine.initialized) return;
@@ -1797,10 +1801,14 @@ export default function Oscilloscope({
       // Only the phase-synthesizing modes consume any of this: the
       // standing wave (1), the face mouth (2), and the Hilbert scope (3).
       // The plain Lissajous (0) reads the analyzer directly and ignores
-      // phase entirely, so performance mode skips all of it there. Pretty
-      // mode keeps the original always-on behavior so the look can't shift.
-      // The timeline (4) reads frequencies only, never phase, so it skips
-      // all of this regardless of tier.
+      // phase entirely, and the timeline (4) reads frequencies only — so
+      // both skip it in EVERY tier. (Pretty mode used to keep the work
+      // running on mode 0 out of caution about the look shifting. It can't:
+      // nothing on that path reads phases[] except the paused fairy, which
+      // is gated on tapeEngaged just below and keeps its accumulators. The
+      // LSQ is the single most expensive thing on the audio thread's
+      // shadow — 2 channels x 8192 samples x 2 columns per voice, at half
+      // frame rate — and mode 0 is the default visual.)
       // Tape transport: while paused / spinning back up the fairy needs
       // the accumulators advancing even in tiers that would normally
       // skip them (perf-mode Lissajous), and calibration gated OFF —
@@ -1810,7 +1818,7 @@ export default function Oscilloscope({
       // under the resume fade.
       const tapeEngaged = audioEngine.paused
         || audioEngine.getTapeMorph() > FAIRY_HANDOFF_EPS;
-      if ((!isTimeline && (!perf || vizMode !== 0)) || tapeEngaged) {
+      if ((!isTimeline && vizMode !== 0) || tapeEngaged) {
         audioEngine.updatePhases();
         keyboardVoiceManager.updatePhases();
         calibrateTickRef.current = (calibrateTickRef.current + 1) & 1;
@@ -2352,6 +2360,7 @@ export default function Oscilloscope({
     // Cleanup
     return () => {
       window.removeEventListener('resize', resizeCanvas);
+      offTier();
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }

@@ -1,5 +1,6 @@
 import { forwardRef, useEffect } from 'react';
 import { setVisualResolution } from '../visuals/backend';
+import { dprCap, onRenderTierChange } from '../visuals/renderTier';
 
 /**
  * The canvas hydra-synth renders into. Mounted as a sibling of the
@@ -21,11 +22,12 @@ const HydraOverlay = forwardRef(function HydraOverlay({ visible }, ref) {
       const parent = canvas.parentElement;
       if (!parent) return;
       const rect = parent.getBoundingClientRect();
-      // Cap DPR at 2 (mirrors the scope canvas + the iOS "medium" render
-      // scale). The visuals are soft feedback/chromatic effects, so the
-      // extra pixels of DPR 3 are invisible — but they cost ~2.25× the
-      // fragment work AND ~2.25× the per-frame s0 texture upload.
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // DPR ceiling from the active render tier (2 on 'pretty', 1.5 on
+      // 'performance' — see renderTier.js). The visuals are soft feedback/
+      // chromatic effects, so the extra pixels of a phone's native DPR 3
+      // are invisible, but they cost proportionally in fragment work AND
+      // in the per-frame s0 texture upload.
+      const dpr = dprCap();
       // Backing-store size at DPR, CSS-displayed at the rect size.
       const w = Math.max(1, Math.round(rect.width * dpr));
       const h = Math.max(1, Math.round(rect.height * dpr));
@@ -44,9 +46,13 @@ const HydraOverlay = forwardRef(function HydraOverlay({ visible }, ref) {
     const ro = new ResizeObserver(sizeToParent);
     if (canvas.parentElement) ro.observe(canvas.parentElement);
     window.addEventListener('resize', sizeToParent);
+    // A tier change moves the DPR ceiling with no layout change behind it,
+    // so re-size (and rebuild the render targets) on that too.
+    const offTier = onRenderTierChange(sizeToParent);
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', sizeToParent);
+      offTier();
     };
   }, [ref]);
 

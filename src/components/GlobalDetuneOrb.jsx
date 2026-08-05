@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import audioEngine from '../audio/AudioEngine';
+import { FREQ_CEIL } from '../audio/freqRange';
 
 // Global "all" orb: 2D drag handle. X shifts all oscillator frequencies
 // additively (preserves inter-osc beat frequencies). Y shifts all oscillator
@@ -75,7 +76,7 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb({ onDragStateChange }) {
     const dx = clientX - startRef.current.x;
     const dy = clientY - startRef.current.y;
 
-    // Hz shift: clamp to keep every osc in [0.001, 20000]. Clamping the shift
+    // Hz shift: clamp to keep every osc in [0.001, FREQ_CEIL]. Clamping the shift
     // (not per-osc) preserves the beats — otherwise one osc would stall at the
     // floor while the rest kept moving.
     let fMin = fs[0], fMax = fs[0];
@@ -83,7 +84,7 @@ const GlobalDetuneOrb = memo(function GlobalDetuneOrb({ onDragStateChange }) {
       if (fs[i] < fMin) fMin = fs[i];
       if (fs[i] > fMax) fMax = fs[i];
     }
-    const hzShift = Math.max(0.001 - fMin, Math.min(20000 - fMax, dx * hzPerPx));
+    const hzShift = Math.max(0.001 - fMin, Math.min(FREQ_CEIL - fMax, dx * hzPerPx));
 
     // Volume shift on 0-100 scale. Dragging up (dy < 0) raises volumes.
     let vMin = vs[0], vMax = vs[0];

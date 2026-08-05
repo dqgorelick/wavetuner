@@ -103,7 +103,7 @@ function CentsDial({ cents, midi, onCommit }) {
         {/* 270° track lane */}
         <circle
           cx={c} cy={c} r={r}
-          fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth="3"
+          fill="none" style={{ stroke: 'rgba(var(--ink-rgb), 0.10)' }} strokeWidth="3"
           strokeLinecap="round" pathLength="100"
           strokeDasharray="75 25"
           transform={`rotate(135 ${c} ${c})`}
@@ -112,13 +112,13 @@ function CentsDial({ cents, midi, onCommit }) {
         {Math.abs(frac) > 0.005 && (
           <circle
             cx={c} cy={c} r={r}
-            fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="3"
+            fill="none" style={{ stroke: 'rgba(var(--ink-rgb), 0.7)' }} strokeWidth="3"
             strokeLinecap="round" pathLength="100"
             strokeDasharray={`${arcLen} ${100 - arcLen}`}
             transform={`rotate(${arcRotation} ${c} ${c})`}
           />
         )}
-        <circle cx={orbX} cy={orbY} r="3.5" fill="rgba(255,255,255,0.95)" />
+        <circle cx={orbX} cy={orbY} r="3.5" style={{ fill: 'rgba(var(--ink-rgb), 0.95)' }} />
       </svg>
       <span className="cents-dial-label">{label}</span>
     </div>

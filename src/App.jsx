@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import audioEngine from './audio/AudioEngine';
 import tuning from './audio/Tuning';
 import keyboardVoiceManager from './audio/KeyboardVoiceManager';
@@ -11,7 +11,7 @@ import { getSystem } from './audio/jiRatios';
 import midiInput from './audio/MidiInput';
 import midiOutput from './audio/MidiOutput';
 import midiCCMap from './audio/MidiCCMap';
-import palette from './theme/palette';
+import palette, { isValidTheme } from './theme/palette';
 import Oscilloscope from './components/Oscilloscope';
 import OscillatorControls from './components/OscillatorControls';
 import TransportRail from './components/TransportRail';
@@ -25,12 +25,13 @@ import KeyboardTray from './components/KeyboardTray';
 import Mixer from './components/Mixer';
 import FreqPanel from './components/FreqPanel';
 import AllPanel from './components/AllPanel';
-import SourceTrayPanel from './components/SourceTrayPanel';
+import SourceTrayPanel, { SHAPE_FOLD } from './components/SourceTrayPanel';
 import MidiPanel from './components/MidiPanel';
 import PatchesPanel from './components/PatchesPanel';
 import HydraPanel from './components/HydraPanel';
 import HydraOverlay from './components/HydraOverlay';
 import { startVisuals, stopVisuals, selectSketch, setVfxParams, setChromaParams, consumesAudioFeatures, DEFAULT_SKETCH_ID } from './visuals/backend';
+import { setRenderTier, prefersPerformanceTier } from './visuals/renderTier';
 import { getAutosave, setAutosave } from './patches/storage';
 import { applyPatch, applyPatchSmooth, preInitApplyPatch, applyPatchRoutingPostInit, capturePatch } from './patches/apply';
 import './App.css';
@@ -101,7 +102,9 @@ function getInitialStateFromURL() {
   const kbdDetuneHz = parseFloatInRange(params.get('kDet'), 0, 10);
   const kbdCurve = parseCurve(params.get('kCurve'));
   const tRaw = (params.get('t') || '').toLowerCase();
-  const theme = tRaw === 'classic' || tRaw === 'duo' ? tRaw : null;
+  // Validated against the palette's own set rather than a literal list
+  // here, so adding a theme doesn't need a matching edit in this parser.
+  const theme = isValidTheme(tRaw) ? tRaw : null;
   // Visual-effect sliders (Feedback scale / blend). null when absent
   // so defaults apply.
   const vfxScale = parseFloatInRange(params.get('vs'), 0, 3);
@@ -162,6 +165,16 @@ function lsStr(key, allowed, fallback) {
   } catch { /* ignore */ }
   return fallback;
 }
+// Resolved before the first render — the scope and overlay canvases size
+// their backing stores off the tier's DPR cap on mount, so the tier has to
+// be published to renderTier BEFORE React gets there, not from an effect.
+const INITIAL_VIZ_QUALITY = lsStr(
+  'vizQuality',
+  ['pretty', 'performance', 'off'],
+  prefersPerformanceTier() ? 'performance' : 'pretty',
+);
+setRenderTier(INITIAL_VIZ_QUALITY);
+
 function lsSet(key, value) {
   try { localStorage.setItem(key, String(value)); } catch { /* ignore */ }
 }
@@ -335,7 +348,12 @@ function App() {
     setSourceTray(null);
   }, []);
   const toggleSourceTray = useCallback((kind) => {
-    setSourceTray((cur) => (cur === kind ? null : kind));
+    // Not a bare cur === kind: shape and fold are two dials on ONE menu,
+    // so a tap on EITHER closes it. Comparing by kind alone left the menu
+    // open when you crossed between them (it just re-keyed to the other
+    // dial), which made closing take two clicks.
+    const same = (a, b) => a === b || (SHAPE_FOLD.has(a) && SHAPE_FOLD.has(b));
+    setSourceTray((cur) => (same(cur, kind) ? null : kind));
     setFreqPanelSel(null);
     setSideMenu(null);
   }, []);
@@ -491,22 +509,24 @@ function App() {
   // 3 hilbert, 5 inverse face (wave eyes + XY mouth).
   const [vizMode, setVizMode] = useState(() => lsNum('vizMode', 0));
   // Visualizer quality / performance tier:
-  //   'pretty'      — full quality, every per-frame feature runs (default).
-  //   'performance' — skips per-frame work the active mode doesn't consume
-  //                   (phase calibration on the audio-only Lissajous, audio-
-  //                   feature FFT when nothing's reading it) and halves the
-  //                   feature update rate. Visually ~identical, much cheaper.
+  //   'pretty'      — full quality: DPR-2 backing stores, 60 fps loops,
+  //                   every per-frame feature runs. Default on desktop.
+  //   'performance' — DPR-1.5 backing stores and 30 fps loops (see
+  //                   renderTier.js), plus it halves the audio-feature
+  //                   update rate. Roughly a third of the per-frame fill /
+  //                   stroke / texture-upload / fragment work. DEFAULT ON
+  //                   PHONE-SIZED VIEWPORTS since 2026-08-05 — the two
+  //                   full-viewport pipelines at DPR 2 x 60 fps were the
+  //                   largest remaining source of phone heat once the
+  //                   consonance field stopped recomputing at rest.
   //   'off'         — falls back to the lightweight Timeline visualizer
-  //                   (vizMode 4) instead of blanking the scope.
-  const [vizQuality, setVizQuality] = useState(() => {
-    try {
-      const v = localStorage.getItem('vizQuality');
-      if (v === 'pretty' || v === 'performance' || v === 'off') return v;
-    } catch { /* ignore */ }
-    return 'pretty';
-  });
+  //                   (vizMode 4) instead of blanking the scope; same
+  //                   pixel/frame caps as 'performance'.
+  const [vizQuality, setVizQuality] = useState(INITIAL_VIZ_QUALITY);
   useEffect(() => {
     try { localStorage.setItem('vizQuality', vizQuality); } catch { /* ignore */ }
+    // Publish to the render loops + canvas sizers, which read it live.
+    setRenderTier(vizQuality);
   }, [vizQuality]);
   // Visualizer-mode dropdown: the trigger button (active mode's symbol)
   // toggles a vertical fan of the remaining modes below it. Closes on
@@ -639,6 +659,40 @@ function App() {
   }, []);
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false);
   const [activeOscs, setActiveOscs] = useState(() => new Set());
+  // Grabbing an orb retargets the open frequency panel (Dan, 2026-08-05):
+  // reach for a voice on the bar and the editor follows you to it, instead
+  // of having to go back to the console and pick the lane.
+  //
+  // Two deliberate limits. It only runs where the panel sits BESIDE the
+  // console (>768px, the same breakpoint the CSS uses) — on phones the
+  // panel is a sheet covering the console, so swapping its contents under
+  // a finger that's mid-drag would rewrite what the user is reaching
+  // past. And it only ever RETARGETS a per-voice panel that's already
+  // open; it never opens one, so touching an orb with everything closed
+  // still does nothing but move the orb.
+  // Decided in the EVENT rather than an effect watching activeOscs: a
+  // grab is something that happens, not a state to reconcile toward, and
+  // an effect here would be a setState cascade off its own render.
+  // Mirrors the set in a ref so the bar's updater form still works.
+  const activeRef = useRef(activeOscs);
+  const handleActiveChange = useCallback((updater) => {
+    const prev = activeRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    if (next === prev) return;        // the bar's own no-change bail-out
+    activeRef.current = next;
+    setActiveOscs(next);
+    if (!window.matchMedia('(min-width: 769px)').matches) return;
+    // Newly-grabbed only, not merely active: a multi-orb grab that still
+    // holds the panel's current subject shouldn't drag the panel off it.
+    // With several arriving at once this takes the last in iteration
+    // order — arbitrary, but a multi-grab has no one "most recent" orb.
+    let newest = null;
+    for (const i of next) if (!prev.has(i)) newest = i;
+    if (newest == null) return;
+    // Functional form so the "only retarget an already-open per-voice
+    // panel" rule reads the live value without capturing it in deps.
+    setFreqPanelSel((cur) => (typeof cur === 'number' && cur !== newest ? newest : cur));
+  }, []);
   // Set of oscillator indices currently being fine-tuned via horizontal drag
   // on a volume fader. Used to light up the matching spectrum-bar orb so the
   // user sees which osc they're affecting.
@@ -940,13 +994,16 @@ function App() {
     });
   }, [tuneGlideSec, scaleSize]);
 
-  // Mobile caps the oscillator count at 4 — but ONLY on iOS, where the
-  // Web Audio backend is the bottleneck (Safari struggles with 10+ live
-  // oscillators on iPhone). Android and desktop touchscreens get the
-  // full 12. The matchMedia listener triggers if the viewport crosses
-  // the breakpoint at runtime; the iOS check is a one-time UA sniff
-  // (covers iPhone/iPod, iPad pre-iPadOS-13, and modern iPads which
-  // report as MacIntel but expose maxTouchPoints > 1).
+  // Every platform gets the full 12 oscillators (Dan, 2026-08-05).
+  // iOS Safari used to be capped at 4 on the theory that Web Audio was the
+  // bottleneck; profiling the phone-heat complaint found the opposite — the
+  // native oscillator nodes are nearly free and the per-voice cost that
+  // actually scaled was the consonance field's O(voices²) partial sweep on
+  // the MAIN thread, now windowed and idle-skipped (see
+  // dissonanceModel.probeDissonance / FrequencySpectrumBar's _dissSettled).
+  // A resting 12-voice chord is cheaper after that work than a 4-voice one
+  // was before it. The matchMedia listener still tracks the breakpoint for
+  // the layout decisions below.
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
   );
@@ -956,14 +1013,8 @@ function App() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
-  const isIOS = useMemo(() => {
-    if (typeof navigator === 'undefined') return false;
-    const ua = navigator.userAgent || '';
-    if (/iPad|iPhone|iPod/.test(ua)) return true;
-    return navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1;
-  }, []);
-  const maxOscillators = (isMobile && isIOS) ? 4 : 12;
-  
+  const maxOscillators = 12;
+
   const initializedRef = useRef(false);
   
   // Apply initial URL settings to audio engine before initialization (runs once)
@@ -978,9 +1029,15 @@ function App() {
     }
   }, []);
   
-  // Mute audio on page leave/refresh and show confirmation dialog
+  // Mute audio on page leave/refresh.
+  //
+  // No "Leave site?" confirmation (removed 2026-08-05, Dan): nothing is
+  // at risk on the way out — the autosave slot below writes every second
+  // and handleStart restores from it — so the prompt only stood between
+  // the user and the close button. It also blocked the whole tab
+  // whenever a headless/automated run closed the page.
   useEffect(() => {
-    const handleBeforeUnload = (e) => {
+    const handleBeforeUnload = () => {
       // Immediately mute and suspend to prevent audio artifacts
       if (audioEngine.audioContext && audioEngine.masterGainNode) {
         try {
@@ -1000,17 +1057,8 @@ function App() {
           // Ignore errors during cleanup
         }
       }
-      
-      // Show confirmation dialog if audio is playing
-      if (audioEngine.initialized && !audioEngine.paused) {
-        // Standard way to trigger browser's "Leave site?" dialog
-        e.preventDefault();
-        // For older browsers
-        e.returnValue = 'Audio is playing. Are you sure you want to leave?';
-        return e.returnValue;
-      }
     };
-    
+
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
@@ -1306,15 +1354,9 @@ function App() {
     setRoutingMap(audioEngine.getRoutingMap());
   }, [maxOscillators]);
 
-  // When the viewport drops to mobile width and we're over the mobile cap,
-  // trim the highest-index oscillators down to 4. AudioEngine.setOscillatorCount
-  // already preserves removed-osc state on its stack, so resizing back to
-  // desktop and re-adding restores their freq/volume.
-  useEffect(() => {
-    if (isMobile && oscillatorCount > maxOscillators) {
-      handleOscillatorCountChange(maxOscillators);
-    }
-  }, [isMobile, oscillatorCount, maxOscillators, handleOscillatorCountChange]);
+  // (A resize-to-mobile trim down to the old 4-voice cap used to live here.
+  // maxOscillators is 12 everywhere now, and handleOscillatorCountChange
+  // already clamps to it, so crossing the breakpoint changes nothing.)
 
   // Mobile drops three surfaces entirely (Dan, 2026-08-04): the on-screen
   // KEYBOARD and the MIXER menu (their toggles come off the right stack)
@@ -1467,7 +1509,7 @@ function App() {
             oscillatorCount={oscillatorCount}
             fineTuneEnabled={fineTuneEnabled}
             orbDragMode={orbDragMode}
-            onActiveChange={setActiveOscs}
+            onActiveChange={handleActiveChange}
             extraActive={fineTuningOscs}
             suppressAutoUnmute={isKbdTrayOpen}
             onOscillatorCountChange={handleOscillatorCountChange}

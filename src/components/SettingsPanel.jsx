@@ -19,6 +19,13 @@ import {
   ZOOM_OFFSET_MAX,
   ZOOM_SCALE_MIN,
   ZOOM_SCALE_MAX,
+  ZOOM_MOVE_MIN,
+  ZOOM_MOVE_MAX,
+  ZOOM_IN_MAX_MIN,
+  ZOOM_IN_MAX_MAX,
+  ZOOM_IN_TRAVEL_MIN,
+  ZOOM_IN_TRAVEL_MAX,
+  SCRUB_DEFAULTS,
 } from '../audio/scrubSettings';
 
 /**
@@ -416,7 +423,7 @@ export default function SettingsPanel({
             className={`settings-toggle-btn ${orbDragMode === 'zoom' ? 'on' : 'off'}`}
             onClick={() => onOrbDragModeChange?.('zoom')}
             aria-pressed={orbDragMode === 'zoom'}
-            title="Zoom: the view is the speed dial — raising the pointer zooms out for coarse sweeps, pulling below zooms in around the voice for fine tuning. The ruler's tick spacing shows the current rate. Sliders below set the jump at the grab, the slope, and the direction."
+            title="Zoom: the view is the speed dial — moving the orb toward the spectrum zooms in around the voice for fine tuning (full zoom within the first 15px, held from there), moving away zooms out for coarse sweeps. The ruler's tick spacing shows the current rate. Sliders below set the jump at the grab, the slope, the zoom-in depth, and the movement speed."
           >
             zoom
           </button>
@@ -479,9 +486,13 @@ export default function SettingsPanel({
                 {scrub.zoomOffset === 0 ? 'none' : `${(2 ** scrub.zoomOffset).toFixed(2)}×`}
               </span>
             </div>
+            {/* Zoom amount + move speed read out NORMALIZED to the tuned
+                defaults (value / default) so the shipped feel is "1.00×" and
+                fine-tuning reads as a factor of it (Dan, 2026-08-05). The
+                stored values stay in curve units — see scrubSettings. */}
             <div
               className="tune-slider-row"
-              title="How hard vertical travel leans the frame — the slope. 1× is the tuned curve (3× wider at a full pull one way, ~1/3 the other), 0 is flat (the view never moves), 3× exaggerates both ends."
+              title="How hard vertical travel leans the frame — the slope. 1× is the tuned curve, 0 is flat (the view never moves), 2× doubles the lean."
             >
               <span className="tune-slider-label">Zoom amount</span>
               <input
@@ -493,27 +504,71 @@ export default function SettingsPanel({
                 onChange={(e) => updateScrub('zoomScale', parseFloat(e.target.value))}
                 className="tune-slider"
               />
-              <span className="tune-slider-value">{scrub.zoomScale.toFixed(2)}×</span>
+              <span className="tune-slider-value">
+                {(scrub.zoomScale / SCRUB_DEFAULTS.zoomScale).toFixed(2)}×
+              </span>
             </div>
-            <div className="settings-toggle-row">
-              <button
-                type="button"
-                className={`settings-toggle-btn ${!scrub.zoomInvert ? 'on' : 'off'}`}
-                onClick={() => updateScrub('zoomInvert', false)}
-                aria-pressed={!scrub.zoomInvert}
-                title="Raise the pointer to zoom OUT for coarse sweeps, pull it down to zoom in around the voice."
-              >
-                up = out
-              </button>
-              <button
-                type="button"
-                className={`settings-toggle-btn ${scrub.zoomInvert ? 'on' : 'off'}`}
-                onClick={() => updateScrub('zoomInvert', true)}
-                aria-pressed={!!scrub.zoomInvert}
-                title="Flipped: raise the pointer to zoom IN around the voice, pull it down to zoom out."
-              >
-                up = in
-              </button>
+            {/* The stored value is the span MULTIPLIER at full pull (0.35 =
+                ~1/3 span); the slider runs in log2(magnification) so right =
+                deeper and the useful 2–4× band isn't crammed at one end.
+                Readout = the magnification itself. */}
+            <div
+              className="tune-slider-row"
+              title="How deep a full pull toward the spectrum zooms — the fine zone's end stop, reached within the zoom-in travel below and held from there. 1× disables the zoom-in; deeper crops tighter around the voice (floored at ~2.4 semitones of span)."
+            >
+              <span className="tune-slider-label">Zoom in max</span>
+              <input
+                type="range"
+                min={Math.log2(1 / ZOOM_IN_MAX_MAX)}
+                max={Math.log2(1 / ZOOM_IN_MAX_MIN)}
+                step="0.05"
+                value={Math.log2(1 / scrub.zoomInMax)}
+                onChange={(e) => updateScrub('zoomInMax', 2 ** -parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">
+                {(1 / scrub.zoomInMax).toFixed(1)}×
+              </span>
+            </div>
+            {/* The IN side's throw: how many px of lift the whole zoom-in
+                spans before it holds at the end stop. Log slider so the
+                short, snappy end (a handful of px) isn't crushed against the
+                left while the slow end still reaches most of a screen. */}
+            <div
+              className="tune-slider-row"
+              title="How far the orb travels toward the spectrum for the full zoom-in — the whole zoom happens inside this distance and holds past it. Short = the frame snaps in as soon as you lift; long = a gradual pull."
+            >
+              <span className="tune-slider-label">Zoom in travel</span>
+              <input
+                type="range"
+                min={Math.log2(ZOOM_IN_TRAVEL_MIN)}
+                max={Math.log2(ZOOM_IN_TRAVEL_MAX)}
+                step="0.02"
+                value={Math.log2(scrub.zoomInTravel)}
+                onChange={(e) => updateScrub('zoomInTravel', 2 ** parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">
+                {Math.round(scrub.zoomInTravel)}px
+              </span>
+            </div>
+            <div
+              className="tune-slider-row"
+              title="How fast a horizontal drag actually tunes, independent of the view — a flat multiplier on the movement. 1× is the tuned speed; below slows tuning under the same frame, above speeds it up."
+            >
+              <span className="tune-slider-label">Move speed</span>
+              <input
+                type="range"
+                min={ZOOM_MOVE_MIN}
+                max={ZOOM_MOVE_MAX}
+                step="0.05"
+                value={scrub.zoomMove}
+                onChange={(e) => updateScrub('zoomMove', parseFloat(e.target.value))}
+                className="tune-slider"
+              />
+              <span className="tune-slider-value">
+                {(scrub.zoomMove / SCRUB_DEFAULTS.zoomMove).toFixed(2)}×
+              </span>
             </div>
           </>
         )}
@@ -539,6 +594,15 @@ export default function SettingsPanel({
             title="Original 12-color rainbow palette"
           >
             classic
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${theme === 'mono' ? 'on' : 'off'}`}
+            onClick={() => onThemeChange?.('mono')}
+            aria-pressed={theme === 'mono'}
+            title="Minimal: the orbs are the only bright thing, the chrome caps at mid gray, and color survives only on the mute cells"
+          >
+            mono
           </button>
         </div>
       </div>

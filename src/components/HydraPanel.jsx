@@ -548,7 +548,7 @@ export default function HydraPanel({
           >
             {isRunning ? 'on' : 'off'}
           </button>
-          {isRunning && (
+          {isRunning && supportsLiveCode && (
             <>
               <button type="button" className="hydra-action-btn" onClick={runCode} title="Run (Cmd-Enter)">
                 run
@@ -561,7 +561,11 @@ export default function HydraPanel({
         </div>
       </header>
 
-      {isRunning && (
+      {/* The code editor only exists in the hydra build. The shader
+          backend (the web default) ships fixed presets and has no
+          JS-evaluable DSL, so the editor window is dropped entirely and
+          the RGB split below sits directly under the Hydra header. */}
+      {isRunning && supportsLiveCode && (
         <>
           <div className="hydra-editor-wrap">
             <CodeMirror

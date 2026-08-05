@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { DetuneScale, MAX_DETUNE_HZ } from '../audio/StereoMode';
+import { FREQ_CEIL } from '../audio/freqRange';
 
 // Shared controls for the frequency / ALL panels — web ports of the
 // small iOS pieces that live at the bottom of FrequencyPanel.swift:
@@ -13,7 +14,7 @@ const COARSE_SPAN_OCTAVES = 2.5; // full-width coarse drag (iOS coarseSpanOctave
 const FINE_CENTS_PER_WIDTH = 200; // full-width fine drag (iOS fine ribbon)
 const FINE_RIDGE_PERIOD = 7; // knurl ridge pitch px — ribbon offset wraps on it
 const HZ_MIN = 0.1;
-const HZ_MAX = 20000;
+const HZ_MAX = FREQ_CEIL;   // sounding-domain entry needs the transpose headroom
 const PAIR_LINE_FULL_HZ = 5; // pair-lines pinned at the edges beyond this
 
 const clampHz = (hz) => Math.max(HZ_MIN, Math.min(HZ_MAX, hz));

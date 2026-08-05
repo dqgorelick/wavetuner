@@ -6,6 +6,9 @@ import CurveEditor from './CurveEditor';
 import { OctaveJogger } from './FreqPanelParts';
 import '../styles/freqPanels.css';
 
+// Engine-poll rate cap for the panel readouts (30 Hz).
+const ALL_POLL_MIN_MS = 1000 / 30 - 1.5;
+
 // ALL (bus) panel — web port of the iOS AllPanel (Views/Panels/
 // AllPanel.swift). Opened from the console's ALL caption; floats above
 // the source knob band in the frequency panel's chassis. Header =
@@ -15,7 +18,7 @@ import '../styles/freqPanels.css';
 // the stereo-detune curve (ZERO / RANDOM + the shared CurveEditor —
 // the same droneStereo.detuneCurve the per-voice DetuneSlider edits).
 
-const BUS_COLOR = 'rgba(255,255,255,0.55)';
+const BUS_COLOR = 'rgba(var(--ink-rgb),0.55)';
 const DIAL_SPAN_ST = 24; // full-width drag (iOS dialSpanSemitones)
 const MAX_ST = 24; // engine clamp (transposeMaxSemitones)
 
@@ -45,10 +48,17 @@ export default function AllPanel({
   const dialRef = useRef(null);
   const dialDragRef = useRef(null);
 
+  // 30 Hz cap — these are readouts, and every one of the reads below
+  // allocates (two array copies per tick) so running them at a ProMotion
+  // phone's 120 Hz was pure GC churn.
   useEffect(() => {
     let raf;
-    const tick = () => {
+    let last = 0;
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - last < ALL_POLL_MIN_MS) return;
+      last = now;
       if (!audioEngine.isInitialized) return;
       try {
         const s = audioEngine.getTransposeSemitones();

@@ -2,24 +2,65 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
-import { pairDissonance } from '../audio/dissonanceModel';
+import { sortBackground, probeDissonance } from '../audio/dissonanceModel';
 import { droneStereo, panWidth, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { activeProfile } from '../audio/timbreProfiles';
 import { getMovingImpact } from '../audio/dissonanceSettings';
 import { scrubRatio, getScrubSettings } from '../audio/scrubSettings';
-import palette, { useTheme, DUO_WHITE } from '../theme/palette';
+import { dprCap, onRenderTierChange } from '../visuals/renderTier';
+import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
 import GlobalDetuneOrb from './GlobalDetuneOrb';
+import { FREQ_CEIL } from '../audio/freqRange';
 
 const FREQ_MIN = 0.1;
-const FREQ_MAX = 20000;
+// Shared with every engine-side voice clamp — see audio/freqRange.js for why
+// it sits above the audible band (transpose headroom) and what that means
+// above Nyquist. The bar's ruler is the honest view of the tunable range, so
+// it tracks the ceiling rather than keeping its own.
+const FREQ_MAX = FREQ_CEIL;
 const DOT_SIZE = 35;
+// Air left between two neighbouring orbs' rims by the collision pass (their
+// centers stay DOT_SIZE + this apart). Non-zero so the selection ring — which
+// adds 1.5px of radius over the orb it wraps — and the status-flash dots that
+// ride the rim still read as belonging to one orb when the row is packed.
+const ORB_MIN_EDGE_GAP = 3;
 const BAR_LINE_HEIGHT = 21;   // spectrum bar height (was 30; −30%)
 const BAR_H_PADDING = 16;
 const DOT_GAP = 14;
 
 const PADDING_RATIO = 0.15;
-const MIN_LOG_SPAN = 0.5;
+// Floor on the stock framing's INNER span (lowest → highest framed voice), in
+// log2 units. 2 = ±1 octave around a lone voice (Dan, 2026-08-05: "let's have
+// it so we can see at least +/- 1 octave when there is only one voice active"
+// — was 0.5, a half-octave slot that read as a microscope once muted voices
+// stopped holding the frame open). LOG, not Hz: the window is the same
+// musical interval at 50 Hz and at 10 kHz. PADDING_RATIO widens it further, so
+// the visible frame around a lone voice is ±1.43 octaves — "at least" ±1 with
+// the stock margins on top. The zoom-drag's own floor is MIN_ZOOM_SPAN, a
+// separate and much tighter number: this is where the view RESTS, that is how
+// far a deliberate pull may crop in.
+const MIN_LOG_SPAN = 2;
+// SOFT RAILS (Dan, 2026-08-05). The frame may run past FREQ_MIN/FREQ_MAX by
+// this fraction of its own span, so a voice parked ON a rail still gets the
+// same margin every other voice gets instead of being jammed flush against
+// the bar's edge — half the orb under the rail, nothing to grab.
+//
+// A hard clamp at the absolute ends was also the cause of a 140px marker JUMP
+// on grab: the resting frame gave the rail voice NO margin, `grabFrac` was
+// captured from that clamped geometry, and then the fit-all pass demanded the
+// stock PADDING_RATIO margin the frame couldn't have — ballooning the span
+// until the clamp shifted the whole frame sideways. Zooming in shrank the span
+// until the clamp let go and the marker slid back to its anchor. Matching this
+// overrun to PADDING_RATIO makes the resting frame reproducible by
+// zoomDragTarget at mult=1, so the fit demand is already satisfied and nothing
+// moves.
+//
+// Past the rail the ruler is simply blank — computeTicks/fineTickFreqs filter
+// to [FREQ_MIN, FREQ_MAX] — which reads as "this is the end of the range".
+const RAIL_OVERRUN = PADDING_RATIO;
+const railFloor = (span) => ABSOLUTE_LOG_MIN - RAIL_OVERRUN * span;
+const railCeil = (span) => ABSOLUTE_LOG_MAX + RAIL_OVERRUN * span;
 // Time constant (ms) for the frame-rate-INDEPENDENT zoom ease. A fixed
 // per-frame lerp fraction converges twice as fast on 120Hz displays (the zoom
 // felt instant on ProMotion Macs); easing by 1 - exp(-dt / ZOOM_TAU_MS) instead
@@ -46,10 +87,13 @@ const SENSITIVITY_FINE = 0.1;
 //   'zoom'      — zoom-as-gain (Dan, 2026-08-04): the vertical axis drives
 //                 the VIEW SPAN instead of an invisible rate multiplier, and
 //                 the span already IS the drag gain (the px→log conversion in
-//                 handlePointerMove divides by it). Raising the pointer zooms
-//                 out for coarse sweeps; pulling below leans the view in
-//                 around the grab point for finer tuning — and all three
-//                 terms of that curve (grab offset, slope, direction) are
+//                 handlePointerMove divides by it). Moving the orb TOWARD
+//                 the spectrum leans the view in around the grab point for
+//                 finer tuning — full zoom inside the first 15px, held from
+//                 there (Dan, 2026-08-05); moving away zooms out for coarse
+//                 sweeps. Layout-relative: orbs-below = raise to zoom in,
+//                 classic orbs-above = pull down. The curve's terms (grab
+//                 offset, slope, zoom-in max) are
 //                 sliders in Settings. A continuous SUBTLE curve, applied with no
 //                 easing while the finger is down. The rate needs no tag:
 //                 the ruler's tick density is the readout, and on-screen orb
@@ -87,18 +131,27 @@ function scrubScale(dy) {
 // between levels read as jitter — the view must track the finger 1:1 with
 // no animation at all; only the release eases home). Kept SUBTLE for the
 // same reason: this is a lean-in/lean-back of the frame, not a microscope.
-// Depths are fractions of the pull direction's own viewport headroom (the
-// ios ramp's normalization — the orb row sits near the screen bottom, so
-// raw px would starve one side).
+// The OUT side's depth is a fraction of that direction's own viewport
+// headroom (the ios ramp's normalization — the orb row sits near a screen
+// edge, so raw px would starve one side); the IN side is a fixed px throw.
 // The curve is y = mx + b in LOG span: log2(mult) = zoomOffset + depth *
-// zoomScale * log2(dirEnd). All three terms are live settings (Settings →
+// zoomScale * log2(dirEnd). The terms are live settings (Settings →
 // Orb drag → zoom; scrubSettings owns them) — `zoomOffset` is b, the span
 // change at the grab itself (0 by default: grabbing no longer moves the
-// view); `zoomScale` is m, how hard the pull leans the frame; `zoomInvert`
-// swaps which direction leans in.
-const ZOOM_TRAVEL = 0.85;       // full effect at 85% of the headroom
-const ZOOM_MAX_OUT = 3;         // pull away → coarse, up to 3x wider
-const ZOOM_MAX_IN = 0.35;       // pull toward → fine, down to ~1/3 span
+// view); `zoomScale` is m, how hard the pull leans the frame; `zoomInMax`
+// is the IN side's end stop (the tuned 0.35 by default). The direction is
+// LAYOUT-RELATIVE: moving the orb TOWARD the spectrum zooms in, away zooms
+// out (Dan, 2026-08-05 — was a `zoomInvert` setting, deleted). Flipped
+// layout (orbs below the bar): raise = in. Classic (orbs above): pull
+// down = in.
+// The IN side's travel is a FIXED px throw: the full fine zoom lands within
+// the first `zoomInTravel` px toward the spectrum and HOLDS there for the
+// rest of the pull (Dan, 2026-08-05 — superseded the same-day curve-top
+// travel, which itself replaced the viewport-headroom ramp; the throw was a
+// hard-coded 15 until it became the Settings "Zoom in travel" slider).
+// The OUT side keeps the original viewport-headroom travel.
+const ZOOM_TRAVEL = 0.85;       // OUT: full effect at 85% of the headroom
+const ZOOM_MAX_OUT = 3;         // away → coarse, up to 3x wider
 // Hard floor on the zoomed-in span (log2 units): ~2.4 semitones around the
 // dragged voice — "only the frequencies near the one moving". Also the
 // effective fine limit: gain can't drop below MIN_ZOOM_SPAN / grabSpan.
@@ -109,44 +162,147 @@ function zoomBaseMult() {
   return 2 ** getScrubSettings().zoomOffset;
 }
 
-function zoomSpanMult(pointerY, startY, viewportH) {
+// `flipped` is the orb-row layout (geo.flipped): true = orbs below the bar,
+// so TOWARD the spectrum is up; false = classic orbs-above, toward is down.
+function zoomSpanMult(pointerY, startY, viewportH, flipped = true) {
   const s = getScrubSettings();
   const base = 2 ** s.zoomOffset;
   const below = pointerY >= startY;
-  // Headroom always comes from the REAL direction of travel (the orb row sits
-  // near the screen bottom, so the two sides have very different room);
-  // inverting only swaps which end of the curve that travel drives.
-  const headroom = below ? viewportH - startY : startY;
-  if (!(headroom > 0)) return base;
-  const depth = Math.min(1, Math.abs(pointerY - startY) / (headroom * ZOOM_TRAVEL));
-  const leansIn = s.zoomInvert ? !below : below;
-  return base * (leansIn ? ZOOM_MAX_IN : ZOOM_MAX_OUT) ** (depth * s.zoomScale);
+  const leansIn = flipped ? !below : below;
+  let depth;
+  if (leansIn) {
+    // IN: a fixed throw — full fine zoom inside the first `zoomInTravel` px
+    // toward the spectrum, held at the end stop for any further travel.
+    const throwPx = Math.max(1, s.zoomInTravel);
+    depth = Math.min(1, Math.abs(pointerY - startY) / throwPx);
+  } else {
+    // OUT: headroom comes from the REAL direction of travel (the orb row
+    // sits near one screen edge, so the two sides have very different room).
+    const headroom = (below ? viewportH - startY : startY) * ZOOM_TRAVEL;
+    if (!(headroom > 0)) return base;
+    depth = Math.min(1, Math.abs(pointerY - startY) / headroom);
+  }
+  return base * (leansIn ? s.zoomInMax : ZOOM_MAX_OUT) ** (depth * s.zoomScale);
 }
 
+// How strongly the zoom-drag frame must CONTAIN every unmuted voice
+// (Dan, 2026-08-05: zooming out — and just dragging around at 1x — must
+// never push another voice out of view; before this, the anchored frame
+// panned with the dragged voice and stationary voices slid off the edge).
+// 1 at/above the 1x baseline, fading to 0 as the pull leans the frame in
+// toward the zoomInMax end stop — zooming in deliberately crops to the
+// neighborhood of the dragged voice, and a hard gate at mult=1 would snap
+// mid-gesture (the target is applied un-eased while the finger is down).
+// The 0.99 cap keeps the log denominator finite when zoomInMax is dialed
+// to 1 (= zoom-in disabled; any sub-1 mult then comes from zoomOffset).
+function zoomFitWeight(mult) {
+  if (mult >= 1) return 1;
+  const inEnd = Math.min(0.99, getScrubSettings().zoomInMax);
+  return Math.max(0, 1 - Math.log2(mult) / Math.log2(inEnd));
+}
+
+// Runway the frame keeps between the DRAGGED voice and the edge it is
+// travelling toward, as a fraction of the FINAL span (the stock framing's own
+// margin, so a released drag eases home to the same look).
+//
+// The anchored frame hands the orb (1 - grabFrac) * span of headroom, and
+// since the fit below now grows the SPAN AROUND the anchor rather than pushing
+// one edge, that headroom stays a constant FRACTION of the bar for the whole
+// gesture — the frame slides under the marker instead of the marker creeping
+// into the last few percent and stalling (Dan, 2026-08-05: "we cannot pull the
+// orb further than a certain point, depending on screen size"). What is left
+// for this pad is the ABSOLUTE ends: once logMax reaches FREQ_MAX the frame
+// can't slide any further and the voice starts eating its own margin. Solving
+// for the margin again there is DELIBERATELY allowed to push the frame past
+// ABSOLUTE_LOG_MIN/MAX — a voice sitting AT FREQ_MAX still gets its runway,
+// the ruler simply runs out of numbers (computeTicks stops at FREQ_MAX) and
+// the last stretch of bar reads as "top of the spectrum". Bounded: the
+// overshoot is at most PADDING_RATIO/(1-PADDING_RATIO) of the voice's distance
+// from the far edge.
+//
+// The pad NEVER pulls the voice further in than where it was grabbed: it is
+// capped per side at the anchor's own margin (see zoomDragTarget), so grabbing
+// an orb that already sits 5% from the edge keeps it at 5%. Moving it inward
+// would pan the view out from under the finger — exactly what the anchor is
+// there to prevent.
+const DRAG_LEAD_PAD = PADDING_RATIO;
+
 // Target range for an active zoom-mode drag: the scaled span, ANCHORED at
-// the screen fraction where the voice sat at drag-confirm (drag.grabFrac) —
-// zooming happens around the grab point, so confirming a drag never pans
-// the view, and span changes grow/shrink the frame in place under the
-// finger. Clamped by shifting at the absolute ends so the span survives to
-// the edge.
-function zoomDragTarget(drag) {
+// the screen fraction where the voice sat at drag-confirm (drag.grabFrac).
+// The anchor is the ZOOM ORIGIN — every stage below changes the SPAN and then
+// re-derives both edges from it, so the dragged voice holds its screen X for
+// the whole gesture (Dan, 2026-08-05: zooming in on an orb parked left or
+// right must not shove its position line sideways). Only the absolute-end
+// clamps may move it, and only because the ruler has run out.
+// `fitLogs` (log2 Hz) lists the voices the frame must keep in view. Containing
+// them is expressed as a MINIMUM SPAN about the anchor — for a voice `l` below
+// the dragged one, the low edge reaches it when span * (frac - pad) >= fLog - l
+// — never as an edge shift, and the result is blended by zoomFitWeight so
+// zooming in still narrows to the dragged voice. At drag-confirm the anchored
+// range IS the stock-framed view, whose extremes already sit at the same
+// PADDING_RATIO margin, so that inequality holds with room to spare and taking
+// the frame stays jump-free.
+// Anchors closer to an edge than PADDING_RATIO can't hold the stock margin on
+// that side at any span (the denominator goes negative); those fall back to
+// containment with no margin.
+function zoomDragTarget(drag, fitLogs) {
   const f = audioEngine.getFrequency(drag.index);
+  const fLog = Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, f)));
   const absSpan = ABSOLUTE_LOG_MAX - ABSOLUTE_LOG_MIN;
   const grabSpan = drag.grabSpan || absSpan;
-  const span = Math.max(
-    MIN_ZOOM_SPAN,
-    Math.min(absSpan, grabSpan * (drag.spanMult ?? zoomBaseMult()))
-  );
+  const mult = drag.spanMult ?? zoomBaseMult();
   const frac = drag.grabFrac ?? 0.5;
-  let logMin = Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, f))) - span * frac;
-  let logMax = logMin + span;
-  if (logMin < ABSOLUTE_LOG_MIN) {
-    logMax += ABSOLUTE_LOG_MIN - logMin;
-    logMin = ABSOLUTE_LOG_MIN;
+  let span = grabSpan * mult;
+  if (fitLogs && fitLogs.length) {
+    const w = zoomFitWeight(mult);
+    if (w > 0) {
+      // Room on each side of the anchor, first with the stock margin and —
+      // if the anchor sits inside that margin — bare containment.
+      const lowRoom = frac > PADDING_RATIO ? frac - PADDING_RATIO : frac;
+      const highRoom = 1 - frac > PADDING_RATIO ? 1 - frac - PADDING_RATIO : 1 - frac;
+      let need = 0;
+      for (const l of fitLogs) {
+        if (l < fLog) {
+          if (lowRoom > 0) need = Math.max(need, (fLog - l) / lowRoom);
+        } else if (l > fLog) {
+          if (highRoom > 0) need = Math.max(need, (l - fLog) / highRoom);
+        }
+      }
+      // Expand only (a tighter fit never overrides the pull's own span), and
+      // fade the expansion out as the pull leans into the microscope.
+      if (need > span) span += (Math.min(need, absSpan) - span) * w;
+    }
   }
-  if (logMax > ABSOLUTE_LOG_MAX) {
-    logMin = Math.max(ABSOLUTE_LOG_MIN, logMin - (logMax - ABSOLUTE_LOG_MAX));
-    logMax = ABSOLUTE_LOG_MAX;
+  span = Math.max(MIN_ZOOM_SPAN, Math.min(absSpan, span));
+  let logMin = fLog - span * frac;
+  let logMax = logMin + span;
+  // Soft rails, matched to the resting frame's own overrun (see RAIL_OVERRUN):
+  // at mult=1 a rail-parked voice's frame already sits exactly on this bound,
+  // so the clamp is satisfied and the anchor holds. It only bites on a big
+  // zoom-OUT, where the alternative is a screenful of blank ruler.
+  const floor = railFloor(span);
+  const ceil = railCeil(span);
+  if (logMin < floor) {
+    logMax += floor - logMin;
+    logMin = floor;
+  }
+  if (logMax > ceil) {
+    logMin = Math.max(floor, logMin - (logMax - ceil));
+    logMax = ceil;
+  }
+  // Reopen the leading edge (see DRAG_LEAD_PAD) if an absolute-end clamp above
+  // has pushed the voice inside its own margin. Solved for the edge that puts
+  // the voice exactly `p` of the resulting span inside it:
+  //   fLog = logMax - p * (logMax - logMin)  ⇒  logMax = (fLog - p*logMin)/(1-p)
+  // Capped at the anchor's margin per side, so away from the ends — where the
+  // voice sits exactly at `frac` — both branches are no-ops and the anchor is
+  // untouched. Only one side can be short at a time (p < 0.5).
+  const highPad = Math.min(DRAG_LEAD_PAD, 1 - frac);
+  const lowPad = Math.min(DRAG_LEAD_PAD, frac);
+  if (highPad > 0 && fLog > logMax - highPad * (logMax - logMin)) {
+    logMax = (fLog - highPad * logMin) / (1 - highPad);
+  } else if (lowPad > 0 && fLog < logMin + lowPad * (logMax - logMin)) {
+    logMin = (fLog - lowPad * logMax) / (1 - lowPad);
   }
   return { logMin, logMax };
 }
@@ -189,7 +345,11 @@ function settleEase(t) {
 // Width of the fade band past each row edge: voice chrome (orb, labels,
 // position line, readout) slides off the row and dissolves across this many
 // px instead of clamping or blinking out (Dan, 2026-08-04).
-const EDGE_FADE_PX = 56;
+// Length of the fade band past each END OF THE SPECTRUM BAR (see edgeFades).
+// 28, halved from 56 (Dan, 2026-08-05) — and since the band now starts at the
+// bar's edge rather than BAR_H_PADDING beyond it, a voice goes from full to
+// gone in 28px where it used to take 72.
+const EDGE_FADE_PX = 28;
 
 // Global-transpose drag: dragging the empty bar background left/right shifts
 // the whole tuning's playback pitch (a DAW-BPM-style master offset that lives
@@ -206,18 +366,18 @@ const TRANSPOSE_DRAG_SIGN = -1;
 const GRAB_VOL_SCALAR = 2;
 
 // Edge auto-pan: while dragging or grabbing, holding the pointer in the outer
-// EDGE_ZONE of the *canvas* continuously drifts frequency toward that edge.
-// The canvas is the centered min(viewport, CANVAS_MAX_WIDTH) region — same
-// horizontal frame as the on-screen keyboard tray — so on wide displays the
-// dragging area doesn't sprawl to the screen edges. Pulling toward the
-// canvas edge scrolls the spectrum regardless of where the (narrower) bar
-// sits inside it.
-// Rate ramps linearly from 0 at the zone boundary to MAX_EDGE_PAN_RATE at the
-// canvas edge, in octaves/sec. dt is clamped so a backgrounded tab can't jump.
-// Zone width = 10% of canvas width = min(10vw, EDGE_ZONE_MAX_PX).
-// Keep in step with --stage-max in App.css (:root) — that variable caps
-// the same frame for every edge-anchored piece of chrome.
-const CANVAS_MAX_WIDTH = 1200;
+// EDGE_ZONE of the *bar* continuously drifts frequency toward that edge.
+// Anchored to the bar's own rendered edges — NOT the old window-centered
+// 1200px canvas (Dan, 2026-08-05: the side rails/console/menus have shrunk
+// the row well inside that stage, so the functional zone sat in dead space
+// hundreds of px past where the row visibly ends; a drag naturally stops at
+// the end of the row, the pan never engaged, and a climb toward the top
+// frequencies stalled wherever the pointer ran out of bar).
+// Rate ramps linearly from 0 at the zone boundary to MAX_EDGE_PAN_RATE at
+// the bar edge, in octaves/sec, and HOLDS max beyond it — everything past
+// the row (rails, menus, screen edge) is full-speed pan, so overshooting
+// the row keeps working. dt is clamped so a backgrounded tab can't jump.
+// Zone width = 10% of bar width, capped at EDGE_ZONE_MAX_PX.
 const EDGE_ZONE_FRAC = 0.10;
 const EDGE_ZONE_MAX_PX = 120;
 const MAX_EDGE_PAN_RATE = 2.0;
@@ -249,18 +409,91 @@ function tickOpacityForRatio(ratio) {
 
 const LOG2_10 = Math.log2(10);
 
+// ── Fine ruler (deep zoom) ───────────────────────────────────────────────
+// The decade-mantissa levels above are all defined per DECADE, so they run
+// out: a frame narrower than ~1.5x holds too few of even the 19/decade
+// level's marks for it to fade in, and the ruler used to go completely
+// unnumbered — anonymous ridges only, exactly where the zoom mode's
+// microscope lives (Dan, 2026-08-05: "when we zoom in can we see almost
+// every frequency number").
+// Below that the ruler switches to a LINEAR nice step across the visible
+// window — the same 1/2/2.5/5×10ⁿ ladder the minor ridges use (niceTickStep,
+// defined with them below; shared on purpose, so labels and ridges land on
+// the same kind of round number). Over so narrow a span the log axis is near
+// enough to linear that an even step reads correctly, and the step is picked
+// from the BAR WIDTH rather than a fixed count so the numbering stays at a
+// readable pitch on any screen: at 414–476 Hz on a 1000px bar, a label every
+// 5 Hz.
+const FINE_LABEL_PITCH = 78;        // px, target spacing between fine numbers
+const FINE_TICK_SPAN_LOG10 = 0.5;   // ~3.2x span: fine numbers start fading in
+const FINE_TICK_FULL_LOG10 = 0.32;  // ~2.1x span: fully faded in
+// Self-padding for the lattice call — enough marks past each edge that the
+// edge gaps still get subdivided, without the caller's octave-scale padLog
+// (which at a fine step would generate tens of thousands of freqs).
+const FINE_TICK_PAD_STEPS = 2;
+
+/** Fine numbers fade IN as the mantissa levels fade out, so the crossover
+ *  fills in gaps rather than swapping rulers. */
+function fineTickOpacity(log10Span) {
+  if (!(log10Span > 0) || log10Span >= FINE_TICK_SPAN_LOG10) return 0;
+  if (log10Span <= FINE_TICK_FULL_LOG10) return 1;
+  return (FINE_TICK_SPAN_LOG10 - log10Span)
+    / (FINE_TICK_SPAN_LOG10 - FINE_TICK_FULL_LOG10);
+}
+
+/** Round Hz step between fine numbers. `width` 0 (unknown bar) falls back to
+ *  the same target count the decade levels use. */
+function fineTickStep(logMin, logMax, width) {
+  const hzSpan = 2 ** logMax - 2 ** logMin;
+  if (!(hzSpan > 0)) return 0;
+  const want = width > 0
+    ? Math.max(2, Math.round(width / FINE_LABEL_PITCH))
+    : TARGET_TICK_COUNT;
+  return niceTickStep(hzSpan / want);
+}
+
+/** Every multiple of the fine step across the window, padded a couple of
+ *  steps past each edge. Ascending. */
+function fineTickFreqs(logMin, logMax, width) {
+  const step = fineTickStep(logMin, logMax, width);
+  if (!step) return [];
+  const first = Math.ceil(2 ** logMin / step) - FINE_TICK_PAD_STEPS;
+  const last = Math.floor(2 ** logMax / step) + FINE_TICK_PAD_STEPS;
+  if (!(last >= first) || last - first > 400) return [];   // runaway guard
+  const out = [];
+  for (let k = first; k <= last; k++) {
+    const freq = Number((k * step).toPrecision(12));        // kills summing drift
+    if (freq < FREQ_MIN || freq > FREQ_MAX) continue;
+    out.push(freq);
+  }
+  return out;
+}
+
 // `padLog` widens the range ticks are GENERATED over (in log2 units) without
 // touching the density decision, which always reads the visible span. The
 // minor ticks below need it: a gap whose bounding label sits just off-screen
 // still has to be subdivided, or the ridges stop short of the bar's edges.
-function computeTicks(logMin, logMax, padLog = 0) {
+// `width` (bar px) only feeds the fine ruler's step choice.
+function computeTicks(logMin, logMax, padLog = 0, width = 0) {
   const log10Min = logMin / LOG2_10;
   const log10Max = logMax / LOG2_10;
   const log10Span = log10Max - log10Min;
   if (log10Span <= 0) return [];
 
-  // Max opacity across all levels that include this freq.
+  // Max opacity across all levels that include this freq. Keys are snapped to
+  // 12 significant figures first — 2.3 × 100 is 229.99999999999997, which
+  // against the fine ruler's exact 230 would key two entries and stack two
+  // labels on the same pixel.
   const tickMap = new Map();
+  const claim = (raw, opacity) => {
+    const freq = Number(raw.toPrecision(12));
+    if (freq < FREQ_MIN || freq > FREQ_MAX) return;
+    const log2Freq = Math.log2(freq);
+    if (log2Freq < logMin - padLog || log2Freq > logMax + padLog) return;
+    const existing = tickMap.get(freq) || 0;
+    if (opacity > existing) tickMap.set(freq, opacity);
+  };
+
   for (const level of TICK_LEVELS) {
     const count = level.perDecade * log10Span;
     const opacity = tickOpacityForRatio(count / TARGET_TICK_COUNT);
@@ -270,17 +503,40 @@ function computeTicks(logMin, logMax, padLog = 0) {
     const decadeEnd = Math.ceil((logMax + padLog) / LOG2_10);
     for (let d = decadeStart; d <= decadeEnd; d++) {
       const decadeBase = 10 ** d;
-      for (const m of level.mantissas) {
-        const freq = m * decadeBase;
-        if (freq < FREQ_MIN || freq > FREQ_MAX) continue;
-        const log2Freq = Math.log2(freq);
-        if (log2Freq < logMin - padLog || log2Freq > logMax + padLog) continue;
-        const existing = tickMap.get(freq) || 0;
-        if (opacity > existing) tickMap.set(freq, opacity);
-      }
+      for (const m of level.mantissas) claim(m * decadeBase, opacity);
     }
   }
-  return Array.from(tickMap, ([freq, opacity]) => ({ freq, opacity }));
+
+  // Cross-fade rather than overlay: as the fine ruler comes in, a mantissa
+  // tick that ISN'T on the fine grid fades out by the same amount. Otherwise
+  // a 20 Hz fine ladder at one octave of zoom keeps three half-lit strays
+  // (230, 250, 350) sitting off-grid between its numbers. Coinciding ticks
+  // are untouched — the max() below keeps whichever grid claims them louder.
+  const fineOpacity = fineTickOpacity(log10Span);
+  if (fineOpacity > 0) {
+    const fine = fineTickFreqs(logMin, logMax, width);
+    const onGrid = new Set(fine);
+    if (fine.length) {
+      for (const [freq, opacity] of tickMap) {
+        if (!onGrid.has(freq)) tickMap.set(freq, opacity * (1 - fineOpacity));
+      }
+    }
+    for (const freq of fine) claim(freq, fineOpacity);
+  }
+
+  const ticks = Array.from(tickMap, ([freq, opacity]) => ({ freq, opacity }));
+  // The k-abbreviation is a decision for the WHOLE ruler, not per label: a
+  // fine step up in the kHz (4000, 4025, 4050 …) renders as "4k / 4.03k /
+  // 4.05k" at two decimals — a wrong number and a near-duplicate. If any
+  // tick would lose precision, every tick prints plain Hz so the numbers
+  // stay a comparable sequence.
+  const useK = ticks.every(({ freq }) => {
+    if (freq < 1000) return true;
+    const k = freq / 1000;
+    return Math.abs(k - Number(k.toFixed(2))) < 1e-9;
+  });
+  for (const tick of ticks) tick.label = formatTick(tick.freq, useK);
+  return ticks;
 }
 
 // ── Minor ruler ticks (iOS parity: the short ridges between the numbers) ──
@@ -320,8 +576,10 @@ function niceTickStep(raw) {
  *  over a padded range so edge gaps still have a bounding mark. Not "every
  *  settled level" — at a tight zoom no level has finished fading in, and the
  *  ridges have to keep working there; past the finest level's fade-in the
- *  ruler is ridges only, so that level is the floor. */
-function latticeTickFreqs(logMin, logMax, padLog = 0) {
+ *  fine ruler takes over as the dominant mark set, and the ridges subdivide
+ *  ITS numbers (a lattice nothing labels would put the ridges on a different
+ *  grid from the visible figures). */
+function latticeTickFreqs(logMin, logMax, padLog = 0, width = 0) {
   const log10Span = (logMax - logMin) / LOG2_10;
   if (log10Span <= 0) return [];
   let best = null;
@@ -329,6 +587,9 @@ function latticeTickFreqs(logMin, logMax, padLog = 0) {
   for (const level of TICK_LEVELS) {
     const opacity = tickOpacityForRatio((level.perDecade * log10Span) / TARGET_TICK_COUNT);
     if (opacity > bestOpacity) { bestOpacity = opacity; best = level; }
+  }
+  if (fineTickOpacity(log10Span) > bestOpacity) {
+    return fineTickFreqs(logMin, logMax, width);
   }
   if (bestOpacity <= 0) best = TICK_LEVELS[TICK_LEVELS.length - 1];
   const freqs = [];
@@ -382,9 +643,10 @@ const SHIFT_SYMBOL_TO_INDEX = {
   '^': 5, '&': 6, '*': 7, '(': 8, ')': 9,
 };
 
-function formatTick(freq) {
+// `useK` is a set-level decision made in computeTicks — see the comment there.
+function formatTick(freq, useK = true) {
   const short = (n) => n.toFixed(2).replace(/\.?0+$/, '');
-  if (freq >= 1000) return short(freq / 1000) + 'k';
+  if (freq >= 1000 && useK) return short(freq / 1000) + 'k';
   return short(freq);
 }
 
@@ -410,6 +672,18 @@ function formatPanFlash(pan) {
 // lives in geometryFor() below — see the "Row geometry" section.
 
 // ── Dissonance HUD curve ─────────────────────────────────────────────────
+// The curve's draw loop skips recomputing while its inputs are unchanged and
+// the eased display has landed (see _dissSettled). The live console tuners
+// below mutate module state the signature check can't see, so each one is
+// wrapped in _tuner: same function, but it forces the next frame to redraw.
+function _tuner(fn) {
+  return (...args) => {
+    const r = fn(...args);
+    _dissInvalidate();
+    return r;
+  };
+}
+
 // A sensory-dissonance hot-spot field drawn behind the orbs. Its baseline is
 // lifted above the spectrum bar; the field rises from there and bleeds down
 // into the bar. The orbs float ABOVE the curve's max peak, each tethered to
@@ -441,10 +715,10 @@ const DISS_CURVE_STEP = 2;
 // baseline). Live-tunable via window.__dissPeak(pow).
 let DISS_PEAK_POW = 3;
 if (typeof window !== 'undefined') {
-  window.__dissPeak = (pow) => {
+  window.__dissPeak = _tuner((pow) => {
     if (Number.isFinite(pow)) DISS_PEAK_POW = Math.max(0.5, Math.min(8, pow));
     return { pow: DISS_PEAK_POW };
-  };
+  });
 }
 // Amplitude-normalization reference (linear 0..1). The field is normalized so
 // the loudest sounding voice is treated as this level — making the curve's
@@ -453,10 +727,10 @@ if (typeof window !== 'undefined') {
 // instead of blowing out white. Live-tunable via window.__dissAmpRef(v).
 let DISS_AMP_REF = 0.1;
 if (typeof window !== 'undefined') {
-  window.__dissAmpRef = (v) => {
+  window.__dissAmpRef = _tuner((v) => {
     if (Number.isFinite(v)) DISS_AMP_REF = Math.max(0.001, Math.min(1, v));
     return DISS_AMP_REF;
-  };
+  });
 }
 // Consonance floor (applied to the consonance value BEFORE the peak power):
 // rescale [floor, 1] → [0, 1] so moderate-consonance regions sink toward the
@@ -466,10 +740,10 @@ if (typeof window !== 'undefined') {
 // Live-tunable via window.__dissFloor(v); try 0.3–0.5 for taller, sharper peaks.
 let DISS_LEVEL_FLOOR = 0;
 if (typeof window !== 'undefined') {
-  window.__dissFloor = (v) => {
+  window.__dissFloor = _tuner((v) => {
     if (Number.isFinite(v)) DISS_LEVEL_FLOOR = Math.max(0, Math.min(0.95, v));
     return DISS_LEVEL_FLOOR;
-  };
+  });
 }
 
 // ── Derived curve geometry (row coordinates, y down) ─────────────────────
@@ -676,13 +950,80 @@ let _dissLevels = null;
 let _dissDisplay = null;
 let _dissCols = 0;
 let _dissAnimT = 0;
+// True once the eased display has converged onto its target — i.e. the curve
+// on screen is already the answer and redrawing it would paint identical
+// pixels. The draw loop uses this together with an input-signature check to
+// skip the whole recompute while nothing is moving; see _dissInputsChanged.
+// Without it a completely idle app still burned the field sweep 30x a second
+// forever, which was the app's largest source of "hot phone while doing
+// nothing".
+let _dissSettled = false;
+// Converged when no column is further than this from its target. The levels
+// are 0..1 and the curve is 100 px tall, so 1e-4 is 1/100 of a pixel.
+const DISS_SETTLE_EPS = 1e-4;
+/** Force the next frame to recompute (live console tuners, theme swaps). */
+function _dissInvalidate() { _dissSettled = false; }
+
+// Opt-in instrumentation for the skip. window.__dissStats() toggles counting
+// and prints how many field ticks actually recomputed vs skipped, plus the
+// mean cost of a recompute — the number to watch when tuning the curve or
+// changing the voice count.
+const _dissStats = { on: false, computed: 0, skipped: 0, ms: 0 };
+if (typeof window !== 'undefined') {
+  window.__dissStats = (on = !_dissStats.on) => {
+    const { computed, skipped, ms } = _dissStats;
+    _dissStats.on = !!on;
+    _dissStats.computed = 0;
+    _dissStats.skipped = 0;
+    _dissStats.ms = 0;
+    return {
+      counting: _dissStats.on,
+      computed,
+      skipped,
+      msPerCompute: computed ? +(ms / computed).toFixed(3) : 0,
+    };
+  };
+}
+
+// Input signature for the skip. Everything the field depends on goes in a
+// reusable Float64Array — no allocation, no string building, exact compare.
+// Anything NOT in here must invalidate explicitly (see _tuner).
+let _dissSig = null;
+let _dissSigLen = -1;
+let _dissSigProfile = null;
+function _dissInputsChanged(count, movingSet, impact, paused, range, barWidth, profile) {
+  // A step transition's overlapping tail ramps its own level every frame and
+  // lives outside the per-slot state below, so never skip while one rings.
+  if (audioEngine.getStepTails().length) return true;
+  const need = 6 + count * 4;
+  if (!_dissSig || _dissSig.length < need) _dissSig = new Float64Array(need);
+  const b = _dissSig;
+  let changed = need !== _dissSigLen || profile !== _dissSigProfile;
+  _dissSigLen = need;
+  _dissSigProfile = profile;
+  const put = (i, v) => { if (b[i] !== v) { b[i] = v; changed = true; } };
+  put(0, paused ? 1 : 0);
+  put(1, impact);
+  put(2, range.logMin);
+  put(3, range.logMax);
+  put(4, barWidth);
+  put(5, movingSet.size);
+  for (let i = 0; i < count; i++) {
+    const o = 6 + i * 4;
+    put(o, audioEngine.isMuted(i) ? 1 : 0);
+    put(o + 1, audioEngine.getFrequency(i));
+    put(o + 2, audioEngine.getVolume(i));
+    put(o + 3, movingSet.has(i) ? 1 : 0);
+  }
+  return changed;
+}
 // Transition time constant (seconds). Larger = slower, more gradual glide.
 let DISS_ANIM_TAU = 0.08;
 if (typeof window !== 'undefined') {
-  window.__dissAnim = (tau) => {
+  window.__dissAnim = _tuner((tau) => {
     if (Number.isFinite(tau)) DISS_ANIM_TAU = tau;
     return { tau: DISS_ANIM_TAU };
-  };
+  });
 }
 
 // Auto contrast-stretch: per frame, map the field's actual [min,max] span to
@@ -694,12 +1035,15 @@ let DISS_AUTO_CONTRAST = true;
 let DISS_CONTRAST_TAU = 0.6;       // seconds — how fast the stretch window adapts
 let _dissNormLo = 0;
 let _dissNormHi = 1;
+// Previous frame's stretch span, for the settle check (the window eases on
+// its own clock and can still be moving after the columns have landed).
+let _dissNormSpanPrev = 1;
 if (typeof window !== 'undefined') {
-  window.__dissContrast = (on, tau) => {
+  window.__dissContrast = _tuner((on, tau) => {
     if (on !== undefined) DISS_AUTO_CONTRAST = !!on;
     if (Number.isFinite(tau)) DISS_CONTRAST_TAU = Math.max(0, tau);
     return { on: DISS_AUTO_CONTRAST, tau: DISS_CONTRAST_TAU };
-  };
+  });
 }
 // Highest partial frequency we bother evaluating (above hearing).
 const DISS_MAX_FREQ = 20000;
@@ -727,12 +1071,12 @@ let DISS_CONTRAST = 5.2;          // ≈ the old 5-voice gamma, now used for all
 let DISS_CONTRAST_PER_VOICE = 0;  // 0 → voice-count-independent colors
 const DISS_CONTRAST_MAX = 9;
 if (typeof window !== 'undefined') {
-  window.__dissTune = (half, contrast, perVoice) => {
+  window.__dissTune = _tuner((half, contrast, perVoice) => {
     if (Number.isFinite(half)) DISS_HALF = half;
     if (Number.isFinite(contrast)) DISS_CONTRAST = contrast;
     if (Number.isFinite(perVoice)) DISS_CONTRAST_PER_VOICE = perVoice;
     return { half: DISS_HALF, contrast: DISS_CONTRAST, perVoice: DISS_CONTRAST_PER_VOICE };
-  };
+  });
 }
 
 // ── Consonance drag damping ──────────────────────────────────────────────
@@ -751,11 +1095,11 @@ if (typeof window !== 'undefined') {
 let DISS_DAMP_MIN = 0.08;
 let DISS_DAMP_RAMP = 0.5;
 if (typeof window !== 'undefined') {
-  window.__dissDampTune = (minScale, ramp) => {
+  window.__dissDampTune = _tuner((minScale, ramp) => {
     if (Number.isFinite(minScale)) DISS_DAMP_MIN = minScale;
     if (Number.isFinite(ramp)) DISS_DAMP_RAMP = ramp;
     return { minScale: DISS_DAMP_MIN, ramp: DISS_DAMP_RAMP };
-  };
+  });
 }
 
 // Absolute color ramp: consonant (low) reads dim + cool, dissonant (high)
@@ -770,7 +1114,11 @@ function _dissFillStyle(v) {
 // (1 = nicest-sounding). Rough spots stay a dim dark gray; nice spots bloom to
 // dramatic bright white so the landing targets pop as white hot spots.
 function _hotSpotFill(c) {
-  const light = 12 + 88 * c;        // near-black → pure white at the peaks
+  // mono caps the ceiling at the ink gray — a peak blooming to pure white
+  // would be the brightest thing in a theme whose whole point is that the
+  // orbs are. duo/classic keep the original full-white top.
+  const ceil = palette.theme === 'mono' ? 59 : 100;
+  const light = 12 + (ceil - 12) * c; // near-black → ceiling at the peaks
   const alpha = 0.04 + 0.96 * c;    // all but invisible in the rough, opaque at peaks
   return `hsla(0, 0%, ${light}%, ${alpha})`;
 }
@@ -779,7 +1127,7 @@ function _hotSpotFill(c) {
 // of the dissonance peaks. window.__dissHotSpots(false) flips back to compare.
 let DISS_SHOW_HOTSPOTS = true;
 if (typeof window !== 'undefined') {
-  window.__dissHotSpots = (on) => { DISS_SHOW_HOTSPOTS = !!on; return DISS_SHOW_HOTSPOTS; };
+  window.__dissHotSpots = _tuner((on) => { DISS_SHOW_HOTSPOTS = !!on; return DISS_SHOW_HOTSPOTS; });
 }
 
 // TEMP simplification: hide the filled hot-spot bloom (the white peaks) so only
@@ -788,8 +1136,8 @@ if (typeof window !== 'undefined') {
 let DISS_SHOW_FILL = false;
 let DISS_SHOW_POSITION_LINES = true;
 if (typeof window !== 'undefined') {
-  window.__dissFill = (on) => { DISS_SHOW_FILL = !!on; return DISS_SHOW_FILL; };
-  window.__dissPosLines = (on) => { DISS_SHOW_POSITION_LINES = !!on; return DISS_SHOW_POSITION_LINES; };
+  window.__dissFill = _tuner((on) => { DISS_SHOW_FILL = !!on; return DISS_SHOW_FILL; });
+  window.__dissPosLines = _tuner((on) => { DISS_SHOW_POSITION_LINES = !!on; return DISS_SHOW_POSITION_LINES; });
 }
 // How much the voice(s) being moved contribute to the displayed field is the
 // user-facing "Moving voice impact" setting (dissonanceSettings.getMovingImpact)
@@ -811,6 +1159,10 @@ if (typeof window !== 'undefined') {
 // any voice), 0 = excluded (the old landing-guide), in between = proportional.
 // Scaling amplitude shrinks both the mover's clash contribution and its
 // self-hot-spot; scaling the weight keeps the dn = d/V normalization honest.
+// Sorted-field stand-in for "nothing sounding" (paused) — the curve eases to
+// a flat line against it instead of reading silence as total consonance.
+const EMPTY_FIELD = { f: new Float64Array(0), a: new Float64Array(0), n: 0 };
+
 function _buildBackground(count, movingSet, impact, profile) {
   // Pass 1 — gather every sounding voice as { f0, amp, weight } so we can find
   // the loudest before expanding into partials. amp is the per-voice linear
@@ -864,7 +1216,10 @@ function _buildBackground(count, movingSet, impact, profile) {
       bg.push({ f, a: amp * profile[h].amp });
     }
   }
-  return { parts: bg, voices };
+  // Frequency-sorted typed-array view — what the windowed probe walks. The
+  // sort is O(n log n) on ~100 partials once per frame, which the windowing
+  // pays back many times over across the ~190 curve columns.
+  return { field: sortBackground(bg), voices };
 }
 
 // Count currently-sounding drone voices (unmuted, audible), regardless of the
@@ -880,20 +1235,11 @@ function _activeVoiceCount(count) {
 }
 
 // Raw (uncompressed) dissonance of a probe voice at fundamental f0 against a
-// background partial list, expanded through `profile`. Shared by the curve
-// draw loop and the gravity descent so both read the identical field.
-function _probeDissonance(f0, background, profile) {
-  let d = 0;
-  for (let p = 0; p < profile.length; p++) {
-    const pf = f0 * profile[p].ratio;
-    if (pf > DISS_MAX_FREQ) continue;
-    const pa = profile[p].amp;
-    for (let k = 0; k < background.length; k++) {
-      const b = background[k];
-      d += pairDissonance(pf, b.f, pa, b.a);
-    }
-  }
-  return d;
+// sorted background field (see _buildBackground / sortBackground), expanded
+// through `profile`. Shared by the curve draw loop and the gravity descent so
+// both read the identical field.
+function _probeDissonance(f0, field, profile) {
+  return probeDissonance(f0, field, profile, DISS_MAX_FREQ);
 }
 
 // Compress raw field dissonance to the displayed/used value v ∈ [0,1]:
@@ -933,7 +1279,7 @@ let DISS_EXTENT_MARGIN = 0.5;
 let DISS_EXTENT_FLOOR = 0;
 let DISS_EXTENT_AMP = 0.2;
 if (typeof window !== 'undefined') {
-  window.__dissExtent = (slope, margin, floor, amp) => {
+  window.__dissExtent = _tuner((slope, margin, floor, amp) => {
     if (Number.isFinite(slope)) DISS_EXTENT_SLOPE = Math.max(0, slope);
     if (Number.isFinite(margin)) DISS_EXTENT_MARGIN = Math.max(0, margin);
     if (Number.isFinite(floor)) DISS_EXTENT_FLOOR = Math.max(0, Math.min(1, floor));
@@ -942,7 +1288,7 @@ if (typeof window !== 'undefined') {
       slope: DISS_EXTENT_SLOPE, margin: DISS_EXTENT_MARGIN,
       floor: DISS_EXTENT_FLOOR, amp: DISS_EXTENT_AMP,
     };
-  };
+  });
 }
 
 // Frequency extent of the SIGNIFICANT partials (amplitude ≥ DISS_EXTENT_AMP) in
@@ -950,13 +1296,13 @@ if (typeof window !== 'undefined') {
 // harmonics don't stretch the band up into a consonant-reading dead zone.
 // Computed once per frame and passed to _effectiveV so the per-column weight is
 // O(1). Returns null when nothing clears the threshold (no roll-off).
-function _backgroundExtent(background) {
+function _backgroundExtent(field) {
   let fLo = Infinity, fHi = 0;
-  for (let k = 0; k < background.length; k++) {
-    const p = background[k];
-    if (p.a < DISS_EXTENT_AMP) continue;
-    if (p.f < fLo) fLo = p.f;
-    if (p.f > fHi) fHi = p.f;
+  for (let k = 0; k < field.n; k++) {
+    if (field.a[k] < DISS_EXTENT_AMP) continue;
+    const f = field.f[k];
+    if (f < fLo) fLo = f;
+    if (f > fHi) fHi = f;
   }
   if (fHi === 0) return null;
   return { loEdge: Math.log2(fLo) - DISS_EXTENT_MARGIN, hiEdge: Math.log2(fHi) + DISS_EXTENT_MARGIN };
@@ -986,10 +1332,10 @@ function _effectiveV(d, voiceCount, freq, extent) {
 // Drag-speed factor at a frequency: 1 in dissonant regions (full speed), down
 // to DISS_DAMP_MIN at the bottom of a consonant well (auto fine-tune). Never
 // moves the orb — only scales how far a pointer delta carries it.
-function _dampFactor(freq, background, profile, voiceCount) {
-  if (!background.length) return 1;
-  const extent = _backgroundExtent(background);
-  const v = _effectiveV(_probeDissonance(freq, background, profile), voiceCount, freq, extent);
+function _dampFactor(freq, field, profile, voiceCount) {
+  if (!field.n) return 1;
+  const extent = _backgroundExtent(field);
+  const v = _effectiveV(_probeDissonance(freq, field, profile), voiceCount, freq, extent);
   return DISS_DAMP_MIN + (1 - DISS_DAMP_MIN) * Math.pow(v, DISS_DAMP_RAMP);
 }
 
@@ -1003,10 +1349,16 @@ function _dampFactor(freq, background, profile, voiceCount) {
 // The canvas extends DISS_CURVE_DOWN px past the spectrum line so the column
 // colors bleed down into the spectrogram (fading out lower down). The peak
 // levels are lightly smoothed so the tops read as rounded rather than pointy.
-function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile, voiceCount) {
+function _drawDissonanceCurve(canvas, range, barWidth, field, probeProfile, voiceCount) {
+  // Cleared up front so any early return below leaves the loop un-skipped —
+  // only a frame that runs the full ease pass may declare the curve settled.
+  _dissSettled = false;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const dpr = window.devicePixelRatio || 1;
+  // Same DPR ceiling as the scope and the visuals overlay — at a phone's
+  // native 3 this canvas is cleared and re-stroked at 2.25x the pixels for
+  // a 1 px line nobody can resolve that finely.
+  const dpr = dprCap();
   const cssW = barWidth;
   const cssUp = DISS_CURVE_HEIGHT;                 // rising part, above the line
   const cssDown = DISS_LINE_LIFT + DISS_CURVE_DOWN; // lift gap + bar fill
@@ -1028,16 +1380,16 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
   // With nothing sounding the raw field would read "silence = totally
   // consonant" (a meaningless full-height fill), so target a flat zero instead
   // — a flat line resting on the spectrum line. It still eases there.
-  const hasField = background.length > 0;
+  const hasField = field.n > 0;
   // Adaptive spectral extent — computed once per frame, shared by every column
   // so the dead-zone roll-off costs O(1) per pixel.
-  const extent = _backgroundExtent(background);
+  const extent = _backgroundExtent(field);
 
   // Pass 1 — field → displayed level per column.
   for (let i = 0; i < cols; i++) {
     if (!hasField) { lv[i] = 0; continue; }
     const f0 = Math.pow(2, range.logMin + (i * DISS_CURVE_STEP / cssW) * span);
-    const d = _probeDissonance(f0, background, probeProfile);
+    const d = _probeDissonance(f0, field, probeProfile);
     const v = _effectiveV(d, voiceCount, f0, extent);
     // Hot-spot (inverse) view rises where consonant; the original view rises
     // where dissonant. Sink moderate consonance toward the baseline with the
@@ -1097,12 +1449,28 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
   // Pass 1.75 — temporal ease toward the new target, framerate-independent.
   if (!_dissDisplay || _dissDisplay.length < cols) _dissDisplay = new Float32Array(cols);
   const disp = _dissDisplay;
+  // Also track whether every column has landed on its target — once it has,
+  // and as long as the inputs stay put, the loop can stop recomputing
+  // entirely (the canvas already holds the finished curve).
+  let settled = true;
   if (firstFrame) {
     for (let i = 0; i < cols; i++) disp[i] = lv[i];
   } else {
     const alpha = dt > 0 ? 1 - Math.exp(-dt / DISS_ANIM_TAU) : 0;
-    for (let i = 0; i < cols; i++) disp[i] += (lv[i] - disp[i]) * alpha;
+    for (let i = 0; i < cols; i++) {
+      const target = lv[i];
+      const next = disp[i] + (target - disp[i]) * alpha;
+      if (settled && Math.abs(target - next) > DISS_SETTLE_EPS) settled = false;
+      disp[i] = next;
+    }
   }
+  // The contrast window eases on its own clock, so the curve isn't final
+  // until that has landed too.
+  if (settled && DISS_AUTO_CONTRAST && hasField) {
+    settled = Math.abs(_dissNormHi - _dissNormLo - _dissNormSpanPrev) <= DISS_SETTLE_EPS;
+  }
+  _dissNormSpanPrev = _dissNormHi - _dissNormLo;
+  _dissSettled = settled && !firstFrame;
   _dissCols = cols;
   _dissAnimT = now;
 
@@ -1123,7 +1491,7 @@ function _drawDissonanceCurve(canvas, range, barWidth, background, probeProfile,
     if (i === 0) ctx.moveTo(px, top);
     else ctx.lineTo(px, top);
   }
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.strokeStyle = palette.ink(0.5);
   ctx.lineWidth = 1;
   ctx.stroke();
 
@@ -1213,39 +1581,41 @@ function _updatePositionLines(lineEls, dotXs, freqXs, dragPos, edgeFades) {
     // (muted voices included — they just render dimmer, see the JSX styling).
     const level = _levelAtBarX(freqX - BAR_H_PADDING);
     const surfaceY = _curveSurfaceY(level);
-    // The polyline runs orb → near bar edge → far endpoint. Classic: orb is
-    // above, so it meets the curve surface first, then drops to the bar's
-    // bottom. Flipped: the orb hangs below, and the stem's attachment slides
-    // with a dragged orb (iOS parity): anchored at the bar's bottom edge
-    // while the orb hangs below it, tracking the orb through the bar band,
-    // and locking to the indicator's tip on the curve surface once the orb
-    // is pulled above the spectrum — the stem "follows the line to the top".
-    // The indicator itself always spans surface → bar bottom; only the stem's
-    // attachment point moves.
+    // The polyline runs orb → attachment point → the rest of the indicator.
+    // The attachment SLIDES with a dragged orb in BOTH layouts (iOS parity):
+    // it rests at whichever end of the bar band the orb sits outside of,
+    // tracks the orb once it enters the band, and locks at the far edge when
+    // the orb passes all the way through. So the handle "follows the line"
+    // whichever way the orb is dragged:
+    //   flipped — orb hangs below; rests on the bar's bottom edge, locks to
+    //             the indicator's tip on the curve once pulled above it.
+    //   classic — orb floats above; rests on the curve tip, and now walks
+    //             DOWN the frequency line with the orb, locking to the bar's
+    //             bottom edge once the orb is dragged below the spectrum.
+    // One clamp covers both — it's symmetric, and only the layout's resting
+    // side differs. The indicator itself always spans surface → bar bottom;
+    // only the attachment point moves.
     // Trim the orb endpoint to the orb's edge so the line meets it cleanly.
-    const nearY = GEO.flipped
-      ? Math.min(Math.max(dotY, surfaceY), GEO.posLineBottomY)
-      : surfaceY;
+    const nearY = Math.min(Math.max(dotY, surfaceY), GEO.posLineBottomY);
     const seg = offsetLine(dotX, dotY, freqX, nearY, DOT_SIZE / 2, 0);
     if (!seg) {
       // Stem shorter than the orb radius (orb swallowing its attachment
       // point mid-crossing). iOS hides just the stem — keep the indicator.
-      if (GEO.flipped) {
-        el.style.display = '';
-        el.setAttribute('points', `${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`);
-      } else {
-        el.style.display = 'none';
-      }
+      el.style.display = '';
+      el.setAttribute('points', `${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`);
       continue;
     }
     el.style.display = '';
     el.setAttribute(
       'points',
-      GEO.flipped
-        ? (nearY < GEO.posLineBottomY
-            ? `${seg.x1},${seg.y1} ${freqX},${nearY} ${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`
-            : `${seg.x1},${seg.y1} ${freqX},${GEO.posLineBottomY} ${freqX},${surfaceY}`)
-        : `${seg.x1},${seg.y1} ${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`,
+      // Orb short of the bar's bottom edge (at rest, or crossing): run the
+      // stem to the attachment, then draw the indicator's full span. The
+      // first hop is zero-length while the orb is still outside the band,
+      // which is the resting case in both layouts. Orb past the bottom edge:
+      // the stem lands there and the indicator runs back up to the surface.
+      nearY < GEO.posLineBottomY
+        ? `${seg.x1},${seg.y1} ${freqX},${nearY} ${freqX},${surfaceY} ${freqX},${GEO.posLineBottomY}`
+        : `${seg.x1},${seg.y1} ${freqX},${GEO.posLineBottomY} ${freqX},${surfaceY}`,
     );
   }
 }
@@ -1302,19 +1672,33 @@ function _updateNoteLines(noteEls, voices, range, barWidth) {
   }
 }
 
-function computeEdgeRate(clientX) {
-  const vw = window.innerWidth;
-  const canvasWidth = Math.min(vw, CANVAS_MAX_WIDTH);
-  const canvasLeft = Math.max(0, (vw - CANVAS_MAX_WIDTH) / 2);
-  const canvasRight = canvasLeft + canvasWidth;
-  const zone = Math.min(EDGE_ZONE_FRAC * canvasWidth, EDGE_ZONE_MAX_PX);
-  if (zone <= 0) return 0;
-  if (clientX < canvasLeft + zone) {
-    const depth = Math.min(1, (canvasLeft + zone - clientX) / zone);
+// The bar's viewport-px edges (the strip itself, inside its container
+// padding) plus the pan-zone width at that size. `el` is the
+// .freq-spectrum-bar container. Shared by computeEdgeRate and the dashed
+// zone hint lines so the visual always marks the functional boundary.
+// `bottom` is where those hint lines stop: the foot of the orb row (flipped)
+// or of the bar itself (classic), whichever hangs lower. They mark a
+// boundary the ORBS cross, so running them on down through the console, the
+// knob band and the page footer was noise (Dan, 2026-08-05).
+function edgeZoneGeometry(el) {
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  const left = r.left + BAR_H_PADDING;
+  const right = r.right - BAR_H_PADDING;
+  const zone = Math.min(EDGE_ZONE_FRAC * (right - left), EDGE_ZONE_MAX_PX);
+  const bottom = r.top + Math.max(GEO.dotCenterY + DOT_SIZE / 2, GEO.posLineBottomY);
+  return zone > 0 ? { left, right, zone, bottom } : null;
+}
+
+function computeEdgeRate(clientX, containerEl) {
+  const g = edgeZoneGeometry(containerEl);
+  if (!g) return 0;
+  if (clientX < g.left + g.zone) {
+    const depth = Math.min(1, (g.left + g.zone - clientX) / g.zone);
     return -depth * MAX_EDGE_PAN_RATE;
   }
-  if (clientX > canvasRight - zone) {
-    const depth = Math.min(1, (clientX - (canvasRight - zone)) / zone);
+  if (clientX > g.right - g.zone) {
+    const depth = Math.min(1, (clientX - (g.right - g.zone)) / g.zone);
     return depth * MAX_EDGE_PAN_RATE;
   }
   return 0;
@@ -1338,11 +1722,9 @@ function computeTargetRange(freqs) {
   const innerSpan = Math.max(logHi - logLo, MIN_LOG_SPAN);
   const center = (logLo + logHi) / 2;
   const totalSpan = innerSpan / (1 - 2 * PADDING_RATIO);
-  const paddedMin = center - totalSpan / 2;
-  const paddedMax = center + totalSpan / 2;
   return {
-    logMin: Math.max(ABSOLUTE_LOG_MIN, paddedMin),
-    logMax: Math.min(ABSOLUTE_LOG_MAX, paddedMax),
+    logMin: Math.max(railFloor(totalSpan), center - totalSpan / 2),
+    logMax: Math.min(railCeil(totalSpan), center + totalSpan / 2),
   };
 }
 
@@ -1413,29 +1795,54 @@ function offsetLine(x1, y1, x2, y2, r1, r2) {
 // `excluded` (confirmed drags) sit the pass out entirely — a finger-held
 // orb must neither shove its neighbors nor be shoved (iOS parity) — and
 // keep their raw target x.
+//
+// The separation is EXACT (Dan, 2026-08-05: "orbs should not overlap when
+// they are touching"). The old pass was 20 rounds of pairwise relaxation,
+// which converges far too slowly to matter: a pile-up of 12 voices came out
+// ~23px apart no matter what minimum it was asked for, so a cluster always
+// looked like a stack of half-covered discs. This solves the same problem in
+// closed form instead — one sweep, guaranteed gap, no iteration cap to tune.
+//
+// Method: sort by target, then note that "item k of a run sits at
+// runStart + k * minGap" turns the min-gap constraint into a plain
+// non-decreasing constraint on `target − k * minGap`. Pool-adjacent-violators
+// over that adjusted coordinate gives the arrangement with the smallest total
+// squared displacement — i.e. every orb as close to its true frequency as the
+// spacing allows, and each colliding run centered on its own voices' mean,
+// which is what the relaxation was approximating.
 function resolveCollisions(targetsPx, dotSize, excluded) {
-  const minGap = dotSize * 0.85;
+  const minGap = dotSize + ORB_MIN_EDGE_GAP;
   const resolved = [...targetsPx];
-  if (resolved.length < 2) return resolved;
+  const order = resolved
+    .map((_, i) => i)
+    .filter((i) => !excluded?.has(i))
+    .sort((a, b) => resolved[a] - resolved[b]);
+  if (order.length < 2) return resolved;
 
-  for (let iter = 0; iter < 20; iter++) {
-    const sorted = resolved
-      .map((_, i) => i)
-      .filter((i) => !excluded?.has(i))
-      .sort((a, b) => resolved[a] - resolved[b]);
-    let moved = false;
-    for (let i = 1; i < sorted.length; i++) {
-      const a = sorted[i - 1];
-      const b = sorted[i];
-      const gap = resolved[b] - resolved[a];
-      if (gap < minGap) {
-        const overlap = minGap - gap;
-        resolved[a] -= overlap / 2;
-        resolved[b] += overlap / 2;
-        moved = true;
-      }
+  // Each block is a run of orbs forced into contact: {first, count, sum} where
+  // sum is Σ of the adjusted targets, so sum / count is the run's start.
+  const blocks = [];
+  for (let k = 0; k < order.length; k++) {
+    let block = { first: k, count: 1, sum: resolved[order[k]] - k * minGap };
+    // Merge backwards while this block would start left of the previous one
+    // (the violated ordering); the merged run re-centers on the pooled mean.
+    while (blocks.length) {
+      const prev = blocks[blocks.length - 1];
+      if (prev.sum / prev.count <= block.sum / block.count) break;
+      blocks.pop();
+      block = {
+        first: prev.first,
+        count: prev.count + block.count,
+        sum: prev.sum + block.sum,
+      };
     }
-    if (!moved) break;
+    blocks.push(block);
+  }
+  for (const b of blocks) {
+    const start = b.sum / b.count;
+    for (let k = b.first; k < b.first + b.count; k++) {
+      resolved[order[k]] = start + k * minGap;
+    }
   }
   return resolved;
 }
@@ -1530,7 +1937,14 @@ function FrequencySpectrumBar({
   // Subscribe to theme changes so JSX re-renders when the user flips
   // palette in settings — every osc-color lookup below reads live from
   // the palette singleton.
-  useTheme();
+  const themeName = useTheme();
+  // The curve's stroke color comes from the palette too, and the draw loop
+  // skips repainting while nothing has changed — so a palette flip has to
+  // say so explicitly or the old ink would sit there until the next retune.
+  useEffect(() => { _dissInvalidate(); }, [themeName]);
+  // Same reason for the render tier: it changes the curve canvas's DPR, and
+  // a settled loop would otherwise keep painting into the old backing store.
+  useEffect(() => onRenderTierChange(_dissInvalidate), []);
   // Mode-dependent row geometry. Also published to the module-level GEO so
   // the rAF draw helpers (position lines, curve surface) read the same
   // layout — safe because the app mounts a single spectrum bar. Declared
@@ -1802,6 +2216,7 @@ function FrequencySpectrumBar({
   const fineTuneRef = useRef(fineTuneEnabled);
   const orbDragModeRef = useRef(orbDragMode);
   const shiftRef = useRef(shiftHeld);
+  const selectedVoiceRef = useRef(selectedVoice);
 
   // Keep the local transpose readout in sync with the engine (covers the
   // persisted value applied at boot and any programmatic change).
@@ -1906,6 +2321,13 @@ function FrequencySpectrumBar({
   useEffect(() => { fineTuneRef.current = fineTuneEnabled; }, [fineTuneEnabled]);
   useEffect(() => { orbDragModeRef.current = orbDragMode; }, [orbDragMode]);
   useEffect(() => { shiftRef.current = shiftHeld; }, [shiftHeld]);
+  // The zoom loop reads the selection to keep an edited voice in the fit even
+  // while muted; waking it on change is what makes opening the panel on a
+  // hidden voice ease the frame back out to it.
+  useEffect(() => {
+    selectedVoiceRef.current = selectedVoice;
+    wakeRef.current?.();
+  }, [selectedVoice]);
 
   // Dissonance HUD: the consonance hot-spot field behind the orbs, drawn
   // continuously (always shown) so it maps the current chord even at rest.
@@ -1925,11 +2347,17 @@ function FrequencySpectrumBar({
     // the first failure is reported instead of vanishing.
     let loggedDrawError = false;
     // The field recompute (_buildBackground + _drawDissonanceCurve — the
-    // pairDissonance sweep across every curve column) is the most expensive
+    // dissonance sweep across every curve column) is the most expensive
     // continuously running CPU work in the app, and its output is temporally
     // eased anyway, so it runs at half the loop rate. The cheap DOM updates
     // below (position lines, stems, note lines) stay at full rate so drags
     // track the finger without lag.
+    //
+    // On top of the half rate it skips entirely whenever nothing it depends on
+    // has moved AND the ease has landed: the canvas already holds the finished
+    // curve, so recomputing it paints identical pixels. This is what keeps an
+    // untouched app from heating the phone — a resting 12-voice chord costs
+    // one signature compare per field tick instead of a full sweep.
     let fieldTick = 0;
     const drawFrame = () => {
       fieldTick ^= 1;
@@ -1944,13 +2372,28 @@ function FrequencySpectrumBar({
         // A lone active voice drives the curve at full impact — at the reduced
         // slider impact with nothing else sounding the curve would near-vanish.
         const impact = _activeVoiceCount(oscillatorCount) <= 1 ? 1 : getMovingImpact();
-        // When paused, force an empty field so the line eases down to flat zero.
-        const { parts, voices } = audioEngine.paused
-          ? { parts: [], voices: 0 }
-          : _buildBackground(oscillatorCount, movingSet, impact, profile);
         const r = rangeRef.current;
         const bw = barWidthRef.current;
-        _drawDissonanceCurve(c, r, bw, parts, profile, voices);
+        const dirty = _dissInputsChanged(
+          oscillatorCount, movingSet, impact, audioEngine.paused, r, bw, profile,
+        );
+        if (dirty || !_dissSettled) {
+          // When paused, force an empty field so the line eases down to flat zero.
+          const { field, voices } = audioEngine.paused
+            ? { field: EMPTY_FIELD, voices: 0 }
+            : _buildBackground(oscillatorCount, movingSet, impact, profile);
+          const t0 = _dissStats.on ? performance.now() : 0;
+          _drawDissonanceCurve(c, r, bw, field, profile, voices);
+          if (_dissStats.on) {
+            _dissStats.computed++;
+            _dissStats.ms += performance.now() - t0;
+          }
+        } else {
+          if (_dissStats.on) _dissStats.skipped++;
+          // Keep the ease clock current so the frame after a skip doesn't see a
+          // huge dt and snap when the inputs do change.
+          _dissAnimT = performance.now();
+        }
       }
       // Position lines (orb → live curve surface → bar bottom) are owned by the
       // SVG layer; their top endpoint reads the curve levels the draw just eased.
@@ -2401,7 +2844,27 @@ function FrequencySpectrumBar({
               const hz = stepTailDisplayHz(tail, newFreqs[tail.slot], nowP);
               if (hz != null) tailFreqs.push(hz);
             }
-            let framed = newFreqs;
+            // MUTED voices sit OUT of the fit: one parked muted at 8 kHz must
+            // not hold the frame open against the voices you can actually
+            // hear. Three exceptions stay IN — a voice being DRAGGED or
+            // GRABBED (a drag with the transport paused never unmutes, and the
+            // frame still has to follow the finger) and the SELECTED voice, so
+            // opening a hidden voice's frequency panel zooms back out to the
+            // orb being edited. Everyone muted leaves nothing to frame: fall
+            // back to fitting EVERYONE rather than snapping to the bare
+            // FREQ_MIN–FREQ_MAX default, so a fully-muted patch still reads as
+            // itself. Port of iOS `zoomIgnoresMuted` (FrequencySpectrumBar
+            // .swift computeRange) — there it's a default-OFF Settings toggle,
+            // here it's just the behavior (Dan, 2026-08-05).
+            const unmutedFramed = [];
+            for (let i = 0; i < newFreqs.length; i++) {
+              const sitsOut = newMuted[i]
+                && !draggingRef.current.has(i)
+                && !grabbedRef.current.has(i)
+                && i !== selectedVoiceRef.current;
+              if (!sitsOut) unmutedFramed.push(newFreqs[i]);
+            }
+            let framed = unmutedFramed.length ? unmutedFramed : newFreqs;
             if (stagedActive && stagedActive.length) framed = framed.concat(stagedActive);
             if (tailFreqs.length) framed = framed.concat(tailFreqs);
             // Sounding keyboard/MIDI notes pull the frame open too, so a note
@@ -2416,11 +2879,31 @@ function FrequencySpectrumBar({
             // zoom drags the first-started one steers (insertion order);
             // both still tune fine, sharing whatever span it sets. GRAB
             // moves (multi-voice transport) never take ownership.
+            // The owned frame must still hold every UNMUTED voice (plus any
+            // voice mid-drag, mute state aside) — see zoomDragTarget/
+            // zoomFitWeight; muted voices don't pull it.
             let zoomTarget = null;
             if (orbDragModeRef.current === 'zoom') {
+              let owner = null;
               for (const pid in dragRef.current) {
                 const d = dragRef.current[pid];
-                if (d.didDrag) { zoomTarget = zoomDragTarget(d); break; }
+                if (d.didDrag && !owner) owner = d;
+              }
+              if (owner) {
+                const fitLogs = [];
+                const pushFit = (f) => {
+                  if (f > 0) {
+                    fitLogs.push(Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, f))));
+                  }
+                };
+                for (let i = 0; i < newFreqs.length; i++) {
+                  if (!newMuted[i]) pushFit(newFreqs[i]);
+                }
+                for (const pid in dragRef.current) {
+                  const d = dragRef.current[pid];
+                  if (d.didDrag && newMuted[d.index]) pushFit(newFreqs[d.index]);
+                }
+                zoomTarget = zoomDragTarget(owner, fitLogs);
               }
             }
             const target = zoomTarget ?? computeTargetRange(framed);
@@ -2544,19 +3027,28 @@ function FrequencySpectrumBar({
     () => resolveCollisions(freqXs, DOT_SIZE, collisionExcluded),
     [freqXs, collisionExcluded]
   );
-  // Continuous edge fade: 1 inside the row, ramping to 0 across EDGE_FADE_PX
-  // past either edge. Every piece of a voice's chrome — orb, number label,
-  // position line, Hz readout + stem, pan dot — fades out as it slides off
-  // the row instead of clamping at the edge or vanishing at a threshold
+  // Continuous edge fade: 1 inside the SPECTRUM BAR, ramping to 0 across
+  // EDGE_FADE_PX past either end of it. Every piece of a voice's chrome —
+  // orb, number label, position line, Hz readout + stem, pan dot, status
+  // flash — fades out on this one value, so the whole voice dissolves as a
+  // single mark instead of clamping at the edge or vanishing at a threshold
   // (Dan, 2026-08-04: "everything should fade out when it goes off screen").
+  //
+  // The zone is the BAR, not the row (Dan, 2026-08-05: "fade away sooner as
+  // they are off the spectrum boundaries... at the same rate the frequency
+  // numbers fade"). It used to start at the row edge — BAR_H_PADDING beyond
+  // the last tick — so a voice was already off the spectrum for 16px before
+  // it even began to dim, and took another 56 to go. Now the fade begins the
+  // moment the voice leaves the ruler.
+  //
   // Keyed on the voice's TRUE position (freqXs, not the collision-pushed
   // dotXs) so the whole voice fades as one mark; dragged/grabbed voices are
   // exempt at the use sites — they ride the pointer, which is on screen by
   // definition.
   const edgeFades = useMemo(() => {
-    const rowW = barWidth + BAR_H_PADDING * 2;
+    const barEnd = BAR_H_PADDING + barWidth;
     return freqXs.map((x) => {
-      const out = Math.max(-x, x - rowW, 0);
+      const out = Math.max(BAR_H_PADDING - x, x - barEnd, 0);
       return Math.max(0, 1 - out / EDGE_FADE_PX);
     });
   }, [freqXs, barWidth]);
@@ -2693,9 +3185,9 @@ function FrequencySpectrumBar({
     // independent of the display's "Moving voice impact" setting, so the orb
     // never gets stuck on its own self-consonance.
     const movingSet = new Set([...draggingRef.current, ...grabbedRef.current]);
-    const { parts, voices } = _buildBackground(audioEngine.getOscillatorCount(), movingSet, 0, profile);
-    if (!parts.length) return 1;
-    return _dampFactor(freq, parts, profile, voices);
+    const { field, voices } = _buildBackground(audioEngine.getOscillatorCount(), movingSet, 0, profile);
+    if (!field.n) return 1;
+    return _dampFactor(freq, field, profile, voices);
   };
 
   const toggleGrab = (index) => {
@@ -2905,13 +3397,16 @@ function FrequencySpectrumBar({
       // Vertical travel from the grab sets the horizontal tuning rate: the
       // precision tiers, the iOS ramp, or nothing at all in linear mode.
       // Volume is never on this axis during a drag — the faders own it.
-      // Zoom mode applies NO multiplier here: it retargets the view span
-      // instead (the auto-zoom loop reads drag.spanMult), and the span is
-      // already a factor of the logDelta below — folding it in twice would
-      // square the gain.
+      // Zoom mode retargets the view span instead (the auto-zoom loop reads
+      // drag.spanMult), and the span is already a factor of the logDelta
+      // below — folding it in too would square the gain. Its only multiplier
+      // here is the FLAT `zoomMove` setting (Dan, 2026-08-05: a movement-
+      // speed dial disjoint from the zoom — before it, the span was the one
+      // and only gain).
       const mode = orbDragModeRef.current;
       if (mode === 'zoom') {
-        drag.spanMult = zoomSpanMult(e.clientY, drag.startY, window.innerHeight);
+        drag.spanMult = zoomSpanMult(
+          e.clientY, drag.startY, window.innerHeight, geo.flipped);
         // Vertical-only moves change the span target without any frequency
         // event, so kick the demand-driven zoom loop ourselves.
         wakeRef.current?.();
@@ -2920,10 +3415,13 @@ function FrequencySpectrumBar({
         ? scrubScale(e.clientY - drag.startY)
         : mode === 'ios'
           ? scrubRatio(e.clientY, drag.startY)
-          : 1;
+          : mode === 'zoom'
+            ? getScrubSettings().zoomMove
+            : 1;
       // Read by the `< 1x >` tag over the Hz readout (and the edge arrow).
-      // In zoom mode the effective rate is the span tier itself.
-      drag.rate = mode === 'zoom' ? drag.spanMult : scrub;
+      // In zoom mode the effective rate is the span tier times the flat
+      // movement dial.
+      drag.rate = mode === 'zoom' ? drag.spanMult * scrub : scrub;
       if (deltaX !== 0) {
         const sens = getSensitivity();
         const r = rangeRef.current;
@@ -2943,7 +3441,7 @@ function FrequencySpectrumBar({
       // clamps by its span ratio for the same reason — zoomed in, the view
       // is tight, and a full-rate sweep would tear across it. Precision-mode
       // tiers leave the sweep at full speed, as they shipped.
-      drag.edgeRate = computeEdgeRate(e.clientX)
+      drag.edgeRate = computeEdgeRate(e.clientX, containerRef.current)
         * (mode === 'ios' || mode === 'zoom' ? Math.min(1, drag.rate ?? 1) : 1);
       // Edge-pan needs the auto-zoom loop alive even on frames where
       // setFrequency above didn't fire (e.g., orb already at FREQ_MIN/MAX).
@@ -3070,7 +3568,7 @@ function FrequencySpectrumBar({
 
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      const rate = computeEdgeRate(e.clientX);
+      const rate = computeEdgeRate(e.clientX, containerRef.current);
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
       setGrabCursor({ x: cx, y: cy, edgeRate: rate });
@@ -3400,8 +3898,8 @@ function FrequencySpectrumBar({
   // a played freq back to its nominal on-screen position — the orbs don't move.)
   const tickLogShift = transpose / 12;
   const visibleTicks = useMemo(
-    () => computeTicks(range.logMin + tickLogShift, range.logMax + tickLogShift),
-    [range.logMin, range.logMax, tickLogShift]
+    () => computeTicks(range.logMin + tickLogShift, range.logMax + tickLogShift, 0, barWidth),
+    [range.logMin, range.logMax, tickLogShift, barWidth]
   );
   // Ridges between the numbers. They subdivide the dominant level's lattice
   // (padded 2 octaves so edge gaps whose bounding mark sits off-screen still
@@ -3416,7 +3914,7 @@ function FrequencySpectrumBar({
     const majorXs = visibleTicks
       .filter((t) => t.opacity >= 0.5)
       .map((t) => freqToFraction(t.freq, lo, hi) * barWidth);
-    return computeMinorTicks(latticeTickFreqs(lo, hi, 2), lo, hi, barWidth)
+    return computeMinorTicks(latticeTickFreqs(lo, hi, 2, barWidth), lo, hi, barWidth)
       .filter((m) => !majorXs.some((mx) => Math.abs(mx - m.x) < 1.5));
   }, [range.logMin, range.logMax, tickLogShift, barWidth, visibleTicks]);
 
@@ -3425,14 +3923,20 @@ function FrequencySpectrumBar({
       <div className={`orb-backdrop${geo.flipped ? ' flipped' : ''}`} />
       {/* Viewport-spanning dotted lines marking where edge auto-pan engages.
           Only shown during an active drag or grab — otherwise they're visual
-          noise. CSS positions them at the 1200px canvas inset (matching the
-          keyboard tray); see computeEdgeRate() for the matching JS math. */}
-      {(draggingDots.size > 0 || grabbedOscs.size > 0) && (
-        <>
-          <div className="fsb-edge-zone-line fsb-edge-zone-line-left" aria-hidden="true" />
-          <div className="fsb-edge-zone-line fsb-edge-zone-line-right" aria-hidden="true" />
-        </>
-      )}
+          noise. Positioned inline at the BAR-anchored zone boundaries
+          (edgeZoneGeometry — the same math computeEdgeRate runs), refreshed
+          every render; drag frames re-render continuously so they track any
+          mid-gesture layout shift. */}
+      {(draggingDots.size > 0 || grabbedOscs.size > 0) && (() => {
+        const g = edgeZoneGeometry(containerRef.current);
+        if (!g) return null;
+        return (
+          <>
+            <div className="fsb-edge-zone-line" style={{ left: g.left + g.zone, height: Math.max(0, g.bottom) }} aria-hidden="true" />
+            <div className="fsb-edge-zone-line" style={{ left: g.right - g.zone, height: Math.max(0, g.bottom) }} aria-hidden="true" />
+          </>
+        );
+      })()}
       {/* gesture-live hoists the whole row's stacking context above every
           menu/panel while an orb is under a finger, held by a grab, or still
           settling home — a dragged orb must never disappear under the console,
@@ -3480,11 +3984,11 @@ function FrequencySpectrumBar({
         {/* Ticks are generated + positioned in PLAYED space (range shifted by
             the transpose), so the round-number labels update live as the bar is
             dragged and each sits at the orb that actually plays it. */}
-        {visibleTicks.map(({ freq, opacity }) => {
+        {visibleTicks.map(({ freq, opacity, label }) => {
           const x = freqToFraction(freq, range.logMin + tickLogShift, range.logMax + tickLogShift) * barWidth;
           return (
             <div key={freq} className="fsb-tick" style={{ left: x, opacity }}>
-              <span className="fsb-tick-label">{formatTick(freq)}</span>
+              <span className="fsb-tick-label">{label}</span>
             </div>
           );
         })}
@@ -3534,7 +4038,7 @@ function FrequencySpectrumBar({
               // otherwise reach oscColor(null) and take osc 1's classic color.
               const color = n.slot != null && n.slot >= 0
                 ? palette.oscColor(n.slot, oscillatorCount)
-                : DUO_WHITE;
+                : palette.ink(0.91);
               // Children sit at local x=0; _updateNoteLines translates the group
               // to the note's pitch and rides y1 up to the curve surface every
               // frame. The mount-time transform here just avoids a one-frame
@@ -3844,7 +4348,7 @@ function FrequencySpectrumBar({
                 g.x,
                 g.y + ghostYOffset,
                 g.edgeRate,
-                palette.oscColor(g.index, oscillatorCount)
+                palette.orbColor(g.index, oscillatorCount)
               )
             )}
             {/* Grabbed orbs get the same arrow beside wherever each one now
@@ -3856,7 +4360,7 @@ function FrequencySpectrumBar({
                 g.x,
                 g.y + ghostYOffset,
                 g.edgeRate,
-                palette.oscColor(g.index, oscillatorCount)
+                palette.orbColor(g.index, oscillatorCount)
               )
             )}
           </svg>
@@ -3864,7 +4368,11 @@ function FrequencySpectrumBar({
       })()}
 
       {frequencies.map((_, i) => {
-        const color = palette.oscColor(i, oscillatorCount);
+        // orbColor, not oscColor: the orb glyph is the one place the mono
+        // theme spends brightness — everything else in the row is capped
+        // at the ink gray, and that gap is what makes the orbs the focus.
+        // duo/classic resolve both to the same value.
+        const color = palette.orbColor(i, oscillatorCount);
         const isDragging = draggingDots.has(i);
         const isGrabbed = grabbedOscs.has(i);
         // "Boosted" = externally marked active (fader fine-tune selection)
@@ -3970,7 +4478,7 @@ function FrequencySpectrumBar({
           the row's top (see fsb-hz-float below), where the dragging finger
           can't cover it. */}
       {frequencies.map((f, i) => {
-        const color = palette.oscColor(i, oscillatorCount);
+        const color = palette.orbColor(i, oscillatorCount);
         const isActive = !geo.flipped && (draggingDots.has(i) || grabbedOscs.has(i));
         // The label rides the orb: at the cursor during a drag or grab, easing
         // home with it during the release settle (same .settling transition).
@@ -4034,7 +4542,7 @@ function FrequencySpectrumBar({
         <div
           key={`hz-float-${i}`}
           className={`fsb-hz-float${shown ? ' showing' : ''}`}
-          style={{ left: x, top: 0, color: palette.oscColor(i, oscillatorCount), '--edge-fade': fade }}
+          style={{ left: x, top: 0, color: palette.orbColor(i, oscillatorCount), '--edge-fade': fade }}
         >
           {text}
         </div>
@@ -4054,7 +4562,7 @@ function FrequencySpectrumBar({
             style={{
               left: dragPos.x,
               top: dragPos.y - DOT_SIZE / 2 - 4,
-              color: palette.oscColor(i, oscillatorCount),
+              color: palette.orbColor(i, oscillatorCount),
             }}
           >
             {formatActiveFreq(f * soundingRatio)}
@@ -4113,7 +4621,13 @@ function FrequencySpectrumBar({
             style={{
               left: dragPos ? dragPos.x : dotXs[i],
               top: dragPos ? dragPos.y : geo.dotCenterY,
-              '--dot-color': palette.oscColor(i, oscillatorCount),
+              // orbColor, not oscColor: the dot is drawn as "40% of this
+              // + 60% white", a mix that only lands brighter than the
+              // orb when `this` IS the orb's color. Feeding it the chrome
+              // color instead made mono's dot darker than the disc it
+              // sits on — a dark spot, not a mark. Identical in
+              // duo/classic, where the two colors are the same value.
+              '--dot-color': palette.orbColor(i, oscillatorCount),
               '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
               filter: !dragPos && edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
             }}
@@ -4142,7 +4656,9 @@ function FrequencySpectrumBar({
           When the readout is suppressed (at-rest value) the voice number
           stays visible instead — see statusReadoutShown. */}
       {statusFlash && frequencies.map((_, i) => {
-        const color = palette.oscColor(i, oscillatorCount);
+        // Same mix as the pinned dot above — the flash rides the orb, so
+        // it reads against the orb's color, not the chrome's.
+        const color = palette.orbColor(i, oscillatorCount);
         const isPan = statusFlash.param === 'pan';
         const pan = isPan ? Math.max(-1, Math.min(1, statusFlash.values[i] ?? 0)) : 0;
         const det = isPan ? 0 : Math.max(0, statusFlash.values[i] ?? 0);
@@ -4158,6 +4674,10 @@ function FrequencySpectrumBar({
               top: geo.dotCenterY,
               '--dot-color': color,
               '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
+              // Edge fade like every other piece of the voice's chrome — this
+              // layer was the one that stayed at full strength off the bar
+              // (Dan, 2026-08-05).
+              filter: edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
             }}
           >
             {/* Same offset as .fsb-dot-label so the readout lands exactly

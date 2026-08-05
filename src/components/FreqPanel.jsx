@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
 import frequencyManager from '../audio/FrequencyManager';
 import { droneStereo, MAX_DETUNE_HZ } from '../audio/StereoMode';
+import { FREQ_CEIL } from '../audio/freqRange';
 import palette, { useTheme } from '../theme/palette';
 import PanPot from './PanPot';
 import VerticalFader from './VerticalFader';
@@ -10,6 +11,9 @@ import NoteKeyboard from './NoteKeyboard';
 import { FreqScrubber, DetuneSlider, OctaveJogger } from './FreqPanelParts';
 import { freqToMidiAndCents, noteName, parseHz, formatHz } from '../ui/pitchMath';
 import '../styles/freqPanels.css';
+
+// Engine-poll rate cap for the panel readouts (30 Hz).
+const POLL_MIN_MS = 1000 / 30 - 1.5;
 
 // Per-voice frequency panel — web port of the iOS FrequencyPanel
 // (Views/FrequencyPanel.swift). Selection IS the panel: it mounts while
@@ -24,7 +28,7 @@ import '../styles/freqPanels.css';
 // keeps ratio-lock / follow-root semantics and feeds the undo stack.
 
 const HZ_MIN = 0.1;
-const HZ_MAX = 20000;
+const HZ_MAX = FREQ_CEIL;   // sounding-domain entry needs the transpose headroom
 
 export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClose }) {
   const [face, setFace] = useState('controls');
@@ -47,16 +51,27 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
   const color = palette.oscColor(voice, audioEngine.getOscillatorCount?.() ?? 2);
   void themeName;
 
+  // Engine poll. Capped at POLL_MIN_MS (rAF fires at 120 Hz on a ProMotion
+  // phone, and this is a readout, not a gesture) and reading the per-voice
+  // accessors rather than getAllVolumes()/getAllMutedStates(), which each
+  // allocate a fresh array. One panel is mounted per voice, so both costs
+  // were multiplied by the voice count.
   useEffect(() => {
     let raf;
-    const tick = () => {
+    let last = 0;
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - last < POLL_MIN_MS) return;
+      last = now;
       if (!audioEngine.isInitialized) return;
       try {
         const nextHz = audioEngine.getFrequency(voice) || 0;
         const nextRatio = audioEngine.getTransposeRatio?.() ?? 1;
-        const nextVol = (audioEngine.getAllVolumes()[voice] ?? 0) / 100;
-        const nextMuted = !!audioEngine.getAllMutedStates()[voice];
+        // Matches getAllVolumes()' integer-percent quantization so the
+        // change threshold below behaves exactly as before.
+        const nextVol = Math.round((audioEngine.getVolume(voice) ?? 0) * 100) / 100;
+        const nextMuted = !!audioEngine.isMuted(voice);
         setHz((p) => (Math.abs(p - nextHz) > 1e-6 ? nextHz : p));
         setRatio((p) => (Math.abs(p - nextRatio) > 1e-9 ? nextRatio : p));
         setVol((p) => (Math.abs(p - nextVol) > 1e-4 ? nextVol : p));

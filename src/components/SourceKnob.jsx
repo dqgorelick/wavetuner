@@ -34,7 +34,12 @@ function arcPath(cx, cy, r, fromDeg, toDeg) {
  * @param readout  short string drawn in the dial center ("64", "TRI")
  * @param label    name under the dial; also the tray-open tap target
  * @param dimmed   render at low opacity (source off / muted)
- * @param selected this source's tray is open — underline the label
+ * @param selected this source's tray is open — underline the label and
+ *                 bracket the dial with the console's selection corners
+ * @param corners  which corners the selection bracket draws: 'all', or
+ *                 'left' / 'right' for the outer pair only. shape + fold
+ *                 open ONE menu, so they draw 'left' and 'right' and the
+ *                 two dials read as a single bracket spanning the pair
  * @param size     circle diameter in px (SourceKnobBand.dialGeometry)
  * @param slot     column width the dial is centered in; the leftover is
  *                 the air between neighbors, so the gap scales with the
@@ -51,6 +56,7 @@ function SourceKnob({
   title,
   dimmed = false,
   selected = false,
+  corners = 'all',
   size = 46,
   slot = 60,
   linkNext = false,
@@ -117,7 +123,7 @@ function SourceKnob({
           <path
             d={arcPath(c, c, r, -135, 135)}
             fill="none"
-            stroke="rgba(255,255,255,0.12)"
+            style={{ stroke: 'rgba(var(--ink-soft-rgb), 0.12)' }}
             strokeWidth={strokeW}
             strokeLinecap="round"
           />
@@ -133,6 +139,17 @@ function SourceKnob({
           )}
         </svg>
         <span className="source-knob-readout">{readout}</span>
+        {selected && (
+          // Same mark the console puts on the selected note cell, around
+          // the dial's square box (the circle's bounding box, nudged out
+          // so the L's clear the track's arc ends).
+          <span className="sel-corners source-knob-corners" aria-hidden="true">
+            {corners !== 'right' && <i className="c-tl" />}
+            {corners !== 'left' && <i className="c-tr" />}
+            {corners !== 'right' && <i className="c-bl" />}
+            {corners !== 'left' && <i className="c-br" />}
+          </span>
+        )}
       </button>
       <button
         type="button"

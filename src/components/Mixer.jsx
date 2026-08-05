@@ -245,7 +245,7 @@ const PartialButtons = memo(function PartialButtons({ slot, partialIndex }) {
 
 // Bus / master row color. Single neutral white so the bus strip reads
 // as utility controls rather than another colored sound source.
-const BUS_COLOR = 'rgba(255, 255, 255, 0.85)';
+const BUS_COLOR = 'rgba(var(--ink-rgb), 0.85)';
 
 // Render a 0..2 bus fader. Slider position represents value/2 so the
 // midpoint of the track lands at unity (1.0×). Layout uses the same

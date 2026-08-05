@@ -4,7 +4,7 @@ import { droneWave, keyboardWave } from '../audio/Wave';
 import { droneFold, keyboardFold, FOLD_TYPES } from '../audio/Fold';
 import { noise, NOISE_TYPES } from '../audio/Noise';
 import useBusGains, { BUS_MAX } from '../hooks/useBusGains';
-import { DRIVE_MIN, DRIVE_MAX } from './SourceTrayPanel';
+import { DRIVE_MIN, DRIVE_MAX, SHAPE_FOLD } from './SourceTrayPanel';
 import SourceKnob from './SourceKnob';
 
 // Source knob band — web take on the iOS SourceKnobTray (BottomKnobBar
@@ -47,8 +47,14 @@ const clamp = (lo, v, hi) => Math.max(lo, Math.min(hi, v));
 
 // The shape and fold dials open the same merged "shape and fold" menu
 // (2026-08-04) — one pool selector, one wave picture, both levers. The
-// dials stay separate macros; only the menu behind them merged.
-const SHAPE_FOLD = new Set(['shape', 'fold']);
+// dials stay separate macros; only the menu behind them merged. SHAPE_FOLD
+// lives with that menu (SourceTrayPanel), since App's toggle needs it too.
+//
+// Because they're one menu they also wear ONE selection bracket: shape
+// draws only its left corners, fold only its right, so the mark spans the
+// pair (the link line between them runs right through it) instead of
+// reading as two separate selections. Every other dial gets all four.
+const CORNERS = { shape: 'left', fold: 'right' };
 
 // Slot width → dial size + the type that rides with it. Height matters
 // too: the label sits under the circle inside the band's fixed height
@@ -203,6 +209,7 @@ function SourceKnobBand({
             selected={SHAPE_FOLD.has(k.kind)
               ? SHAPE_FOLD.has(openTray)
               : openTray === k.kind}
+            corners={CORNERS[k.kind] ?? 'all'}
             size={dial.size}
             slot={dial.slot}
             linkNext={k.linkNext}

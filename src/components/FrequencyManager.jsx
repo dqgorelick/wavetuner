@@ -529,18 +529,27 @@ function useFreqVersion() {
     };
   }, []);
   // Mute changes don't fire the frequency listener (AudioEngine's
-  // toggleMute mutates mutedStates directly). Poll the array via rAF
-  // and bump version on any diff — mirrors what OscillatorControls
-  // already does. ~60Hz on an N=12 array of booleans is negligible.
+  // toggleMute mutates mutedStates directly). Poll the array and bump
+  // version on any diff — mirrors what OscillatorControls already does.
+  // 15 Hz: a mute is a discrete UI event, nothing here animates, and the
+  // old every-frame version built a fresh join() string each tick.
   useEffect(() => {
     let raf;
-    let last = '';
-    const tick = () => {
-      if (audioEngine.initialized && audioEngine.mutedStates) {
-        const sig = audioEngine.mutedStates.join('');
-        if (sig !== last) { last = sig; setVersion((v) => v + 1); }
-      }
+    let last = 0;
+    let lastSig = 0;
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - last < 1000 / 15 - 1.5) return;
+      last = now;
+      if (audioEngine.initialized && audioEngine.mutedStates) {
+        // Bitmask instead of join('') — same diff, no allocation.
+        const m = audioEngine.mutedStates;
+        let sig = 0;
+        for (let i = 0; i < m.length && i < 30; i++) if (m[i]) sig |= 1 << i;
+        sig = sig * 64 + m.length;
+        if (sig !== lastSig) { lastSig = sig; setVersion((v) => v + 1); }
+      }
     };
     tick();
     return () => cancelAnimationFrame(raf);

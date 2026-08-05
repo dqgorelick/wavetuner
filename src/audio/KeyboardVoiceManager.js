@@ -23,6 +23,7 @@
  */
 
 import audioEngine from './AudioEngine';
+import { FREQ_CEIL } from './freqRange';
 import tuning from './Tuning';
 import { keyboardEnvelope, computerKbdEnvelope } from './Envelope';
 import { keyboardWave } from './Wave';
@@ -163,7 +164,7 @@ class KeyboardVoiceManager {
     const slotPartials = audioEngine.getExtraPartials(slot);
     for (const p of slotPartials) {
       if (p.muted) continue;
-      const extraNominal = Math.max(0.001, Math.min(20000, freq * p.ratio));
+      const extraNominal = Math.max(0.001, Math.min(FREQ_CEIL, freq * p.ratio));
       // Effective peak for this partial: voice peak (velocity-scaled or
       // 1.0 for kbd) × the partial's mixer vol. Snapshotted so a later
       // mixer drag on the parent's partial doesn't retroactively rebalance.
@@ -180,8 +181,8 @@ class KeyboardVoiceManager {
           oscR.setPeriodicWave(wave);
         }
         const halfDetune = detuneHz / 2;
-        const fL = Math.max(0.001, Math.min(20000, extraNominal + halfDetune));
-        const fR = Math.max(0.001, Math.min(20000, extraNominal - halfDetune));
+        const fL = Math.max(0.001, Math.min(FREQ_CEIL, extraNominal + halfDetune));
+        const fR = Math.max(0.001, Math.min(FREQ_CEIL, extraNominal - halfDetune));
         oscL.frequency.setValueAtTime(fL, t0);
         oscR.frequency.setValueAtTime(fR, t0);
         oscL.connect(gainL);
@@ -201,7 +202,7 @@ class KeyboardVoiceManager {
         const gain = ctx.createGain();
         const panner = ctx.createStereoPanner();
         if (wave) osc.setPeriodicWave(wave);
-        const played = Math.max(0.001, Math.min(20000, extraNominal + detuneHz));
+        const played = Math.max(0.001, Math.min(FREQ_CEIL, extraNominal + detuneHz));
         osc.frequency.setValueAtTime(played, t0);
         panner.pan.setValueAtTime(pan, t0);
         osc.connect(gain);
@@ -228,8 +229,8 @@ class KeyboardVoiceManager {
       if (raw === null) continue;
       if (voice._isStereo) {
         const half = newDetune / 2;
-        const fL = Math.max(0.001, Math.min(20000, raw + half));
-        const fR = Math.max(0.001, Math.min(20000, raw - half));
+        const fL = Math.max(0.001, Math.min(FREQ_CEIL, raw + half));
+        const fR = Math.max(0.001, Math.min(FREQ_CEIL, raw - half));
         voice.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
         voice.targetFreq = fL;
         if (voice.oscR) {
@@ -237,7 +238,7 @@ class KeyboardVoiceManager {
           voice.targetFreqR = fR;
         }
       } else {
-        const newFreq = Math.max(0.001, Math.min(20000, raw + newDetune));
+        const newFreq = Math.max(0.001, Math.min(FREQ_CEIL, raw + newDetune));
         voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
         voice.targetFreq = newFreq;
       }
@@ -249,12 +250,12 @@ class KeyboardVoiceManager {
           const nominal = raw * e.ratio;
           if (voice._isStereo) {
             const half = newDetune / 2;
-            const fL = Math.max(0.001, Math.min(20000, nominal + half));
-            const fR = Math.max(0.001, Math.min(20000, nominal - half));
+            const fL = Math.max(0.001, Math.min(FREQ_CEIL, nominal + half));
+            const fR = Math.max(0.001, Math.min(FREQ_CEIL, nominal - half));
             if (e.osc) e.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
             if (e.oscR) e.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
           } else {
-            const newFreq = Math.max(0.001, Math.min(20000, nominal + newDetune));
+            const newFreq = Math.max(0.001, Math.min(FREQ_CEIL, nominal + newDetune));
             if (e.osc) e.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
           }
         }
@@ -365,8 +366,8 @@ class KeyboardVoiceManager {
       const detune = voice.detuneHz || 0;
       if (voice._isStereo) {
         const half = detune / 2;
-        const fL = Math.max(0.001, Math.min(20000, raw + half));
-        const fR = Math.max(0.001, Math.min(20000, raw - half));
+        const fL = Math.max(0.001, Math.min(FREQ_CEIL, raw + half));
+        const fR = Math.max(0.001, Math.min(FREQ_CEIL, raw - half));
         voice.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
         voice.targetFreq = fL;
         if (voice.oscR) {
@@ -374,7 +375,7 @@ class KeyboardVoiceManager {
           voice.targetFreqR = fR;
         }
       } else {
-        const newFreq = Math.max(0.001, Math.min(20000, raw + detune));
+        const newFreq = Math.max(0.001, Math.min(FREQ_CEIL, raw + detune));
         voice.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
         voice.targetFreq = newFreq;
       }
@@ -385,12 +386,12 @@ class KeyboardVoiceManager {
           const nominal = raw * e.ratio;
           if (voice._isStereo) {
             const half = detune / 2;
-            const fL = Math.max(0.001, Math.min(20000, nominal + half));
-            const fR = Math.max(0.001, Math.min(20000, nominal - half));
+            const fL = Math.max(0.001, Math.min(FREQ_CEIL, nominal + half));
+            const fR = Math.max(0.001, Math.min(FREQ_CEIL, nominal - half));
             if (e.osc) e.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
             if (e.oscR) e.oscR.frequency.setTargetAtTime(fR, now, RETUNE_TAU);
           } else {
-            const newFreq = Math.max(0.001, Math.min(20000, nominal + detune));
+            const newFreq = Math.max(0.001, Math.min(FREQ_CEIL, nominal + detune));
             if (e.osc) e.osc.frequency.setTargetAtTime(newFreq, now, RETUNE_TAU);
           }
         }
@@ -497,7 +498,7 @@ class KeyboardVoiceManager {
     if (rawFreq === null) return null;
     // Clamp into the audible range — Z/X spamming or a high MIDI note
     // can otherwise push freq above Nyquist (silent + alias risk).
-    const freq = Math.max(0.001, Math.min(20000, rawFreq));
+    const freq = Math.max(0.001, Math.min(FREQ_CEIL, rawFreq));
 
     this._ensureTuningSubscribed();
     this._ensureEnvelopeSubscribed();
@@ -572,8 +573,8 @@ class KeyboardVoiceManager {
         oscR.setPeriodicWave(wave);
       }
       const halfDetune = detuneHz / 2;
-      const freqL = Math.max(0.001, Math.min(20000, freq + halfDetune));
-      const freqR = Math.max(0.001, Math.min(20000, freq - halfDetune));
+      const freqL = Math.max(0.001, Math.min(FREQ_CEIL, freq + halfDetune));
+      const freqR = Math.max(0.001, Math.min(FREQ_CEIL, freq - halfDetune));
       oscL.frequency.setValueAtTime(freqL, t0);
       oscR.frequency.setValueAtTime(freqR, t0);
       oscL.connect(gainL);
@@ -618,7 +619,7 @@ class KeyboardVoiceManager {
       const gain = ctx.createGain();
       const panner = ctx.createStereoPanner();
       if (wave) osc.setPeriodicWave(wave);
-      const playedFreq = Math.max(0.001, Math.min(20000, freq + detuneHz));
+      const playedFreq = Math.max(0.001, Math.min(FREQ_CEIL, freq + detuneHz));
       osc.frequency.setValueAtTime(playedFreq, t0);
       panner.pan.setValueAtTime(this._panForDegree(degree), t0);
       osc.connect(gain);
@@ -1005,7 +1006,7 @@ class KeyboardVoiceManager {
     // `freq` stays NOMINAL through the slot/octave binding below (drone
     // frequencyValues are nominal too); the transpose multiplies in only at
     // the oscillator, mirroring noteOn's pitchForSlotAndOctave.
-    const freq = Math.max(0.001, Math.min(20000, hz));
+    const freq = Math.max(0.001, Math.min(FREQ_CEIL, hz));
     if (!(freq > 0)) return null;
 
     this._ensureTuningSubscribed();
@@ -1047,7 +1048,7 @@ class KeyboardVoiceManager {
       degree: useSlot,
       octave: useOct,
       slot: useSlot,
-      freq: Math.max(0.001, Math.min(20000, freq * (audioEngine.getTransposeRatio() || 1))),
+      freq: Math.max(0.001, Math.min(FREQ_CEIL, freq * (audioEngine.getTransposeRatio() || 1))),
       source,
       peakRaw,
       latched: true,              // nothing is physically holding it
@@ -1075,13 +1076,13 @@ class KeyboardVoiceManager {
     if (!ctx) return false;
     const voice = this.voices.find((v) => v.id === voiceId && !v.released);
     if (!voice) return false;
-    const raw = Math.max(0.001, Math.min(20000, hz * (audioEngine.getTransposeRatio() || 1)));
+    const raw = Math.max(0.001, Math.min(FREQ_CEIL, hz * (audioEngine.getTransposeRatio() || 1)));
     const now = ctx.currentTime;
     const detune = voice.detuneHz || 0;
     if (voice._isStereo) {
       const half = detune / 2;
-      const fL = Math.max(0.001, Math.min(20000, raw + half));
-      const fR = Math.max(0.001, Math.min(20000, raw - half));
+      const fL = Math.max(0.001, Math.min(FREQ_CEIL, raw + half));
+      const fR = Math.max(0.001, Math.min(FREQ_CEIL, raw - half));
       voice.osc.frequency.setTargetAtTime(fL, now, RETUNE_TAU);
       voice.targetFreq = fL;
       if (voice.oscR) {
@@ -1089,7 +1090,7 @@ class KeyboardVoiceManager {
         voice.targetFreqR = fR;
       }
     } else {
-      const f = Math.max(0.001, Math.min(20000, raw + detune));
+      const f = Math.max(0.001, Math.min(FREQ_CEIL, raw + detune));
       voice.osc.frequency.setTargetAtTime(f, now, RETUNE_TAU);
       voice.targetFreq = f;
     }
@@ -1098,10 +1099,10 @@ class KeyboardVoiceManager {
         const nominal = raw * e.ratio;
         if (voice._isStereo) {
           const half = detune / 2;
-          if (e.osc) e.osc.frequency.setTargetAtTime(Math.max(0.001, Math.min(20000, nominal + half)), now, RETUNE_TAU);
-          if (e.oscR) e.oscR.frequency.setTargetAtTime(Math.max(0.001, Math.min(20000, nominal - half)), now, RETUNE_TAU);
+          if (e.osc) e.osc.frequency.setTargetAtTime(Math.max(0.001, Math.min(FREQ_CEIL, nominal + half)), now, RETUNE_TAU);
+          if (e.oscR) e.oscR.frequency.setTargetAtTime(Math.max(0.001, Math.min(FREQ_CEIL, nominal - half)), now, RETUNE_TAU);
         } else if (e.osc) {
-          e.osc.frequency.setTargetAtTime(Math.max(0.001, Math.min(20000, nominal + detune)), now, RETUNE_TAU);
+          e.osc.frequency.setTargetAtTime(Math.max(0.001, Math.min(FREQ_CEIL, nominal + detune)), now, RETUNE_TAU);
         }
       }
     }

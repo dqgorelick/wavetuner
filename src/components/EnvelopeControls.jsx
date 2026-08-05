@@ -16,11 +16,15 @@ import CompactSlider from './CompactSlider';
  * the left, the ADSR levers stacked in a column beside it (label over
  * track — CompactSlider), so the whole editor fits the 310px side-menu
  * column without four full-width rows of scroll. The host draws the
- * section header in that mode, so `title` is skipped. `belowGraph`
- * mounts under the graph in the LEFT column (the waves menu puts its
- * drone/midi/kbd target radio there) — the picker used to sit above
- * the whole split, which pushed release off the bottom of the column
- * and made the menu scroll.
+ * section header in that mode, so `title` is skipped.
+ *
+ * `aboveGraph` / `belowGraph` mount at the top and bottom of the LEFT
+ * column. The waves menu puts its "Envelope" section heading in the
+ * former and its drone/midi/kbd target radio in the latter — both used
+ * to span the whole split, and each one that does costs the right
+ * column a row of height it doesn't need: with the heading inside the
+ * left column, attack now starts level with it (Dan, 2026-08-05) and
+ * the four levers clear the column without scrolling.
  *
  * Time sliders use a sqrt-ms curve: slider value t ∈ [0, 1] maps to
  * ms = 1 + 9999 × t² (so 1 ms..10 s with fine control near the bottom
@@ -50,6 +54,7 @@ export default function EnvelopeControls({
   envelope,
   mode = 'adsr',
   split = false,
+  aboveGraph = null,
   belowGraph = null,
 }) {
   const [, setTick] = useState(0);
@@ -73,6 +78,7 @@ export default function EnvelopeControls({
     return (
       <div className="envelope-section tray-split">
         <div className="tray-split-col">
+          {aboveGraph}
           <EnvelopeGraph
             attack={envelope.attack}
             decay={graphDecay}

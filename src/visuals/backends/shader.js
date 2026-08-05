@@ -27,6 +27,8 @@
  * from hydra-synth, which keeps this backend AGPL-free.
  */
 
+import { maxFrameMs } from '../renderTier';
+
 // Live-coding requires a JS-evaluable DSL; the shader backend ships
 // three fixed presets and exposes no editor.
 export const supportsLiveCode = false;
@@ -119,6 +121,10 @@ let vfxModG = 0.031;
 let vfxModB = 0.015;
 let texWidth = 0;
 let texHeight = 0;
+// s0's allocated storage size, tracked separately from the output canvas —
+// the oscilloscope canvas it mirrors has its own backing-store dimensions.
+let s0Width = 0;
+let s0Height = 0;
 
 const VERT_SRC = `#version 300 es
 in vec2 a_pos;
@@ -329,18 +335,17 @@ function ensureTexStorage(w, h) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 }
 
-// 60 fps cap, matching the iOS renderer's default preferredFramesPerSecond.
+// Frame cap from the shared render tier: 60 fps on 'pretty' (matching the
+// iOS renderer's default preferredFramesPerSecond), 30 on 'performance'.
 // On ProMotion phones rAF fires at 120 Hz; every extra frame costs a full
 // s0 canvas texture upload + a full-canvas fragment pass + a feedback
-// copy, for no visible gain on these soft feedback effects. The 1.5 ms
-// tolerance keeps genuine 60 Hz displays from dropping frames to jitter.
-const FRAME_MIN_MS = 1000 / 60 - 1.5;
+// copy, for no visible gain on these soft feedback effects.
 let lastFrameMs = 0;
 
 function render(timeMs) {
   if (!gl || !canvasRef) return;
   rafHandle = requestAnimationFrame(render);
-  if (timeMs - lastFrameMs < FRAME_MIN_MS) return;
+  if (timeMs - lastFrameMs < maxFrameMs()) return;
   lastFrameMs = timeMs;
 
   const w = canvasRef.width;
@@ -349,11 +354,27 @@ function render(timeMs) {
   if (!liteMode) ensureTexStorage(w, h);
 
   // 1. Upload the live oscilloscope pixels into s0.
+  //
+  // texSubImage2D, not texImage2D: the DOM-source form of texImage2D
+  // REALLOCATES the texture's storage on every call. At a phone's DPR-2
+  // full-viewport backing store that is a ~5 MB allocate-and-free 60 times a
+  // second on top of the pixel copy itself. Allocating once per size change
+  // and re-uploading into it drops that entirely — same pixels on screen.
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, s0Texture);
   if (sourceCanvasRef && sourceCanvasRef.width > 0 && sourceCanvasRef.height > 0) {
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA8,
+    const sw = sourceCanvasRef.width;
+    const sh = sourceCanvasRef.height;
+    if (sw !== s0Width || sh !== s0Height) {
+      s0Width = sw;
+      s0Height = sh;
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA8, sw, sh, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, null
+      );
+    }
+    gl.texSubImage2D(
+      gl.TEXTURE_2D, 0, 0, 0,
       gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvasRef
     );
   }
@@ -474,6 +495,8 @@ export function startVisuals({ canvas, sourceCanvas } = {}) {
   o0Texture = liteMode ? null : createTexture();
   texWidth = 0;
   texHeight = 0;
+  s0Width = 0;
+  s0Height = 0;
 
   startTimeMs = performance.now();
   rafHandle = requestAnimationFrame(render);
@@ -498,6 +521,8 @@ export function stopVisuals() {
   o0Texture = null;
   texWidth = 0;
   texHeight = 0;
+  s0Width = 0;
+  s0Height = 0;
 }
 
 export function setVisualResolution(/* width, height */) {

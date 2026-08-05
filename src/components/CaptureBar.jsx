@@ -40,9 +40,15 @@ function CaptureBar({ onEnsurePlaying }) {
   useEffect(() => {
     if (stagedId == null) return undefined;
     let raf = 0;
-    const tick = () => {
-      setCanLaunch(frequencyManager.stagedIsDirty());
+    let last = 0;
+    // 15 Hz — this only lights a button, and stagedIsDirty() walks every
+    // tracked parameter against the staged snapshot.
+    const tick = (ts) => {
       raf = requestAnimationFrame(tick);
+      const now = typeof ts === 'number' ? ts : performance.now();
+      if (now - last < 1000 / 15 - 1.5) return;
+      last = now;
+      setCanLaunch(frequencyManager.stagedIsDirty());
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); setCanLaunch(false); };

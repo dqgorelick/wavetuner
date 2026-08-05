@@ -5,6 +5,7 @@
  */
 
 import { droneEnvelope } from './Envelope';
+import { FREQ_CEIL } from './freqRange';
 import { droneWave } from './Wave';
 import { droneFold, keyboardFold } from './Fold';
 import { noise, getNoiseBuffer } from './Noise';
@@ -1571,7 +1572,7 @@ class AudioEngine {
     const shift = this._slotPairActive(i)
       ? (offset * panWidth(this.getVoicePan(i))) / 2
       : 0;
-    return Math.max(0.001, Math.min(20000, nominal + shift));
+    return Math.max(0.001, Math.min(FREQ_CEIL, nominal + shift));
   }
 
   /**
@@ -1582,7 +1583,7 @@ class AudioEngine {
   _dronePartnerFreq(i) {
     const nominal = (this.frequencyValues[i] || 0) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[i] || 0;
-    return Math.max(0.001, Math.min(20000,
+    return Math.max(0.001, Math.min(FREQ_CEIL,
       nominal - (offset * panWidth(this.getVoicePan(i))) / 2));
   }
 
@@ -1660,13 +1661,13 @@ class AudioEngine {
     const shift = this._slotPairActive(slotIndex)
       ? (offset * panWidth(this.getVoicePan(slotIndex))) / 2
       : 0;
-    return Math.max(0.001, Math.min(20000, nominal + shift));
+    return Math.max(0.001, Math.min(FREQ_CEIL, nominal + shift));
   }
 
   _partialPartnerFreq(slotIndex, partial) {
     const nominal = (this.frequencyValues[slotIndex] || 0) * (partial.ratio || 1) * this._transposeRatio;
     const offset = this.droneDetuneOffsets[slotIndex] || 0;
-    return Math.max(0.001, Math.min(20000,
+    return Math.max(0.001, Math.min(FREQ_CEIL,
       nominal - (offset * panWidth(this.getVoicePan(slotIndex))) / 2));
   }
 
@@ -2049,7 +2050,6 @@ class AudioEngine {
           if (restored) {
             this.frequencyValues[i] = restored.freq;
             this.volumeValues[i] = restored.vol;
-            this.mutedStates[i] = restored.muted;
             this.preMuteVolumes[i] = restored.preMuteVol;
             // undefined pan (pre-pan save) falls through to the seed in
             // _createSingleOscillator.
@@ -2060,10 +2060,13 @@ class AudioEngine {
             const newPitch = basePitch + (Math.random() * 6 - 3);
             this.frequencyValues[i] = Math.max(0.1, newPitch);
             this.volumeValues[i] = 0.5;
-            this.mutedStates[i] = false;
             this.preMuteVolumes[i] = 0.5;
             this.panValues[i] = undefined; // seed from mode origin at create
           }
+          // Added voices arrive MUTED — adding a slot never makes sound on
+          // its own. Holds for a restored slot too (its remembered pitch /
+          // volume / pan come back, but it waits for a deliberate unmute).
+          this.mutedStates[i] = true;
           // Fresh slot starts with no extras. Existing slots' extras
           // (lower indices) are untouched.
           if (!this.extraPartials[i]) this.extraPartials[i] = [];
@@ -2946,7 +2949,7 @@ class AudioEngine {
     if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return;
     if (!this.oscillators[index]) return;
     
-    const clampedFreq = Math.max(0.001, Math.min(20000, frequency));
+    const clampedFreq = Math.max(0.001, Math.min(FREQ_CEIL, frequency));
     
     if (Math.abs(clampedFreq - this.frequencyValues[index]) < 0.01) return;
     
@@ -3028,7 +3031,7 @@ class AudioEngine {
     let changed = false;
     for (let i = 0; i < count; i++) {
       if (!this.oscillators[i]) continue;
-      const clampedFreq = Math.max(0.001, Math.min(20000, frequencies[i]));
+      const clampedFreq = Math.max(0.001, Math.min(FREQ_CEIL, frequencies[i]));
       if (Math.abs(clampedFreq - this.frequencyValues[i]) < 0.01) continue;
       this.frequencyValues[i] = clampedFreq;
       this.oscillators[i].frequency.setTargetAtTime(this._dronePrimaryFreq(i), t, 0.016);
@@ -3148,7 +3151,7 @@ class AudioEngine {
 
       let target = fundamentalFreq * Math.pow(2, targetCents / 1200);
       if (varianceHz > 0) target += (Math.random() * 2 - 1) * varianceHz;
-      out[i] = Math.max(0.001, Math.min(20000, target));
+      out[i] = Math.max(0.001, Math.min(FREQ_CEIL, target));
     }
     return out;
   }
@@ -3205,7 +3208,7 @@ class AudioEngine {
       for (let slot = 0; slot < this.oscillatorCount; slot++) {
         if (slot === anchorSlot) { out[slot] = anchorHz; continue; }
         const ratio = canonicalRatioForVoice(systemKey, slot, size);
-        if (ratio != null) out[slot] = Math.max(0.001, Math.min(20000, anchorHz * ratio));
+        if (ratio != null) out[slot] = Math.max(0.001, Math.min(FREQ_CEIL, anchorHz * ratio));
       }
       return out;
     }
@@ -3231,7 +3234,7 @@ class AudioEngine {
       // register (notes below the root drop an octave, etc.).
       const ref = anchorHz * Math.pow(2, (semi - semiRoot) / 12);
       const k = Math.round(Math.log2(ref / raw));
-      out[slot] = Math.max(0.001, Math.min(20000, raw * Math.pow(2, k)));
+      out[slot] = Math.max(0.001, Math.min(FREQ_CEIL, raw * Math.pow(2, k)));
     }
     return out;
   }
@@ -3258,7 +3261,7 @@ class AudioEngine {
     const starts = this.frequencyValues.slice(0, count);
     const safeTargets = new Array(count);
     for (let i = 0; i < count; i++) {
-      safeTargets[i] = Math.max(0.001, Math.min(20000, targets[i]));
+      safeTargets[i] = Math.max(0.001, Math.min(FREQ_CEIL, targets[i]));
     }
 
     if (durationMs <= 0) {
@@ -3464,7 +3467,7 @@ class AudioEngine {
       this.audioContext.resume();
     }
 
-    const clampedFreq = Math.max(0.001, Math.min(20000, frequency));
+    const clampedFreq = Math.max(0.001, Math.min(FREQ_CEIL, frequency));
     const overlapSec = Math.max(0, overlapMs) / 1000;
     const t = this.audioContext.currentTime;
 
@@ -3740,7 +3743,7 @@ class AudioEngine {
   spawnTravelVoice(hz, forSlot) {
     if (!this.isInitialized || !this.audioContext) return null;
     if (forSlot < 0 || forSlot >= this.oscillatorCount) return null;
-    const clamped = Math.max(0.001, Math.min(20000, hz));
+    const clamped = Math.max(0.001, Math.min(FREQ_CEIL, hz));
     const t = this.audioContext.currentTime;
 
     const osc = this.audioContext.createOscillator();
@@ -3784,8 +3787,8 @@ class AudioEngine {
     // half-spread; beyond-stereo slots keep the legacy mode gate.
     const pairActive = !this._usesBeyondStereo(channels) || droneStereo.mode === 'stereo';
     const shift = pairActive ? (offset * w) / 2 : 0;
-    osc.frequency.setValueAtTime(Math.max(0.001, Math.min(20000, nominal + shift)), t);
-    oscR.frequency.setValueAtTime(Math.max(0.001, Math.min(20000, nominal - (offset * w) / 2)), t);
+    osc.frequency.setValueAtTime(Math.max(0.001, Math.min(FREQ_CEIL, nominal + shift)), t);
+    oscR.frequency.setValueAtTime(Math.max(0.001, Math.min(FREQ_CEIL, nominal - (offset * w) / 2)), t);
 
     const level = Math.min(this.volumeValues[forSlot] ?? 0.5, DRONE_PLAY_VOL_CAP);
     const peak = level * this._slotLoudnessScale(forSlot);
@@ -3827,7 +3830,7 @@ class AudioEngine {
   setTravelerFrequency(id, hz) {
     const tv = this._travelers.get(id);
     if (!tv || !this.audioContext) return;
-    const clamped = Math.max(0.001, Math.min(20000, hz));
+    const clamped = Math.max(0.001, Math.min(FREQ_CEIL, hz));
     tv.nominalHz = clamped;
     const nominal = clamped * this._transposeRatio;
     const w = panWidth(tv.pan ?? 0);
@@ -3835,10 +3838,10 @@ class AudioEngine {
     const shift = pairActive ? (tv.offset * w) / 2 : 0;
     const t = this.audioContext.currentTime;
     tv.osc.frequency.setTargetAtTime(
-      Math.max(0.001, Math.min(20000, nominal + shift)), t, 0.016);
+      Math.max(0.001, Math.min(FREQ_CEIL, nominal + shift)), t, 0.016);
     if (tv.oscR) {
       tv.oscR.frequency.setTargetAtTime(
-        Math.max(0.001, Math.min(20000, nominal - (tv.offset * w) / 2)), t, 0.016);
+        Math.max(0.001, Math.min(FREQ_CEIL, nominal - (tv.offset * w) / 2)), t, 0.016);
     }
   }
 

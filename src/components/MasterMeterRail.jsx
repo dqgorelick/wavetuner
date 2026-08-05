@@ -1,18 +1,30 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import audioEngine from '../audio/AudioEngine';
+import palette, { useTheme } from '../theme/palette';
 
 // Vertical master meter fader — the web port of the iOS left rail's
 // MasterMeterFader (HomeMixerSection.swift): the track IS two side-by-side
 // L/R peak meters with slow-decay peak-hold ticks, and a horizontal
 // crossbar marks (and drags) the master volume. Same color zones as the
 // mixer panel's Main row: green under 0.85, amber to 0.999, red at clip.
+//
+// mono has no color to spend here — a lit green bar would be the second
+// brightest thing on screen, and the orbs are meant to be alone at the
+// top. The zones survive as three ink levels instead: a clipped meter
+// still reads differently from a quiet one, just by brightness.
 function zoneColor(hold) {
+  if (palette.theme === 'mono') {
+    if (hold >= 0.999) return palette.ink(0.95);
+    if (hold >= 0.85) return palette.ink(0.62);
+    return palette.ink(0.42);
+  }
   if (hold >= 0.999) return 'rgba(248, 81, 73, 0.95)';
   if (hold >= 0.85) return 'rgba(255, 176, 32, 0.9)';
   return 'rgba(74, 222, 128, 0.8)';
 }
 
 function MasterMeterRail() {
+  useTheme(); // re-render on theme flip so zoneColor re-resolves
   const trackRef = useRef(null);
   const [master, setMaster] = useState(() => audioEngine.getMasterVolume?.() ?? 1);
   const [peaks, setPeaks] = useState({ pL: 0, pR: 0, hL: 0, hR: 0 });

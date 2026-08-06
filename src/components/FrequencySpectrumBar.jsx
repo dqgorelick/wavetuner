@@ -201,39 +201,31 @@ function zoomFitWeight(mult) {
   return Math.max(0, 1 - Math.log2(mult) / Math.log2(inEnd));
 }
 
-// Runway the frame keeps between the DRAGGED voice and the edge it is
-// travelling toward, as a fraction of the FINAL span (the stock framing's own
-// margin, so a released drag eases home to the same look).
-//
-// The anchored frame hands the orb (1 - grabFrac) * span of headroom, and
-// since the fit below now grows the SPAN AROUND the anchor rather than pushing
-// one edge, that headroom stays a constant FRACTION of the bar for the whole
-// gesture — the frame slides under the marker instead of the marker creeping
-// into the last few percent and stalling (Dan, 2026-08-05: "we cannot pull the
-// orb further than a certain point, depending on screen size"). What is left
-// for this pad is the ABSOLUTE ends: once logMax reaches FREQ_MAX the frame
-// can't slide any further and the voice starts eating its own margin. Solving
-// for the margin again there is DELIBERATELY allowed to push the frame past
-// ABSOLUTE_LOG_MIN/MAX — a voice sitting AT FREQ_MAX still gets its runway,
-// the ruler simply runs out of numbers (computeTicks stops at FREQ_MAX) and
-// the last stretch of bar reads as "top of the spectrum". Bounded: the
-// overshoot is at most PADDING_RATIO/(1-PADDING_RATIO) of the voice's distance
-// from the far edge.
-//
-// The pad NEVER pulls the voice further in than where it was grabbed: it is
-// capped per side at the anchor's own margin (see zoomDragTarget), so grabbing
-// an orb that already sits 5% from the edge keeps it at 5%. Moving it inward
-// would pan the view out from under the finger — exactly what the anchor is
-// there to prevent.
-const DRAG_LEAD_PAD = PADDING_RATIO;
-
 // Target range for an active zoom-mode drag: the scaled span, ANCHORED at
 // the screen fraction where the voice sat at drag-confirm (drag.grabFrac).
 // The anchor is the ZOOM ORIGIN — every stage below changes the SPAN and then
-// re-derives both edges from it, so the dragged voice holds its screen X for
+// re-derives BOTH edges from it, so the dragged voice holds its screen X for
 // the whole gesture (Dan, 2026-08-05: zooming in on an orb parked left or
-// right must not shove its position line sideways). Only the absolute-end
-// clamps may move it, and only because the ruler has run out.
+// right must not shove its position line sideways).
+//
+// The frame is PURELY span-about-anchor. There are no positional clamps left —
+// only a span cap — and the ONLY thing that can move the dragged voice off
+// `grabFrac` is the weighted containment slide at the end, which moves the
+// frame TOWARD where the voice belongs in the resting frame. The view is
+// deliberately allowed to run past ABSOLUTE_LOG_MIN/MAX; past either end the
+// ruler has no numbers and no ridges, and that blank stretch reads as "this is
+// the end of the spectrum" (the 0.1 Hz tick landing mid-screen is the intended
+// look). The soft-rail clamp and the lead-pad reopen that used to live here
+// both TRANSLATED the frame at the low end, and that translation was the bug
+// Dan reported twice on 2026-08-05: tuning an orb down toward 0.1 Hz froze the
+// frame on the rail so every other orb zipped left, and zooming out with an orb
+// on the right sent all the span growth rightward off the pinned left edge.
+// The pad in particular is now dead code by construction — stages below hold
+// the voice at exactly `frac`, and the slide only ever moves toward the resting
+// frame, where the pad's conditions are no-ops. A voice pinned at the engine's
+// 0.1 Hz floor needs no runway either: the frame anchors on the CLAMPED fLog
+// and simply holds still.
+//
 // `fitLogs` (log2 Hz) lists the voices the frame must keep in view. Containing
 // them is expressed as a MINIMUM SPAN about the anchor — for a voice `l` below
 // the dragged one, the low edge reaches it when span * (frac - pad) >= fLog - l
@@ -249,60 +241,90 @@ function zoomDragTarget(drag, fitLogs) {
   const f = audioEngine.getFrequency(drag.index);
   const fLog = Math.log2(Math.max(FREQ_MIN, Math.min(FREQ_MAX, f)));
   const absSpan = ABSOLUTE_LOG_MAX - ABSOLUTE_LOG_MIN;
+  // The widest frame the RESTING fit can legitimately hand us. computeTargetRange
+  // keeps its soft rails (see RAIL_OVERRUN) — deliberately unchanged — and those
+  // let a resting frame run past each absolute end by RAIL_OVERRUN of its own
+  // span, so a chord straddling BOTH rails ([0.1 Hz, 200, 900] rests 18.8 log2
+  // wide) can rest wider than absSpan itself. Clamping the drag target at the
+  // bare absSpan made it unable to reproduce such a frame at mult=1, and taking
+  // the frame then SNAPPED it — up to 16% of the bar in the iOS sim sweep. The
+  // cap has to clear the rails even though the drag itself no longer has any.
+  const maxSpan = absSpan / (1 - 2 * RAIL_OVERRUN);
   const grabSpan = drag.grabSpan || absSpan;
   const mult = drag.spanMult ?? zoomBaseMult();
   const frac = drag.grabFrac ?? 0.5;
   let span = grabSpan * mult;
-  if (fitLogs && fitLogs.length) {
-    const w = zoomFitWeight(mult);
-    if (w > 0) {
-      // Room on each side of the anchor, first with the stock margin and —
-      // if the anchor sits inside that margin — bare containment.
-      const lowRoom = frac > PADDING_RATIO ? frac - PADDING_RATIO : frac;
-      const highRoom = 1 - frac > PADDING_RATIO ? 1 - frac - PADDING_RATIO : 1 - frac;
-      let need = 0;
-      for (const l of fitLogs) {
-        if (l < fLog) {
-          if (lowRoom > 0) need = Math.max(need, (fLog - l) / lowRoom);
-        } else if (l > fLog) {
-          if (highRoom > 0) need = Math.max(need, (l - fLog) / highRoom);
-        }
-      }
-      // Expand only (a tighter fit never overrides the pull's own span), and
-      // fade the expansion out as the pull leans into the microscope.
-      if (need > span) span += (Math.min(need, absSpan) - span) * w;
+  const w = fitLogs && fitLogs.length ? zoomFitWeight(mult) : 0;
+  // The union the frame has to hold, and the span the RESTING frame would use
+  // for it — the containment ceiling (see below).
+  let unionLo = fLog;
+  let unionHi = fLog;
+  if (fitLogs) {
+    for (const l of fitLogs) {
+      if (l < unionLo) unionLo = l;
+      if (l > unionHi) unionHi = l;
     }
   }
-  span = Math.max(MIN_ZOOM_SPAN, Math.min(absSpan, span));
+  const stockSpan = Math.max(unionHi - unionLo, MIN_LOG_SPAN) / (1 - 2 * PADDING_RATIO);
+  if (w > 0) {
+    // Room on each side of the anchor, first with the stock margin and —
+    // if the anchor sits inside that margin — bare containment.
+    const lowRoom = frac > PADDING_RATIO ? frac - PADDING_RATIO : frac;
+    const highRoom = 1 - frac > PADDING_RATIO ? 1 - frac - PADDING_RATIO : 1 - frac;
+    let need = 0;
+    for (const l of fitLogs) {
+      if (l < fLog) {
+        if (lowRoom > 0) need = Math.max(need, (fLog - l) / lowRoom);
+      } else if (l > fLog) {
+        if (highRoom > 0) need = Math.max(need, (l - fLog) / highRoom);
+      }
+    }
+    // CEILING: containment may never ask for more span than the RESTING frame
+    // would use (Dan, 2026-08-05: dragging the right-most voice down past the
+    // others "pulls in the side so we can see 0.1 Hz and then everything gets
+    // pushed over"). Holding a voice on the anchor's SHORT side costs span at
+    // 1/(1 - frac - p) per unit of distance — 6.7x at a frac of 0.85 — so a
+    // voice tuned ACROSS its neighbours demanded a span wider than the whole
+    // spectrum, the clamp then shifted the frame sideways, and the anchor was
+    // lost anyway. At the anchor's own RESTING fraction `need` works out to
+    // EXACTLY stockSpan, so the cap is a no-op until the voice tunes away from
+    // where it was grabbed — precisely when the pin has gone stale. The
+    // MIN_LOG_SPAN floor inside stockSpan is required, not cosmetic: without it
+    // a lone-voice patch (union width 0) caps `need` at 0 and breaks the mult=1
+    // grab identity.
+    need = Math.min(need, stockSpan);
+    // Expand only (a tighter fit never overrides the pull's own span), and
+    // fade the expansion out as the pull leans into the microscope.
+    if (need > span) span += (Math.min(need, maxSpan) - span) * w;
+  }
+  span = Math.max(MIN_ZOOM_SPAN, Math.min(maxSpan, span));
   let logMin = fLog - span * frac;
   let logMax = logMin + span;
-  // Soft rails, matched to the resting frame's own overrun (see RAIL_OVERRUN):
-  // at mult=1 a rail-parked voice's frame already sits exactly on this bound,
-  // so the clamp is satisfied and the anchor holds. It only bites on a big
-  // zoom-OUT, where the alternative is a screenful of blank ruler.
-  const floor = railFloor(span);
-  const ceil = railCeil(span);
-  if (logMin < floor) {
-    logMax += floor - logMin;
-    logMin = floor;
-  }
-  if (logMax > ceil) {
-    logMin = Math.max(floor, logMin - (logMax - ceil));
-    logMax = ceil;
-  }
-  // Reopen the leading edge (see DRAG_LEAD_PAD) if an absolute-end clamp above
-  // has pushed the voice inside its own margin. Solved for the edge that puts
-  // the voice exactly `p` of the resulting span inside it:
-  //   fLog = logMax - p * (logMax - logMin)  ⇒  logMax = (fLog - p*logMin)/(1-p)
-  // Capped at the anchor's margin per side, so away from the ends — where the
-  // voice sits exactly at `frac` — both branches are no-ops and the anchor is
-  // untouched. Only one side can be short at a time (p < 0.5).
-  const highPad = Math.min(DRAG_LEAD_PAD, 1 - frac);
-  const lowPad = Math.min(DRAG_LEAD_PAD, frac);
-  if (highPad > 0 && fLog > logMax - highPad * (logMax - logMin)) {
-    logMax = (fLog - highPad * logMin) / (1 - highPad);
-  } else if (lowPad > 0 && fLog < logMin + lowPad * (logMax - logMin)) {
-    logMin = (fLog - lowPad * logMax) / (1 - lowPad);
+  // Containment fallback: whatever the capped span could not cover from the
+  // anchor, cover by SLIDING the frame — the anchor yields rather than the span
+  // exploding. Zero in every case the pin can afford (at rest the extremes sit
+  // exactly `p` in, so both deficits are 0), and faded out by the same weight,
+  // so a deep zoom-in still crops to the dragged voice. When the voice has tuned
+  // clear past its neighbours this converges on exactly the resting frame — the
+  // marker walks smoothly from its grab fraction to where the voice actually
+  // belongs, and release has nothing left to move.
+  if (w > 0) {
+    const dUp = Math.max(0, (unionHi + PADDING_RATIO * span) - logMax);
+    const dDown = Math.max(0, logMin - (unionLo - PADDING_RATIO * span));
+    // …and only as far as the slide can actually ACHIEVE something: once the
+    // frame is too tight to hold the whole set at any position (both deficits
+    // positive), containment has already failed and the anchor is worth more
+    // than splitting the difference. `hold` is the share of the set the frame
+    // could cover, squared for a soft taper — 1 (no effect) in every containable
+    // case, so this only touches chords WIDER than the frame, e.g. a voice
+    // parked on a rail 13 octaves from its neighbours while another is zoomed
+    // in on. Without the taper that chord would drift the anchor while zooming
+    // in, which is the one thing the anchor exists to prevent.
+    const hold = Math.min(1, span * (1 - 2 * PADDING_RATIO)
+      / Math.max(unionHi - unionLo, 1e-9));
+    const shift = w * hold * hold * (dUp - dDown);
+    logMin += shift;
+    logMax += shift;
   }
   return { logMin, logMax };
 }
@@ -599,6 +621,11 @@ function latticeTickFreqs(logMin, logMax, padLog = 0, width = 0) {
     const decadeBase = 10 ** d;
     for (const m of best.mantissas) {
       const freq = m * decadeBase;
+      // A zoom-drag frame may run far past either absolute end (see
+      // zoomDragTarget); out there the ruler is BLANK, ridges included, which
+      // is what makes the space read as "end of the spectrum" rather than a
+      // ruler that lost its numbers. computeTicks/fineTickFreqs already filter.
+      if (freq < FREQ_MIN || freq > FREQ_MAX) continue;
       const log2Freq = Math.log2(freq);
       if (log2Freq < logMin - padLog || log2Freq > logMax + padLog) continue;
       freqs.push(freq);
@@ -629,6 +656,7 @@ function computeMinorTicks(majors, logMin, logMax, width) {
     if (last - first > 200) continue;         // runaway guard
     for (let k = first; k <= last; k++) {
       const freq = Number((k * step).toPrecision(12));  // kills 0.1-summing drift
+      if (freq < FREQ_MIN || freq > FREQ_MAX) continue;  // blank past the ends
       const x = xOf(freq);
       if (x < 0 || x > width) continue;
       const tall = Math.abs(freq - Math.round(freq / tallStep) * tallStep) < step * 1e-6;

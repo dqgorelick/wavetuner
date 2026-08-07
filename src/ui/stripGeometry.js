@@ -30,15 +30,24 @@ export const PITCH_ROW_H = 45; // freq/note readout row
 // absorbs) — published as --console-note-h. The mobile frequency sheet
 // hangs off it (App.css) so it opens straight below the freq buttons.
 export const NOTE_ROW_H = PITCH_ROW_H + CONSOLE_HEAD;
-export const MUTE_ROW_BASE = 36;
+// Flattened 2026-08-06 (Dan): the mute cell is a short rectangle on the
+// main console rather than a square, so the row gives ~10px back to the
+// rest of the column. The SQUARE cell survives inside the FREQUENCY MENU
+// (.vp-mute, .freq-rail-marker), which is a list, not a column.
+export const MUTE_ROW_BASE = 26;
 export const PAN_ROW_BASE = 42;
 export const ROW_SPACING = 2;
 export const FADER_PAD_TOP = 3;
 export const FADER_PAD_BOTTOM = 4;
 
-// Control cells at base pitch (iOS: 32pt mute square, 30pt pan dial).
-export const MUTE_CELL_BASE = 32;
+// Control cells at base pitch (30pt pan dial as on iOS). The mute cell
+// is a flat rectangle — 30 wide, matching the pan dial's diameter right
+// below it so the two controls share a width and leave a visible gap
+// between neighbouring lanes (Dan, 2026-08-06), and 22 tall, which is
+// the height the column gets back.
 export const PAN_DIAL_BASE = 30;
+export const MUTE_CELL_W_BASE = PAN_DIAL_BASE;
+export const MUTE_CELL_H_BASE = 22;
 
 export function stripGeometry({
   count,
@@ -132,21 +141,23 @@ export function rubber(overshoot) {
 // fader.
 export function controlScale(scale, height) {
   const fixed = PITCH_ROW_H + ROW_SPACING * 3 + FADER_PAD_TOP + FADER_PAD_BOTTOM; // 58
-  const perScale = MUTE_ROW_BASE + PAN_ROW_BASE + 1.5 * PAN_ROW_BASE; // 141
+  const perScale = MUTE_ROW_BASE + PAN_ROW_BASE + 1.5 * PAN_ROW_BASE; // 131
   return Math.min(scale, Math.max(1, (height - fixed) / perScale));
 }
 
-// Mute cell + pan dial sizes. The mute cell is ALWAYS SQUARE (Dan,
-// 2026-08-04) — it reads as a button, and a cell that goes oblong when
-// the console is short looks like a layout bug. Its side is the
-// smallest of the three limits: the type-scaled ideal (32·scale, which
-// keeps iOS's 32-in-44 proportion against the readout above it, since
-// laneWidth is 44·scale), the lane's width, and the mute row's height
-// less a hair of breathing room. A height-capped console therefore
-// yields a smaller square rather than a wide rectangle. The pan dial is
-// round, so its diameter answers to the same three limits.
+// Mute cell + pan dial sizes. The mute cell is a FLAT RECTANGLE (Dan,
+// 2026-08-06) rather than the square it was through 2026-08-05: the
+// square spent height the column needed elsewhere. It keeps roughly the
+// width it always had — 30·scale, the pan dial's own type-scaled ideal,
+// so cell and dial read as one stack and the lanes keep visible air
+// between them — and only loses height, to the smaller of 22·scale and
+// the mute row less a hair of breathing room. Both sides still yield to
+// the lane's width. The cap at muteW keeps a squeezed lane from pushing
+// the cell back toward a square. The pan dial IS round, so its diameter
+// answers to all three limits.
 export function cellGeometry({ scale, control, laneWidth }) {
-  const mute = Math.min(MUTE_CELL_BASE * scale, laneWidth, MUTE_ROW_BASE * control - 3);
+  const muteW = Math.min(MUTE_CELL_W_BASE * scale, laneWidth);
+  const muteH = Math.min(MUTE_CELL_H_BASE * scale, MUTE_ROW_BASE * control - 3, muteW);
   const dial = Math.min(PAN_DIAL_BASE * scale, PAN_ROW_BASE * control - 3, laneWidth);
-  return { mute, dial };
+  return { muteW, muteH, dial };
 }

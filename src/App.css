@@ -3362,11 +3362,13 @@ kbd {
      the whole point is that the ring and the fill are the same value. */
   --cell-fill: color-mix(in srgb, var(--cell-color), transparent 50%);
   box-sizing: border-box;
-  /* One side from cellGeometry (stripGeometry.js) — the cell is always
-     square; aspect-ratio backstops the var if it ever goes missing. */
-  width: var(--console-cell, 32px);
-  height: var(--console-cell, 32px);
-  aspect-ratio: 1 / 1;
+  /* Both sides from cellGeometry (stripGeometry.js) — a flat rectangle
+     (Dan, 2026-08-06) that keeps the old square's width, matched to the
+     pan dial below it, and gives the column back the height. The square
+     cell lives on in the frequency menu — the panel's own mute button
+     (.vp-mute) and the tuning rail markers (.freq-rail-marker). */
+  width: var(--console-cell-w, 30px);
+  height: var(--console-cell-h, 22px);
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -3397,13 +3399,13 @@ kbd {
     opacity 0.4s ease;
 }
 /* Both states wear the SAME thin outline, in --cell-fill (Dan,
-   2026-08-05). The cell is always a square of the lane colour; muting
+   2026-08-05). The cell is always a bar of the lane colour; muting
    only empties it.
 
-   Muted: outline alone. The square is still there and still says which
+   Muted: outline alone. The bar is still there and still says which
    lane it belongs to — it's just hollow.
 
-   Sounding: that same square filled with the same colour, so the outline
+   Sounding: that same bar filled with the same colour, so the outline
    and the fill are one shape rather than a ring around a wash. What made
    the old version heavy wasn't having a border, it was the border being
    BRIGHTER than what it enclosed; matched to the fill, it reads as a

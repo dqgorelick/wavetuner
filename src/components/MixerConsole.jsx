@@ -222,8 +222,8 @@ function MixerConsole({
 
   const muteRowH = MUTE_ROW_BASE * control;
   const panRowH = PAN_ROW_BASE * control;
-  // Mute cell / pan dial sizes — the mute cell is a square whose side is
-  // the tightest of the type, lane and row limits (see cellGeometry).
+  // Mute cell / pan dial sizes — the mute cell is a lane-wide flat
+  // rectangle, the dial round (see cellGeometry).
   const cells = cellGeometry({ scale: geo.scale, control, laneWidth: geo.laneWidth });
   const anyLive = muted.slice(0, oscillatorCount).some((m) => !m);
   const allMuted = muted.length >= oscillatorCount && !anyLive;
@@ -308,7 +308,8 @@ function MixerConsole({
     '--console-control': control,
     '--console-mute-h': `${muteRowH}px`,
     '--console-pan-h': `${panRowH}px`,
-    '--console-cell': `${cells.mute}px`,
+    '--console-cell-w': `${cells.muteW}px`,
+    '--console-cell-h': `${cells.muteH}px`,
     '--console-row-gap': `${ROW_SPACING}px`,
     // The NOTE row absorbs the head lift, so the frequency button's top
     // edge meets the edge rails' play/pause box; every row below keeps

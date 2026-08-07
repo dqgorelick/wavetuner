@@ -317,16 +317,18 @@ function App() {
   // toggle closes it. Persisted under a single key; falls back to the
   // legacy per-panel keys from before the radio so an existing session
   // reopens whichever panel it had (mixer wins, then tuning, then perform).
+  // A FRESH profile starts with every menu CLOSED (Dan, 2026-08-06) — the
+  // visual field is the first thing you should see, not the console.
   const [sideMenu, setSideMenu] = useState(() => {
     try {
       const v = localStorage.getItem('sideMenu');
       if (v === 'none') return null;
       if (v === 'mixer' || v === 'tuning' || v === 'perform') return v;
-      if (localStorage.getItem('mixerOpen') !== '0') return 'mixer';
+      if (localStorage.getItem('mixerOpen') === '1') return 'mixer';
       if (localStorage.getItem('tuningOpen') === '1') return 'tuning';
       if (localStorage.getItem('performOpen') === '1') return 'perform';
       return null;
-    } catch { return 'mixer'; }
+    } catch { return null; }
   });
   useEffect(() => {
     try { localStorage.setItem('sideMenu', sideMenu ?? 'none'); } catch { /* ignore */ }
@@ -497,11 +499,12 @@ function App() {
   // eases back to the set bend. Stored as 1/0.
   const [faceMouthPauseNeutral, setFaceMouthPauseNeutral] = useState(() => lsNum('faceMouthPauseNeutral', 1) !== 0);
   // Lissajous-only multipliers (vizMode 0). Surfaced via the Hydra
-  // panel's Visualizer section. Defaults of 1 keep the look identical
-  // to pre-slider rendering — drag up/down to taste.
-  const [vizScale, setVizScale] = useState(() => lsNum('vizScale', 1.0));
-  const [vizLineWidth, setVizLineWidth] = useState(() => lsNum('vizLineWidth', 1.0));
-  const [vizOutline, setVizOutline] = useState(() => lsNum('vizOutline', 1.0));
+  // panel's Visualizer section. Dan's 2026-08-06 look is the default:
+  // a bigger figure (120%) drawn with a thinner outline and white line
+  // than the flat 1.0 the sliders shipped with — drag to taste.
+  const [vizScale, setVizScale] = useState(() => lsNum('vizScale', 1.2));
+  const [vizLineWidth, setVizLineWidth] = useState(() => lsNum('vizLineWidth', 0.8));
+  const [vizOutline, setVizOutline] = useState(() => lsNum('vizOutline', 0.7));
   // Lissajous rotation: 0 = square (default), +1 = diamond (+45°),
   // −1 = mirror diamond (−45°). Opt-in via the Hydra panel.
   const [vizRotation, setVizRotation] = useState(() => lsNum('vizRotation', 0));

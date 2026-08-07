@@ -46,13 +46,15 @@
  *                    frame never leans).
  *   zoomInMax      — the span multiplier a full zoom-in pull reaches (the
  *                    far end of the IN side, before the zoomScale exponent
- *                    and the MIN_ZOOM_SPAN floor). 0.35 = the tuned ~1/3
- *                    span; smaller = deeper microscope; 1 = zoom-in does
+ *                    and the MIN_ZOOM_SPAN floor). The default 0.5 = half
+ *                    the span, i.e. 2.0× (Dan, 2026-08-06; was 0.35);
+ *                    smaller = deeper microscope; 1 = zoom-in does
  *                    nothing. Shown in Settings as the magnification
  *                    (1/value)×.
  *   zoomInTravel   — viewport px of travel TOWARD the spectrum over which
  *                    the whole zoom-in happens; past it the frame holds at
- *                    the end stop (Dan, 2026-08-05: was a hard-coded 15).
+ *                    the end stop (Dan, 2026-08-05: was a hard-coded 15;
+ *                    the default is 73 px since 2026-08-06).
  *                    Small = the zoom snaps in the first few px of the lift;
  *                    large = a long gradual pull. Only the IN side reads it —
  *                    the OUT side still normalizes against its own viewport
@@ -82,8 +84,8 @@ export const SCRUB_DEFAULTS = {
   zoomOffset: 0,        // Dan, 2026-08-04: no zoom jump on grab by default
   zoomScale: 1.8,       // Dan's feel, 2026-08-05 (slider shows this as 1.00×)
   zoomMove: 3,          // Dan's feel, 2026-08-05 (slider shows this as 1.00×)
-  zoomInMax: 0.35,      // the tuned ~1/3-span end stop, now a live setting
-  zoomInTravel: 15,     // px of lift the whole zoom-in spans (Dan, 2026-08-05)
+  zoomInMax: 0.5,       // half-span end stop = the slider's 2.0× (Dan, 2026-08-06)
+  zoomInTravel: 73,     // px of lift the whole zoom-in spans (Dan, 2026-08-06)
 };
 
 export const SCALE_AMOUNT_MIN = 0;

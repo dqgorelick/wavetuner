@@ -4,8 +4,9 @@ import { droneEnvelope } from '../audio/Envelope';
 import keyboardVoiceManager from '../audio/KeyboardVoiceManager';
 import { dronePanWeights, panWidth } from '../audio/StereoMode';
 import { droneWave, keyboardWave } from '../audio/Wave';
+import { droneFold, buildFoldCurve, sampleFoldCurve } from '../audio/Fold';
 import {
-  getShapeTable, getHilbertTables, wtLookup, wtLookupRad,
+  getShapeTable, getHilbertTables, getBandlimitedTable, wtLookup, wtLookupRad,
 } from '../audio/visualShape';
 import { updateAudioFeatures } from '../audio/AudioFeatures';
 import { dprCap, maxFrameMs, onRenderTierChange } from '../visuals/renderTier';
@@ -62,6 +63,12 @@ const FAIRY_HANDOFF_EPS = 0.02;   // morph below which the live trace owns the f
 const FAIRY_BREATH_DEPTH = 0.35;  // tail-length breathing at full crawl…
 const FAIRY_BREATH_HZ = 0.11;     // …±35% at ~1/9 Hz (display-only; the speed wander lives in the engine)
 const FAIRY_POINTS_PER_CYCLE = 32;
+// With the wavefold engaged the tail needs live-path-like density: the
+// fold's visible detail rides the waveform's edge transitions (a small
+// fraction of each cycle), which 32 points/cycle steps right over. 256
+// ≈ the live window's own density at takeover; the VIZ_BUF_MAX_N cap
+// still bounds the per-frame cost to the live path's.
+const FAIRY_POINTS_PER_CYCLE_FOLD = 256;
 const FAIRY_MIN_POINTS = 48;
 const FAIRY_GAIN_IN_TAU = 0.6;    // ease-in for a cold start (fairy appearing from black)
 
@@ -73,10 +80,12 @@ const _fairy = {
   // Per-frame outputs (valid while `owns` is true).
   owns: false,
   morph: 0,
-  window: 0,   // tail span, seconds of UNDILATED phase
-  points: 0,   // polyline budget for that span
-  ampAudio: 0, // per-voice amp multiplier in analyser space (XY paths)
-  ampSynth: 0, // per-voice amp multiplier in synth space (Hilbert path)
+  window: 0,    // tail span, seconds of UNDILATED phase
+  points: 0,    // polyline budget for that span
+  ampPreFold: 0, // per-voice amp at PHYSICAL pre-fold level (XY paths)
+  ampBus: 0,     // post-fold bus gains (ALL × waves) for the XY tail
+  level: 0,      // cosmetic display fade (gain-in ease + crawl dim)
+  ampSynth: 0,   // per-voice amp multiplier in synth space (Hilbert path)
 };
 
 function _fairyRelease() {
@@ -164,21 +173,30 @@ function updateFairy(synthN, sampleRate) {
   ) * breath;
   // Point budget follows the densest voice so individual cycles stay
   // smooth near real speed without burning the full budget on the crawl.
+  const ppc = droneFold.amount > 1e-4
+    ? FAIRY_POINTS_PER_CYCLE_FOLD
+    : FAIRY_POINTS_PER_CYCLE;
   const points = Math.max(
     FAIRY_MIN_POINTS,
-    Math.min(VIZ_BUF_MAX_N, Math.floor(maxF * win * FAIRY_POINTS_PER_CYCLE) + 2)
+    Math.min(VIZ_BUF_MAX_N, Math.floor(maxF * win * ppc) + 2)
   );
 
   // Amplitude parity with the live trace at takeover, settling a touch
   // dimmer in the crawl. Two conventions: the analysers tap post
   // ALL/waves and pre-master, so their per-voice level is vol ×
   // envelope sustain × ALL × waves — the XY paths' tail carries all
-  // three factors. The synth-fed paths (Hilbert, drawStatic) draw
-  // vol × droneBusGain(≈1 when sounding) with no ALL/waves scaling —
-  // their live figures never resize with those faders, so neither does
-  // their tail.
+  // three factors, staged in graph order so the wavefold replay sees
+  // the same input level the bus WaveShaper does (getXY): sustain is
+  // per-voice PRE-fold, ALL × waves scale the folded sum, and the
+  // cosmetic display fade multiplies last (a fade must not change what
+  // the fold/sat curves see). The synth-fed paths (Hilbert, drawStatic)
+  // draw vol × droneBusGain(≈1 when sounding) with no ALL/waves scaling
+  // — their live figures never resize with those faders (or fold), so
+  // neither do their tails.
   const level = (1 - 0.08 * morph) * _fairy.gain;
-  _fairy.ampAudio = droneEnvelope.sustain * busLevel * level;
+  _fairy.ampPreFold = droneEnvelope.sustain;
+  _fairy.ampBus = busLevel;
+  _fairy.level = level;
   _fairy.ampSynth = level;
   _fairy.window = win;
   _fairy.points = points;
@@ -362,6 +380,35 @@ function saturateInto(dst, src, curve, drive) {
     else if (curve === 4) y = x > 1 ? 1 : x < -1 ? -1 : x; // hard clip
     else y = src[i]; // off / unknown — pass through undriven
     dst[i] = y;
+  }
+}
+
+// ── Viz-only wavefold replica ─────────────────────────────────────────
+// The drone bus folds through a WaveShaperNode between the bus sum and
+// the analyser tap (dry/wet gains around a baked curve — see Fold.js),
+// so the live 'audio' window arrives post-fold. The tape fairy's tail
+// is synthesized pre-fold, so getXY replays the same baked curve over
+// it — without this the takeover snapped a folded figure to its
+// idealized pre-fold shape. Curve cached and rebuilt only when a fold
+// control moves, same policy as getShapeTable.
+let _foldVizCurve = null;
+let _foldVizType = '';
+let _foldVizAmount = -1;
+function getDroneFoldVizCurve() {
+  if (droneFold.type !== _foldVizType || droneFold.amount !== _foldVizAmount) {
+    _foldVizType = droneFold.type;
+    _foldVizAmount = droneFold.amount;
+    _foldVizCurve = buildFoldCurve(_foldVizType, _foldVizAmount);
+  }
+  return _foldVizCurve;
+}
+
+// In-place dry/wet fold — mirrors the graph's linear crossfade (the dry
+// leg passes unclamped; only the shaper's lookup clamps to ±1).
+function foldInto(buf, amount, curve) {
+  const dry = 1 - amount;
+  for (let i = 0; i < buf.length; i++) {
+    buf[i] = dry * buf[i] + amount * sampleFoldCurve(curve, buf[i]);
   }
 }
 
@@ -862,8 +909,11 @@ function synthStereoData(N, sampleRate, sampleOffsetBackward = 0, opts = {}) {
   const INV_TWO_PI = 1 / (Math.PI * 2);
 
   // Per-pool morphed shapes so the synth scope draws what the pool
-  // actually sounds like (idealized wavetable — sharp corners).
-  const droneWT = getShapeTable(droneWave);
+  // actually sounds like (idealized wavetable — sharp corners). The
+  // tape fairy overrides the drone table with the band-limited build:
+  // its tail feeds the wavefold replay, where the real edge transitions
+  // (not idealized jumps) are the visible detail.
+  const droneWT = opts.droneTable || getShapeTable(droneWave);
   const kbdWT = getShapeTable(keyboardWave);
 
   // Helper to render one running osc into L/R via a normalized-phase
@@ -1924,17 +1974,45 @@ export default function Oscilloscope({
         // rate of points/window, so pans / detune partners / routing
         // all place voices exactly like the live paths do.
         if (_fairy.owns) {
+          // Synthesized at PHYSICAL pre-fold level — per voice that's
+          // vol × envelope sustain × pan weights (droneCountScale is
+          // 1.0) — because the wavefolder's output shape depends on its
+          // input level: the replay below must see exactly what the bus
+          // WaveShaper sees. ALL/waves and the cosmetic fairy fade are
+          // applied after, in graph order.
           const tail = synthStereoData(_fairy.points, _fairy.points / _fairy.window, 0, {
-            droneScale: _fairy.ampAudio,
+            droneScale: _fairy.ampPreFold,
             keyboardScale: 0,
+            // Band-limited drone table (the audio's own 256-harmonic
+            // series, peak-normalized like its PeriodicWave) — under
+            // fold, a square's visible filigree IS the band-limited
+            // edge sweeping through the curve; the idealized table's
+            // instant jumps erase it.
+            droneTable: getBandlimitedTable(droneWave),
           });
+          // Wavefold replay (drone bus only — kbd voices are excluded
+          // from the tail). Memoryless dry/wet curve, so in-place is
+          // safe: the tail arrays are fresh this frame. amount 0 skips,
+          // bit-identical to the pre-fold tail.
+          const foldAmt = droneFold.amount;
+          if (foldAmt > 1e-4) {
+            const foldCurve = getDroneFoldVizCurve();
+            foldInto(tail.L, foldAmt, foldCurve);
+            foldInto(tail.R, foldAmt, foldCurve);
+          }
+          // Post-fold bus gains (ALL × waves) — the analyser taps after
+          // both, so they set the level the saturation replay sees.
+          const bus = _fairy.ampBus;
+          for (let i = 0; i < tail.L.length; i++) {
+            tail.L[i] *= bus;
+            tail.R[i] *= bus;
+          }
           // The live 'audio' window replays the master saturator when
           // "show in oscilloscope" is on (default) — the same replay
           // must squash the tail, or the takeover/handoff steps in size
           // at any hot gain: tanh is near-transparent at ALL 1x but
           // flattens the live figure hard at 2x, which the linear tail
-          // would overshoot. Memoryless curve, so in-place is safe (the
-          // tail arrays are fresh this frame).
+          // would overshoot.
           const satCurve = scopeSaturationRef.current
             ? audioEngine.getSaturationCurve()
             : 0;
@@ -1942,6 +2020,15 @@ export default function Oscilloscope({
             const drive = audioEngine.getSaturationDrive();
             saturateInto(tail.L, tail.L, satCurve, drive);
             saturateInto(tail.R, tail.R, satCurve, drive);
+          }
+          // Cosmetic fairy fade (gain-in ease + crawl dim) LAST — a
+          // display fade must not change what the fold/sat curves see.
+          const lv = _fairy.level;
+          if (lv !== 1) {
+            for (let i = 0; i < tail.L.length; i++) {
+              tail.L[i] *= lv;
+              tail.R[i] *= lv;
+            }
           }
           return tail;
         }

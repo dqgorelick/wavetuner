@@ -97,13 +97,17 @@ export default function AllPanel({
   // TRANSPOSE readout — the ROOT (lowest active) drone's shift in Hz +
   // the offset in cents; deliberately the same numbers as the spectrum
   // bar's corner readout (iOS: sounding-Hz version read as confusing).
+  // The two sit at the dial's two ENDS above it (Dan, 2026-08-11) —
+  // frequency offset leading, note offset trailing — so each reads over
+  // the half of the travel it describes, and the row below the dial is
+  // free for the control's name + RESET / APPLY.
   const root = freqs.reduce((lo, f) => (f > 0 && (lo === 0 || f < lo) ? f : lo), 0);
-  let transposeValue = '0hz, 0 cents';
+  let hzText = '0hz';
+  let centsText = '0 cents';
   if (offCenter && root > 0) {
     const hzDelta = root * (Math.pow(2, semi / 12) - 1);
-    const hzText = `${hzDelta >= 0 ? '+' : ''}${Math.abs(hzDelta) >= 10 ? hzDelta.toFixed(0) : hzDelta.toFixed(1)}hz`;
-    const centsText = `${semi >= 0 ? '+' : ''}${Math.round(semi * 100)} cents`;
-    transposeValue = `${hzText}, ${centsText}`;
+    hzText = `${hzDelta >= 0 ? '+' : ''}${Math.abs(hzDelta) >= 10 ? hzDelta.toFixed(0) : hzDelta.toFixed(1)}hz`;
+    centsText = `${semi >= 0 ? '+' : ''}${Math.round(semi * 100)} cents`;
   }
 
   const setTranspose = (v, opts) => {
@@ -159,7 +163,10 @@ export default function AllPanel({
     if (Math.abs(ratio - 1) < 1e-9) return;
     audioEngine.cancelTransposeGlide?.();
     const nominal = audioEngine.getAllFrequencies().slice(0, oscillatorCount);
-    audioEngine.setAllFrequenciesBatch(nominal.map((f) => f * ratio));
+    // force: this is a pure re-expression of the SAME sounding pitch
+    // (nominal ×= ratio, transpose → 0). Skipping a pitch-locked voice
+    // here would drop it by the whole transpose interval.
+    audioEngine.setAllFrequenciesBatch(nominal.map((f) => f * ratio), { force: true });
     audioEngine.setTransposeSemitones(0);
   };
 
@@ -251,33 +258,28 @@ export default function AllPanel({
         </div>
 
         <div className="ap-transpose-col">
-          <div className="ap-transpose-row">
-            <div className="ap-transpose-col">
-              <span className="ap-transpose-title" data-testid="allTransposeReadout">
-                TRANSPOSE: <b>{transposeValue}</b>
-              </span>
-              <div className="ap-dial" ref={dialRef} {...dialHandlers} data-testid="allTransposeDial">
-                <div className="fscrub-knurl" style={{ height: 12 }} aria-hidden="true" />
-                <div className="fscrub-tick" style={{ height: 16 }} aria-hidden="true" />
-                <div
-                  className="fscrub-thumb"
-                  style={{ left: `calc(${(thumbFrac * 100).toFixed(2)}% - ${(thumbFrac * 14).toFixed(1)}px)` }}
-                />
-              </div>
-            </div>
-            <OctaveJogger
-              height={32}
-              captionAbove
-              onUp={() => setTranspose(Math.min(MAX_ST, semi + 12))}
-              onDown={() => setTranspose(Math.max(-MAX_ST, semi - 12))}
-              upDisabled={semi > MAX_ST - 0.01}
-              downDisabled={semi < -MAX_ST + 0.01}
+          <div
+            className={`ap-transpose-ends${offCenter ? ' live' : ''}`}
+            data-testid="allTransposeReadout"
+          >
+            <span>{hzText}</span>
+            <span>{centsText}</span>
+          </div>
+          <div className="ap-dial" ref={dialRef} {...dialHandlers} data-testid="allTransposeDial">
+            <div className="fscrub-knurl" style={{ height: 12 }} aria-hidden="true" />
+            <div className="fscrub-tick" style={{ height: 16 }} aria-hidden="true" />
+            <div
+              className="fscrub-thumb"
+              style={{ left: `calc(${(thumbFrac * 100).toFixed(2)}% - ${(thumbFrac * 14).toFixed(1)}px)` }}
             />
           </div>
-          <div className="ap-words" style={{ paddingRight: 57 + 8 }}>
+          {/* Name + actions under the dial — the same row grammar the
+              stereo-detune section below uses (caption, then its words). */}
+          <div className="ap-transpose-foot">
+            <span className="vp-caption">TRANSPOSE</span>
             <button
               type="button"
-              className="ap-word"
+              className="ap-word inline"
               onClick={() => audioEngine.glideTranspose(0, 700)}
               disabled={!offCenter}
               data-testid="allTransposeReset"
@@ -286,7 +288,7 @@ export default function AllPanel({
             </button>
             <button
               type="button"
-              className="ap-word"
+              className="ap-word inline"
               onClick={handleApply}
               disabled={!offCenter}
               data-testid="allTransposeApply"
@@ -320,6 +322,21 @@ export default function AllPanel({
             </div>
             <CurveEditor stereoMode={droneStereo} slotCount={oscillatorCount} label="Detune curve" />
           </div>
+        </div>
+
+        {/* The ±12 st jogger is the panel's right COLUMN, vertical and
+            38px like the per-voice panel's — which puts it directly under
+            the ✕ in the header (Dan, 2026-08-11). It used to lie on its
+            side beside the dial, which left the ✕ hanging over nothing. */}
+        <div className="vp-rail-col">
+          <OctaveJogger
+            vertical
+            height={40}
+            onUp={() => setTranspose(Math.min(MAX_ST, semi + 12))}
+            onDown={() => setTranspose(Math.max(-MAX_ST, semi - 12))}
+            upDisabled={semi > MAX_ST - 0.01}
+            downDisabled={semi < -MAX_ST + 0.01}
+          />
         </div>
       </div>
     </div>

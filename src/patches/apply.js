@@ -85,7 +85,9 @@ export async function applyPatch(patch) {
   }
 
   audioEngine.setOscillatorCount(freqs.length);
-  audioEngine.setAllFrequenciesBatch(freqs);
+  // force: a patch load is a whole-state restore — it outranks per-voice
+  // pitch locks (iOS parity), which are session-only and not in the file.
+  audioEngine.setAllFrequenciesBatch(freqs, { force: true });
 
   const snap = patch.snapshot;
   if (snap && audioEngine.isInitialized) {
@@ -193,7 +195,7 @@ export async function applyPatchSmooth(patch) {
   const snap = patch.snapshot;
   // Frequencies always glide — this is the headline of the smooth
   // revert. Log-space interp inside the engine, ease-in-out cubic.
-  audioEngine.glideToFrequencies(freqs, SMOOTH_GLIDE_MS);
+  audioEngine.glideToFrequencies(freqs, SMOOTH_GLIDE_MS, null, null, { force: true });
   // Volumes glide alongside when the patch carries them. Same duration
   // and ease curve so freqs + vols land together.
   if (snap && Array.isArray(snap.volumes)) {

@@ -32,7 +32,7 @@ import {
  * SettingsPanel - Expandable settings panel from bottom-right.
  *
  * Section order (top → bottom):
- *   audio output → saturation → keyboard (re-press / labels)
+ *   audio output → saturation → keyboard (tray / re-press / labels)
  *   → tune button behavior → recall curve → channel routing
  *   → orb row → pan dots → orb drag → color theme → dissonance HUD
  *
@@ -64,6 +64,11 @@ export default function SettingsPanel({
   onKbdRepressModeChange,
   showKbdLabels,
   onShowKbdLabelsChange,
+  // Keyboard TRAY visibility — the surface itself, not a preference about
+  // it. `showKbdTray` gates the row off on mobile (no tray there).
+  showKbdTray,
+  kbdTrayOpen,
+  onKbdTrayOpenChange,
   orbsBelow,
   onOrbsBelowChange,
   panDots,
@@ -235,6 +240,36 @@ export default function SettingsPanel({
 
       <div className="settings-section">
         <label className="settings-label">Keyboard</label>
+        {/* The keyboard tray's show/hide. This used to be the KBD tab on
+            the right edge rail; the rail now carries panels only, so the
+            surface toggle lives with the rest of the keyboard prefs
+            (Dan, 2026-08-11). Hidden on mobile, where the tray doesn't
+            ship at all — App force-closes it there. */}
+        {showKbdTray && (
+          <>
+            <label className="settings-sublabel">On-screen keyboard</label>
+            <div className="settings-toggle-row">
+              <button
+                type="button"
+                className={`settings-toggle-btn ${kbdTrayOpen ? 'on' : 'off'}`}
+                onClick={() => onKbdTrayOpenChange?.(true)}
+                aria-pressed={!!kbdTrayOpen}
+                title="Show the on-screen keyboard tray"
+              >
+                show
+              </button>
+              <button
+                type="button"
+                className={`settings-toggle-btn ${!kbdTrayOpen ? 'on' : 'off'}`}
+                onClick={() => onKbdTrayOpenChange?.(false)}
+                aria-pressed={!kbdTrayOpen}
+                title="Hide the on-screen keyboard tray"
+              >
+                hide
+              </button>
+            </div>
+          </>
+        )}
         <label className="settings-sublabel">Re-press behavior (hold on)</label>
         <div className="settings-toggle-row">
           <button
@@ -603,6 +638,15 @@ export default function SettingsPanel({
             title="Minimal: the orbs are the only bright thing, the chrome caps at mid gray, and color survives only on the mute cells"
           >
             mono
+          </button>
+          <button
+            type="button"
+            className={`settings-toggle-btn ${theme === 'simple' ? 'on' : 'off'}`}
+            onClick={() => onThemeChange?.('simple')}
+            aria-pressed={theme === 'simple'}
+            title="Mono, reduced to lines: no dots or balls on any control, labels at the edges, a quieter ruler"
+          >
+            simple
           </button>
         </div>
       </div>

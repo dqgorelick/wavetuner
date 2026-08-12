@@ -373,6 +373,23 @@ function settleEase(t) {
 // gone in 28px where it used to take 72.
 const EDGE_FADE_PX = 28;
 
+// Edge scrim (Dan, 2026-08-08): a black gradient at each end of the spectrum
+// bar that the outgoing voice chrome dissolves INTO, replacing a fade that
+// only ever dimmed each mark in place. It ramps transparent → opaque across
+// the same band edgeFades uses, holds, then tapers back out so its far end
+// doesn't cut a hard rectangle over the visuals behind the row. Nothing is
+// still visible out in the taper — chrome is at zero alpha by the end of the
+// ramp — so the taper is purely about not showing an edge.
+const SCRIM_HOLD_PX = 16;
+const SCRIM_TAPER_PX = 40;
+const SCRIM_W = EDGE_FADE_PX + SCRIM_HOLD_PX + SCRIM_TAPER_PX;
+// Where chrome under the scrim hands its own fade over to the gradient: it
+// holds full strength until edgeFades drops to this, then ramps to 0 across
+// the rest of the band. Without that last ramp a 35px orb would keep a bright
+// crescent on its INNER rim — the rim overhangs back into the transparent
+// part of the gradient even when the orb's center is nearly covered.
+const SCRIM_HANDOFF = 0.3;
+
 // Global-transpose drag: dragging the empty bar background left/right shifts
 // the whole tuning's playback pitch (a DAW-BPM-style master offset that lives
 // outside save-states). Semitones per pixel at normal sensitivity; Shift or
@@ -420,6 +437,12 @@ const TICK_LEVELS = [
   },
 ];
 const TARGET_TICK_COUNT = 10;
+// The simple theme wants a quieter ruler: about half the numbers, ridges
+// twice as far apart. Read live off the palette (module-level functions
+// can't take a hook) — the component re-renders on theme flips and the
+// tick memos key on the theme, so a flip recomputes.
+const SIMPLE_TICK_COUNT = 5;
+const targetTickCount = () => (palette.theme === 'simple' ? SIMPLE_TICK_COUNT : TARGET_TICK_COUNT);
 
 function tickOpacityForRatio(ratio) {
   if (ratio < 0.3) return 0;
@@ -469,8 +492,8 @@ function fineTickStep(logMin, logMax, width) {
   const hzSpan = 2 ** logMax - 2 ** logMin;
   if (!(hzSpan > 0)) return 0;
   const want = width > 0
-    ? Math.max(2, Math.round(width / FINE_LABEL_PITCH))
-    : TARGET_TICK_COUNT;
+    ? Math.max(2, Math.round(width / (palette.theme === 'simple' ? FINE_LABEL_PITCH * 2 : FINE_LABEL_PITCH)))
+    : targetTickCount();
   return niceTickStep(hzSpan / want);
 }
 
@@ -518,7 +541,7 @@ function computeTicks(logMin, logMax, padLog = 0, width = 0) {
 
   for (const level of TICK_LEVELS) {
     const count = level.perDecade * log10Span;
-    const opacity = tickOpacityForRatio(count / TARGET_TICK_COUNT);
+    const opacity = tickOpacityForRatio(count / targetTickCount());
     if (opacity <= 0) continue;
 
     const decadeStart = Math.floor((logMin - padLog) / LOG2_10);
@@ -607,7 +630,7 @@ function latticeTickFreqs(logMin, logMax, padLog = 0, width = 0) {
   let best = null;
   let bestOpacity = -1;
   for (const level of TICK_LEVELS) {
-    const opacity = tickOpacityForRatio((level.perDecade * log10Span) / TARGET_TICK_COUNT);
+    const opacity = tickOpacityForRatio((level.perDecade * log10Span) / targetTickCount());
     if (opacity > bestOpacity) { bestOpacity = opacity; best = level; }
   }
   if (fineTickOpacity(log10Span) > bestOpacity) {
@@ -648,7 +671,8 @@ function computeMinorTicks(majors, logMin, logMax, width) {
     if (x1 <= 0 || x0 >= width) continue;     // gap entirely off-screen
     const gap = x1 - x0;
     if (gap < MINOR_TICK_MIN_GAP) continue;
-    const step = niceTickStep((hi - lo) / Math.round(gap / MINOR_TICK_PITCH));
+    const step = niceTickStep((hi - lo)
+      / Math.round(gap / (palette.theme === 'simple' ? MINOR_TICK_PITCH * 2 : MINOR_TICK_PITCH)));
     if (!step) continue;
     const tallStep = niceTickStep(step * MINOR_TICK_EMPHASIS);
     const first = Math.floor(lo / step) + 1;  // strictly inside the gap
@@ -1145,7 +1169,7 @@ function _hotSpotFill(c) {
   // mono caps the ceiling at the ink gray — a peak blooming to pure white
   // would be the brightest thing in a theme whose whole point is that the
   // orbs are. duo/classic keep the original full-white top.
-  const ceil = palette.theme === 'mono' ? 59 : 100;
+  const ceil = palette.monoLike ? 59 : 100;
   const light = 12 + (ceil - 12) * c; // near-black → ceiling at the peaks
   const alpha = 0.04 + 0.96 * c;    // all but invisible in the rough, opaque at peaks
   return `hsla(0, 0%, ${light}%, ${alpha})`;
@@ -1585,7 +1609,7 @@ const NOTE_DOT_HIT_R = 9;
 // `dragPos` (Map index → {x, y}) overrides a voice's orb endpoint while it's
 // being finger-dragged or release-settling — the stem then runs from the orb
 // at the finger down to the TRUE frequency x on the bar (iOS parity).
-function _updatePositionLines(lineEls, dotXs, freqXs, dragPos, edgeFades) {
+function _updatePositionLines(lineEls, dotXs, freqXs, dragPos, chromeFades) {
   for (let i = 0; i < lineEls.length; i++) {
     const el = lineEls[i];
     if (!el) continue;
@@ -1596,8 +1620,10 @@ function _updatePositionLines(lineEls, dotXs, freqXs, dragPos, edgeFades) {
     // Edge fade rides the element's own opacity (multiplies the JSX
     // strokeOpacity), so the line dissolves as its frequency slides off
     // the row instead of being cut by the SVG clip. Held voices are
-    // exempt — their marker is anchored on screen.
-    el.style.opacity = dp ? '' : String(edgeFades?.[i] ?? 1);
+    // exempt — their marker is anchored on screen. This layer sits UNDER
+    // the edge scrim, so it takes the handed-off chrome fade, not the raw
+    // edge fade (see chromeFades).
+    el.style.opacity = dp ? '' : String(chromeFades?.[i] ?? 1);
     // Finite, NOT non-negative: a left drag carries the orb past the row's
     // left edge, and a `>= 0` test there hid the whole line — frequency
     // marker included — for a voice sitting comfortably mid-bar (Dan,
@@ -1839,7 +1865,10 @@ function offsetLine(x1, y1, x2, y2, r1, r2) {
 // spacing allows, and each colliding run centered on its own voices' mean,
 // which is what the relaxation was approximating.
 function resolveCollisions(targetsPx, dotSize, excluded) {
-  const minGap = dotSize + ORB_MIN_EDGE_GAP;
+  // simple: packed orbs sit rim-to-rim — touching, no air (Dan, round
+  // 6). The 3px exists for the selection ring's extra radius; simple
+  // accepts the ring kissing a neighbor in exchange for the tighter row.
+  const minGap = dotSize + (palette.theme === 'simple' ? 0 : ORB_MIN_EDGE_GAP);
   const resolved = [...targetsPx];
   const order = resolved
     .map((_, i) => i)
@@ -2336,7 +2365,7 @@ function FrequencySpectrumBar({
   const hzStemRefs = useRef([]);
   const dotXsRef = useRef([]);
   const freqXsRef = useRef([]);
-  const edgeFadesRef = useRef([]);
+  const chromeFadesRef = useRef([]);
   // Mirrors of dragPosByIndex / settlingDots for the per-frame stem drawer,
   // which can't close over state.
   const dragPosRef = useRef(new Map());
@@ -2445,7 +2474,7 @@ function FrequencySpectrumBar({
           }
         }
       }
-      _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current, dragPos, edgeFadesRef.current);
+      _updatePositionLines(posLineRefs.current, dotXsRef.current, freqXsRef.current, dragPos, chromeFadesRef.current);
       // The drag readout's stem lands on that same curve surface, so its foot
       // rides the eased levels too (only mounted in the flipped layout).
       _updateHzStems(hzStemRefs.current);
@@ -3052,8 +3081,13 @@ function FrequencySpectrumBar({
     return s;
   }, [dragOrbs, grabbedOscs]);
   const dotXs = useMemo(
-    () => resolveCollisions(freqXs, DOT_SIZE, collisionExcluded),
-    [freqXs, collisionExcluded]
+    () => {
+      // themeName: simple packs colliding orbs rim-to-rim (resolveCollisions
+      // reads the gap off the palette singleton).
+      void themeName;
+      return resolveCollisions(freqXs, DOT_SIZE, collisionExcluded);
+    },
+    [freqXs, collisionExcluded, themeName]
   );
   // Continuous edge fade: 1 inside the SPECTRUM BAR, ramping to 0 across
   // EDGE_FADE_PX past either end of it. Every piece of a voice's chrome —
@@ -3140,11 +3174,37 @@ function FrequencySpectrumBar({
     }
     return m;
   }, [dragPosByIndex, grabPosByIndex, zoomSettle, dotXs, geo.dotCenterY]);
+  // The scrim is up only when it has something to swallow: some voice is in
+  // the edge band and is NOT being held. A held voice is exempt from the fade
+  // (it rides the pointer, on screen by definition) and sits ABOVE the scrim,
+  // so raising a black band for one would just put a dark slab behind the orb
+  // in your hand with nothing dissolving into it.
+  const scrimShown = useMemo(
+    () => edgeFades.some((f, i) => f < 1 && !orbPosByIndex.has(i)),
+    [edgeFades, orbPosByIndex]
+  );
+  // Visual alpha for every piece of chrome that sits UNDER the scrim — orb,
+  // kbd dot, number label, selection ring, pan dot, status flash, position
+  // line. The gradient does the fading now, so these hold full strength and
+  // only ramp out over the band's last stretch (see SCRIM_HANDOFF).
+  //
+  // Note this is the VISUAL value only: edgeFades itself still drives every
+  // behavioral consumer (offRow, the readout collision pass, the orb's
+  // pointerEvents cutoff), so what is grabbable is unchanged. The fallback
+  // when no scrim is up matters for the chrome that parks at the voice's home
+  // spot rather than riding the orb (kbd dot, status flash): a held voice can
+  // carry its frequency off the bar with the scrim down, and those bits must
+  // dim on the old gentle curve rather than snapping out with no black
+  // behind them.
+  const chromeFades = useMemo(
+    () => (scrimShown ? edgeFades.map((f) => Math.min(1, f / SCRIM_HANDOFF)) : edgeFades),
+    [edgeFades, scrimShown]
+  );
   useEffect(() => {
     dotXsRef.current = dotXs;
     freqXsRef.current = freqXs;
-    edgeFadesRef.current = edgeFades;
-  }, [dotXs, freqXs, edgeFades]);
+    chromeFadesRef.current = chromeFades;
+  }, [dotXs, freqXs, chromeFades]);
   useEffect(() => { dragPosRef.current = orbPosByIndex; }, [orbPosByIndex]);
   // Any orb under a finger (or held by a keyboard grab) — the whole readout
   // strip's on/off switch, iOS's `dragReadout`.
@@ -3183,13 +3243,20 @@ function FrequencySpectrumBar({
     // across the edge band (edgeFades → --edge-fade), instead of sticking at
     // the edge with a long stem back to its marker (Dan, 2026-08-04; this
     // replaced the iOS-style clamp).
-    return frequencies.map((_, i) => ({
-      index: i,
-      text: texts[i],
-      x: resolved[i],
-      fade: (draggingDots.has(i) || grabbedOscs.has(i)) ? 1 : edgeFades[i],
-      shown: hzStripShown && !hidden.has(i),
-    }));
+    return frequencies.map((_, i) => {
+      const held = draggingDots.has(i) || grabbedOscs.has(i);
+      return {
+        index: i,
+        text: texts[i],
+        x: resolved[i],
+        fade: held ? 1 : edgeFades[i],
+        shown: hzStripShown && !hidden.has(i),
+        // The voice under the finger (or a keyboard grab): its readout is
+        // underlined so the moving voice reads apart from the rest of the
+        // chord's numbers.
+        held,
+      };
+    });
   }, [geo.flipped, frequencies, freqXs, muted, orbsAbove, hzStripShown,
       draggingDots, grabbedOscs, offRow, edgeFades, soundingRatio]);
   // (A "1/5×" / "2.4×" rate tag used to ride beside the drag readout here.
@@ -3926,14 +3993,21 @@ function FrequencySpectrumBar({
   // a played freq back to its nominal on-screen position — the orbs don't move.)
   const tickLogShift = transpose / 12;
   const visibleTicks = useMemo(
-    () => computeTicks(range.logMin + tickLogShift, range.logMax + tickLogShift, 0, barWidth),
-    [range.logMin, range.logMax, tickLogShift, barWidth]
+    () => {
+      // themeName: the simple theme halves the tick density — computeTicks
+      // reads it through the palette singleton (targetTickCount).
+      void themeName;
+      return computeTicks(range.logMin + tickLogShift, range.logMax + tickLogShift, 0, barWidth);
+    },
+    [range.logMin, range.logMax, tickLogShift, barWidth, themeName]
   );
   // Ridges between the numbers. They subdivide the dominant level's lattice
   // (padded 2 octaves so edge gaps whose bounding mark sits off-screen still
   // get ridges); any ridge landing under a visible label is dropped — that
   // label already draws a full-height line there.
   const minorTicks = useMemo(() => {
+    // themeName: simple doubles the ridge pitch inside computeMinorTicks.
+    void themeName;
     const lo = range.logMin + tickLogShift;
     const hi = range.logMax + tickLogShift;
     // Only a label that's actually READABLE displaces a ridge. A level at
@@ -3944,7 +4018,7 @@ function FrequencySpectrumBar({
       .map((t) => freqToFraction(t.freq, lo, hi) * barWidth);
     return computeMinorTicks(latticeTickFreqs(lo, hi, 2, barWidth), lo, hi, barWidth)
       .filter((m) => !majorXs.some((mx) => Math.abs(mx - m.x) < 1.5));
-  }, [range.logMin, range.logMax, tickLogShift, barWidth, visibleTicks]);
+  }, [range.logMin, range.logMax, tickLogShift, barWidth, visibleTicks, themeName]);
 
   return (
     <>
@@ -4034,10 +4108,29 @@ function FrequencySpectrumBar({
       </div>
 
 
+      {/* Edge scrims — a black gradient at each end of the bar that voices
+          leaving the frame dissolve into (Dan, 2026-08-08). They start at the
+          bar's last tick, the same place the edge fade does, and they stack
+          BEHIND a held orb (z 30) but IN FRONT of every resting voice's
+          chrome, so an orb in your hand stays bright over the black while the
+          ones being pushed out sink under it. `pointer-events: none`, so an
+          orb half-swallowed by the gradient is still grabbable. */}
+      <div
+        className={`fsb-edge-scrim left${scrimShown ? ' showing' : ''}`}
+        style={{ left: BAR_H_PADDING - SCRIM_W, width: SCRIM_W }}
+        aria-hidden="true"
+      />
+      <div
+        className={`fsb-edge-scrim right${scrimShown ? ' showing' : ''}`}
+        style={{ left: BAR_H_PADDING + barWidth, width: SCRIM_W }}
+        aria-hidden="true"
+      />
+
       {(() => {
         const homeY = geo.dotCenterY;
         const ghostYOffset = 0;
         return (
+          <>
           <svg className="fsb-lines" width="100%" height={geo.totalHeight} style={{ overflow: 'visible' }}>
             {/* Occlusion mask: white shows, black hides. Black discs at every
                 orb punch holes so the staged tether lines/dots read as passing
@@ -4367,9 +4460,19 @@ function FrequencySpectrumBar({
               })}
               </g>
             )}
-            {/* No tether in either gesture: the real orb rides the pointer
-                (iOS parity), and its position line above doubles as the stem
-                back to the true frequency x. */}
+          </svg>
+          {/* Edge-pan rate arrows get their OWN layer above the scrim. They
+              belong to a HELD orb and they appear precisely when that orb is
+              out in the edge zone pushing the frame — which is exactly where
+              the black is darkest, so left in the z-auto lines layer they'd
+              be the one piece of live gesture feedback the scrim swallowed.
+              (The position lines stay below it deliberately: a line marks a
+              frequency, and that frequency really is leaving the frame.)
+
+              No tether in either gesture: the real orb rides the pointer
+              (iOS parity), and its position line doubles as the stem back to
+              the true frequency x. */}
+          <svg className="fsb-arrows" width="100%" height={geo.totalHeight} style={{ overflow: 'visible' }}>
             {Object.entries(dragOrbs).map(([pid, g]) =>
               renderEdgeArrow(
                 `drag-arrow-${pid}`,
@@ -4392,6 +4495,7 @@ function FrequencySpectrumBar({
               )
             )}
           </svg>
+          </>
         );
       })()}
 
@@ -4430,7 +4534,14 @@ function FrequencySpectrumBar({
         // them, and fades the glow with the disc. Applied only when < 1 so
         // the everyday path keeps its filter-free rendering (plus-lighter
         // blending stays untouched).
-        const fade = dragPos ? 1 : edgeFades[i];
+        //
+        // Two different values, deliberately: the disc DISSOLVES on the
+        // scrim-handed-off chromeFades, but it stays grabbable until the raw
+        // edgeFades hits 0 — so the last stretch of the band is invisible yet
+        // still live, which is the forgiving way round (you can always grab
+        // what you can see, and a little of what you can't).
+        const fade = dragPos ? 1 : chromeFades[i];
+        const live = dragPos ? 1 : edgeFades[i];
         return (
           <div
             key={i}
@@ -4443,7 +4554,7 @@ function FrequencySpectrumBar({
               height: DOT_SIZE,
               '--dot-color': color,
               filter: fade < 1 ? `opacity(${fade})` : undefined,
-              pointerEvents: fade === 0 ? 'none' : undefined,
+              pointerEvents: live === 0 ? 'none' : undefined,
             }}
             onPointerDown={(e) => handlePointerDown(e, i)}
             onPointerMove={handlePointerMove}
@@ -4465,12 +4576,17 @@ function FrequencySpectrumBar({
       {selectedVoice != null && selectedVoice >= 0 && selectedVoice < frequencies.length && (() => {
         const dragPos = orbPosByIndex.get(selectedVoice);
         if (offRow[selectedVoice] && !dragPos) return null;
+        // `held`, not `dragPos`: the ring only needs to outrank the scrim
+        // while its orb does (.fsb-dot.dragging/.grabbed, z 30). A released
+        // orb settling home drops back to z-auto and passes under the black —
+        // the ring rides down with it instead of floating over it.
+        const held = draggingDots.has(selectedVoice) || grabbedOscs.has(selectedVoice);
         return (
           <div
-            className={`fsb-sel-ring${settlingDots.has(selectedVoice) ? ' settling' : ''}`}
+            className={`fsb-sel-ring${held ? ' held' : ''}${settlingDots.has(selectedVoice) ? ' settling' : ''}`}
             style={{
-              filter: !dragPos && edgeFades[selectedVoice] < 1
-                ? `opacity(${edgeFades[selectedVoice]})` : undefined,
+              filter: !dragPos && chromeFades[selectedVoice] < 1
+                ? `opacity(${chromeFades[selectedVoice]})` : undefined,
               left: dragPos ? dragPos.x : dotXs[selectedVoice],
               top: dragPos ? dragPos.y : geo.dotCenterY,
               // Border-box, so the ring's 1.5px stroke lands entirely in
@@ -4495,7 +4611,7 @@ function FrequencySpectrumBar({
             left: dotXs[i],
             top: geo.kbdDotCenterY,
             '--dot-color': palette.oscColor(i, oscillatorCount),
-            filter: edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
+            filter: chromeFades[i] < 1 ? `opacity(${chromeFades[i]})` : undefined,
           }}
         />
       ))}
@@ -4517,18 +4633,23 @@ function FrequencySpectrumBar({
         // curve, doubling with the Hz float that's now glued to the orb — so
         // the raised orb carries the readout ALONE (Dan, 2026-08-04).
         const raised = geo.flipped && orbsAbove.has(i) && dragPos;
+        // Rides over the scrim with its orb (same rule as the selection ring):
+        // whatever the label is showing — the live Hz in classic, the voice
+        // number in flipped — it belongs to the orb in your hand, so it can't
+        // be the one thing the black swallows while the orb floats bright.
+        const held = draggingDots.has(i) || grabbedOscs.has(i);
         return (
           <div
             key={`label-${i}`}
             ref={(el) => { labelElsRef.current[i] = el; }}
-            className={`fsb-dot-label ${geo.flipped ? 'below ' : ''}${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''} ${statusReadoutShown(i) ? 'status-hidden' : ''} ${settlingDots.has(i) ? 'settling' : ''} ${raised ? 'raised-hidden' : ''}`}
+            className={`fsb-dot-label ${geo.flipped ? 'below ' : ''}${muted[i] ? 'muted' : ''} ${isActive ? 'active-freq' : ''} ${held ? 'held ' : ''}${statusReadoutShown(i) ? 'status-hidden' : ''} ${settlingDots.has(i) ? 'settling' : ''} ${raised ? 'raised-hidden' : ''}`}
             style={{
               left: lx,
               top: geo.flipped
                 ? lyCenter + DOT_SIZE / 2 + 2
                 : lyCenter - DOT_SIZE / 2 - 2,
               color,
-              filter: !dragPos && edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
+              filter: !dragPos && chromeFades[i] < 1 ? `opacity(${chromeFades[i]})` : undefined,
             }}
           >
             {/* Octave columns flanking the number. Vertical stacks of
@@ -4566,10 +4687,10 @@ function FrequencySpectrumBar({
           the numbers stay put over the pitches they read out, stepping aside
           only for each other (see hzFloats' collision pass). The stems drawn
           in the SVG layer above are what tie them back to their markers. */}
-      {hzFloats.map(({ index: i, text, x, fade, shown }) => (
+      {hzFloats.map(({ index: i, text, x, fade, shown, held }) => (
         <div
           key={`hz-float-${i}`}
-          className={`fsb-hz-float${shown ? ' showing' : ''}`}
+          className={`fsb-hz-float${shown ? ' showing' : ''}${held ? ' held' : ''}`}
           style={{ left: x, top: 0, color: palette.orbColor(i, oscillatorCount), '--edge-fade': fade }}
         >
           {text}
@@ -4586,7 +4707,7 @@ function FrequencySpectrumBar({
         return (
           <div
             key={`hz-raised-${i}`}
-            className="fsb-hz-float above-orb showing"
+            className="fsb-hz-float above-orb showing held"
             style={{
               left: dragPos.x,
               top: dragPos.y - DOT_SIZE / 2 - 4,
@@ -4657,7 +4778,7 @@ function FrequencySpectrumBar({
               // duo/classic, where the two colors are the same value.
               '--dot-color': palette.orbColor(i, oscillatorCount),
               '--status-arc-r': `${STATUS_ARC_RADIUS}px`,
-              filter: !dragPos && edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
+              filter: !dragPos && chromeFades[i] < 1 ? `opacity(${chromeFades[i]})` : undefined,
             }}
           >
             <div className="fsb-status-arc" style={{ transform: `rotate(${pan * 90}deg)` }}>
@@ -4705,7 +4826,7 @@ function FrequencySpectrumBar({
               // Edge fade like every other piece of the voice's chrome — this
               // layer was the one that stayed at full strength off the bar
               // (Dan, 2026-08-05).
-              filter: edgeFades[i] < 1 ? `opacity(${edgeFades[i]})` : undefined,
+              filter: chromeFades[i] < 1 ? `opacity(${chromeFades[i]})` : undefined,
             }}
           >
             {/* Same offset as .fsb-dot-label so the readout lands exactly

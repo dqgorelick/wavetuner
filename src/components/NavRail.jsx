@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import frequencyManager from '../audio/FrequencyManager';
+import { useTheme } from '../theme/palette';
 
 // Corner-bracket marker — the app-wide "this tab is open" grammar from
 // iOS (SelectionCornersShape): four L corners around a 36px square.
@@ -34,23 +35,25 @@ function RailTab({ id, active, onClick, title, children }) {
 
 // Right edge rail — the iOS right icon rail (ContentView.rightRail) on the
 // web: a column flanking the console row's right edge, spanning the area
-// below the spectrum bar. Top cluster is the
-// global nav — folder = perform, Hz = tuning, dice = transitions (the old
-// sparkle toggle, re-iconed to match the iOS guide tab), then KBD =
-// keyboard and the sliders glyph = mixer (Dan, 2026-08-04: moved down
-// here from the floating .right-toggles group, which is now gone) — and
-// undo/redo chips sit at the foot. The gear (settings) joins the rail in
-// a later pass; until then it keeps its top-right corner slot.
+// below the spectrum bar. Top cluster is the global nav — folder =
+// perform, Hz = tuning, then the sliders glyph = mixer — and undo/redo
+// chips sit at the foot. The gear (settings) joins the rail in a later
+// pass; until then it keeps its top-right corner slot.
 //
-// `showKbdMixer` is false on mobile, where those two surfaces don't ship
-// at all (App.jsx force-closes them alongside hiding these tabs).
-function NavRail({
-  sideMenu, onToggleSideMenu, transitionOpen, onToggleTransition,
-  showKbdMixer, kbdOpen, onToggleKbd,
-}) {
+// Two tabs came OUT of this column (Dan, 2026-08-11):
+//   • dice / transitions — gone altogether. It only ever opened the
+//     throw-away GenerativePanel (GENERATIVE.md §7), which now has no
+//     button at all; App keeps a window hook for it.
+//   • KBD — the keyboard tray's show/hide moved into Settings →
+//     Keyboard, so the rail carries panels, not surfaces.
+//
+// `showMixer` is false on mobile, where the mixer doesn't ship at all
+// (App.jsx force-closes it alongside hiding this tab).
+function NavRail({ sideMenu, onToggleSideMenu, showMixer }) {
   // Undo/redo enabled state follows frequencyManager's history. Same
   // rAF-coalesced bump the console transport used — the manager's
   // onChange can fire in bursts during glides.
+  const theme = useTheme();
   const [, setHistoryV] = useState(0);
   useEffect(() => {
     let raf = 0;
@@ -83,48 +86,28 @@ function NavRail({
       >
         <span className="rail-tab-hz">Hz</span>
       </RailTab>
-      <RailTab
-        id="dice"
-        active={transitionOpen}
-        onClick={onToggleTransition}
-        title={transitionOpen ? 'Hide transitions' : 'Show transitions'}
-      >
-        {/* die face 5 (iOS "die.face.5") */}
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-          <rect x="3" y="3" width="18" height="18" rx="3.5" />
-          <circle cx="8" cy="8" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="16" cy="8" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="8" cy="16" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="16" cy="16" r="1.4" fill="currentColor" stroke="none" />
-        </svg>
-      </RailTab>
-      {showKbdMixer && (
-        <>
-          <RailTab
-            id="kbd"
-            active={kbdOpen}
-            onClick={onToggleKbd}
-            title={kbdOpen ? 'Hide keyboard' : 'Show keyboard'}
-          >
-            <span className="rail-tab-kbd">KBD</span>
-          </RailTab>
-          <RailTab
-            id="mixer"
-            active={sideMenu === 'mixer'}
-            onClick={() => onToggleSideMenu('mixer')}
-            title={sideMenu === 'mixer' ? 'Hide mixer' : 'Show mixer'}
-          >
-            {/* three sliders (iOS "slider.horizontal.3" — the sequence
-                lane's params button) */}
+      {showMixer && (
+        <RailTab
+          id="mixer"
+          active={sideMenu === 'mixer'}
+          onClick={() => onToggleSideMenu('mixer')}
+          title={sideMenu === 'mixer' ? 'Hide mixer' : 'Show mixer'}
+        >
+          {/* simple theme: the tab is the word (and the slider glyph's
+              grab-dots are dots, which simple has none of). */}
+          {theme === 'simple' ? (
+            <span className="rail-tab-kbd">MIX</span>
+          ) : (
+            /* three sliders (iOS "slider.horizontal.3" — the sequence
+                lane's params button) */
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
               <path d="M3 7h18M3 12h18M3 17h18" />
               <circle cx="15" cy="7" r="2.2" fill="currentColor" stroke="none" />
               <circle cx="9" cy="12" r="2.2" fill="currentColor" stroke="none" />
               <circle cx="16" cy="17" r="2.2" fill="currentColor" stroke="none" />
             </svg>
-          </RailTab>
-        </>
+          )}
+        </RailTab>
       )}
       <div className="rail-spacer" />
       {/* Undo/redo — the iOS rail's history chips (undo above redo,

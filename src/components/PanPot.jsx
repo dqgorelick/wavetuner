@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { useTheme } from '../theme/palette';
 
 // Rotary pan dial — port of the iOS PanPot (PanPot.swift). 270° track
 // with the gap at the bottom; the value arc always grows out of
@@ -30,6 +31,9 @@ function PanPot({ pan = 0, index = 0, color, muted = false, size = 30, onChange,
   const dragRef = useRef(null);
   const lastSideRef = useRef(null);
   const [tracking, setTracking] = useState(false);
+  // simple theme: no dots anywhere — the orb riding the arc becomes a
+  // radial tick line crossing the track at the value angle.
+  const simple = useTheme() === 'simple';
 
   const strokeW = Math.max(3, size * 0.1);
   const orbSize = Math.max(7, size * (7 / 30));
@@ -84,8 +88,15 @@ function PanPot({ pan = 0, index = 0, color, muted = false, size = 30, onChange,
   // black keeps the hue while dropping the level — same idiom as the
   // VerticalFader ball's black backing circle.
   const dim = (pct) => (pct >= 100 ? color : `color-mix(in srgb, ${color} ${pct}%, black)`);
-  const arcFill = dim(muted ? 30 : tracking ? 90 : 60);
-  const orbFill = dim(muted ? 50 : tracking ? 100 : 90);
+  // simple runs the whole ladder brighter: its thin lines carry the
+  // voice color now, and at the standard levels they read subdued
+  // (Dan, round 5).
+  const arcFill = simple
+    ? dim(muted ? 35 : tracking ? 100 : 78)
+    : dim(muted ? 30 : tracking ? 90 : 60);
+  const orbFill = simple
+    ? dim(muted ? 55 : 100)
+    : dim(muted ? 50 : tracking ? 100 : 90);
   const valueTo = 135 * Math.max(-1, Math.min(1, pan));
   const [orbX, orbY] = polar(c, c, r, valueTo);
 
@@ -121,13 +132,29 @@ function PanPot({ pan = 0, index = 0, color, muted = false, size = 30, onChange,
             strokeLinecap="round"
           />
         )}
-        <circle
-          cx={orbX}
-          cy={orbY}
-          r={orbR}
-          fill={orbFill}
-          className="panpot-orb"
-        />
+        {simple ? (() => {
+          // A touch shorter than the old orb's diameter (Dan, round 2).
+          const tickR = orbR * 0.65;
+          const [ix, iy] = polar(c, c, r - tickR, valueTo);
+          const [ox, oy] = polar(c, c, r + tickR, valueTo);
+          return (
+            <line
+              x1={ix} y1={iy} x2={ox} y2={oy}
+              stroke={orbFill}
+              strokeWidth={strokeW}
+              strokeLinecap="round"
+              className="panpot-orb"
+            />
+          );
+        })() : (
+          <circle
+            cx={orbX}
+            cy={orbY}
+            r={orbR}
+            fill={orbFill}
+            className="panpot-orb"
+          />
+        )}
       </svg>
     </button>
   );

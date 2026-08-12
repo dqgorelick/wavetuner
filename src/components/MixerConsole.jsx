@@ -344,7 +344,12 @@ function MixerConsole({
             aria-label={`Voice ${i + 1} frequency ${f.toFixed(2)} hertz`}
             aria-pressed={isSelected}
           >
-            <span className="console-note-freq">{formatFreq(f)}</span>
+            {/* simple theme: the note alone — the Hz figure lives in the
+                frequency panel (and this button's title/aria), and the
+                cell shrinks to the mute button's height. */}
+            {themeName !== 'simple' && (
+              <span className="console-note-freq">{formatFreq(f)}</span>
+            )}
             <span className="console-note-name">
               {note.note}{note.octave} <em>{formatCents(note.cents)}</em>
             </span>
@@ -496,8 +501,17 @@ function MixerConsole({
           aria-label="All voices panel"
           aria-pressed={selectedVoice === 'all'}
         >
-          <span className="console-note-freq">ALL</span>
-          <span className="console-note-name">[{oscillatorCount}]</span>
+          {/* Value over name, the same order (and the same two classes)
+              as a voice lane's readout — flipped 2026-08-10 (Dan).
+              simple: the one word, like the voice cells' one note. */}
+          {themeName === 'simple' ? (
+            <span className="console-note-name">ALL</span>
+          ) : (
+            <>
+              <span className="console-note-freq">[{oscillatorCount}]</span>
+              <span className="console-note-name">all</span>
+            </>
+          )}
           {selectedVoice === 'all' && <CornerMarker />}
         </button>
         <div className="console-mute-slot">
@@ -519,7 +533,9 @@ function MixerConsole({
             title={isStereo ? 'Stereo split — click for hard L/R' : 'Hard L/R — click for stereo split'}
             aria-label={isStereo ? 'Stereo mode (click for L/R)' : 'L/R mode (click for stereo)'}
           >
-            {isStereo ? '⊙' : 'LR'}
+            {/* simple theme: the LR word becomes the arrow pair — a glyph,
+                like the ⊙, rather than an abbreviation. */}
+            {isStereo ? '⊙' : themeName === 'simple' ? '<>' : 'LR'}
           </button>
         </div>
         <div className="console-fader-slot">

@@ -13,7 +13,12 @@ import MasterMeterRail from './MasterMeterRail';
 // under the play box, same visibility rule it had in the old console
 // transport (only once keyboard/MIDI is sounding, or while the drone is
 // solo-paused). Undo/redo moved to the right rail (NavRail).
-function TransportRail({ isPaused = false, onPausedChange }) {
+// `registerEnsurePlaying` hands the parent a "make sound happen" callback.
+// The master-pause flag lives in here (not in App), so anything outside
+// the rail that needs to resume — the perform menu's GO / generative
+// transition, which would otherwise commit a big audible change in
+// silence — has to reach it through this handle.
+function TransportRail({ isPaused = false, onPausedChange, registerEnsurePlaying }) {
   // Whether any computer-keyboard / MIDI note is currently sounding —
   // gates the drone-only play button (a first-time user with no input
   // never sees it; the master pause is all they need).
@@ -95,6 +100,20 @@ function TransportRail({ isPaused = false, onPausedChange }) {
     }
     onPausedChange?.(audioEngine.paused);
   }, [onPausedChange]);
+
+  // Resume whatever is silencing the drones, using the SAME handlers the
+  // buttons use so their state never drifts out of sync. Master pause
+  // wins — it also gates keyboard/MIDI and the noise bed, so unpausing
+  // the drone alone would leave the rail's play glyph lying.
+  const ensurePlaying = useCallback(() => {
+    if (!audioEngine.initialized) return;
+    if (masterPausedRef.current) handleGlobalPlayPause();
+    else if (audioEngine.paused) handleDronePauseToggle();
+  }, [handleGlobalPlayPause, handleDronePauseToggle]);
+  useEffect(() => {
+    registerEnsurePlaying?.(ensurePlaying);
+    return () => registerEnsurePlaying?.(null);
+  }, [registerEnsurePlaying, ensurePlaying]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {

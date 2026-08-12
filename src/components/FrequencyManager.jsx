@@ -12,6 +12,7 @@ import {
 } from '../audio/jiRatios';
 import palette, { useTheme } from '../theme/palette';
 import { isEditableTarget } from '../hooks/keyboardUtils';
+import CaptureBar from './CaptureBar';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const LETTER_TO_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -705,6 +706,22 @@ function TransposeControl() {
   );
 }
 
+// Root badge for the side-menu title bar. The simple theme lifts the
+// tuning panel's "root: #N" out of the topbar and parks it right-aligned
+// across from the "tuning" title (Dan, 2026-08-11); other themes keep
+// the topbar label and this renders nothing. Self-subscribing so App
+// doesn't have to re-render on anchor or theme changes.
+export function TuningHeadRoot() {
+  const themeName = useTheme();
+  useFreqVersion();
+  if (themeName !== 'simple') return null;
+  return (
+    <span className="side-menu-head-root">
+      root: #{frequencyManager.anchorSlot + 1}
+    </span>
+  );
+}
+
 // Tuning panel — the per-slot scale editor (Root above, rows below)
 // plus the Align / Save / Undo / Redo actions and save-slot chips.
 // Lives in the left-stack alongside the mixer; toggled by the TUNING
@@ -733,7 +750,7 @@ export function TuningPanel({
   // text so the storm of updates doesn't thrash N rows × 5 controlled inputs.
   frozen = false,
 }) {
-  useTheme();
+  const themeName = useTheme();
   useFreqVersion();
 
   // Global undo/redo shortcuts. Cmd on macOS, Ctrl on Windows/Linux —
@@ -793,7 +810,11 @@ export function TuningPanel({
             resizes this to match scaleSize, but the user can nudge it
             after. */}
         <div className="tuning-topbar">
-          <span className="tuning-topbar-label">root: #{anchorSlot + 1}</span>
+          {/* simple parks the root readout up in the menu's title bar
+              (TuningHeadRoot) instead. */}
+          {themeName !== 'simple' && (
+            <span className="tuning-topbar-label">root: #{anchorSlot + 1}</span>
+          )}
           <div className="tuning-topbar-voices">
             <span className="tuning-topbar-label">voices: {oscillatorCount}</span>
             <div className="tuning-chip-group" role="group" aria-label="Voice count">
@@ -895,13 +916,24 @@ export function TuningPanel({
   );
 }
 
-// Perform panel — the parameter lock (tracked parameters + transition
-// timing) in its own chassis, split out of the tuning menu. Toggled by
-// the PERFORM button in the right-side toggle group; renders in the
-// left-stack alongside (or without) the tuning panel.
-export function PerformPanel() {
+// Perform panel — the save slots on top of the parameter lock (tracked
+// parameters + transition timing), in its own chassis split out of the
+// tuning menu. Toggled by the PERFORM button in the right-side toggle
+// group; renders in the left-stack alongside (or without) the tuning
+// panel.
+//
+// The save slots (CaptureBar: undo/redo · I II III IV V · GO / generative
+// / delete) had no mount point at all until now — the component existed
+// but nothing rendered it, so saves were reachable only from the console
+// (`fm.saveCurrent(...)`). They belong here: the parameter lock right
+// below is exactly what a recall applies (Dan, 2026-08-11).
+export function PerformPanel({ onEnsurePlaying }) {
   return (
     <div className="perform-panel" role="region" aria-label="Perform">
+      <div className="scope-sec perform-saves">
+        <span className="scope-title">Saves</span>
+        <CaptureBar onEnsurePlaying={onEnsurePlaying} />
+      </div>
       <ScopePanel />
     </div>
   );

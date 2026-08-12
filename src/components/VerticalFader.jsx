@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { useTheme } from '../theme/palette';
 
 // Stroke-drawn chevron matching the iOS SF Symbol (chevron.left/right,
 // size 8 medium) — the text guillemets rendered too small and sat too
@@ -49,8 +50,19 @@ function VerticalFader({
   const rootRef = useRef(null);
   const dragRef = useRef(null);
   const [active, setActive] = useState(false);
+  // simple theme: no ball and no XY chevrons — the fader is just the two
+  // rounded lines (track + fill), and the fill's cap is the indicator.
+  // Without a ball there are no end insets either: the fill runs the
+  // track's full height so 0 is empty and 1 is flush with the top.
+  const simple = useTheme() === 'simple';
 
   const xy = !!(onXStart && onXDelta);
+  // The simple theme's crossbar handle (see below). Hoisted because the
+  // root carries a class for it: the fill squares off its top cap under
+  // the crossbar so the two read as one T, not a bar resting on a
+  // rounded line. Faders without a crossbar keep the round cap — there
+  // the cap IS the indicator.
+  const xcap = simple && xy && !muted;
 
   const handlePointerDown = (e) => {
     e.preventDefault();
@@ -77,8 +89,9 @@ function VerticalFader({
       if (xy) d.xBaseline = onXStart();
     }
     // Travel is the track less the ball's two end insets, so the ball
-    // tracks the pointer 1:1 all the way to both stops.
-    const h = Math.max(1, d.rect.height - BALL_SIZE);
+    // tracks the pointer 1:1 all the way to both stops. (No ball in the
+    // simple theme, so the fill runs — and the drag maps — full-height.)
+    const h = Math.max(1, d.rect.height - (simple ? 0 : BALL_SIZE));
     onValue?.(Math.max(0, Math.min(1, d.startValue - dy / h)));
     if (xy && d.xBaseline != null) {
       // UNCLAMPED, iOS parity (VerticalFader.swift's xyChanged, which reads
@@ -99,12 +112,14 @@ function VerticalFader({
   const frac = Math.max(0, Math.min(1, value));
   const pct = frac * 100;
   // Ball center (and the fill's top) along the inset travel.
-  const centerY = `calc(${BALL_SIZE / 2}px + (100% - ${BALL_SIZE}px) * ${frac})`;
+  const centerY = simple
+    ? `${pct}%`
+    : `calc(${BALL_SIZE / 2}px + (100% - ${BALL_SIZE}px) * ${frac})`;
 
   return (
     <div
       ref={rootRef}
-      className={`vfader${active ? ' active' : ''}${muted ? ' muted' : ''}`}
+      className={`vfader${active ? ' active' : ''}${muted ? ' muted' : ''}${xcap ? ' has-xcap' : ''}`}
       style={{ '--vfader-color': color, '--vfader-ball': `${BALL_SIZE}px` }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -119,11 +134,22 @@ function VerticalFader({
       <div className="vfader-track" />
       <div className="vfader-fill" style={{ height: centerY }} />
       {unityTick && <div className="vfader-unity" />}
-      <div className="vfader-ball-slot" style={{ bottom: `calc(${centerY} - ${BALL_SIZE / 2}px)` }}>
-        {xy && !muted && <XyChevron dir="left" />}
-        <div className="vfader-ball" />
-        {xy && !muted && <XyChevron dir="right" />}
-      </div>
+      {/* simple's XY affordance: a short crossbar riding the fill's cap.
+          The theme's grammar everywhere else — pan needle, master
+          crossbar — is "a tick crossing a line is the handle you drag",
+          so a T-shaped cap says this handle moves sideways too. Only on
+          faders that HAVE an X axis (the ALL bus fader stays a bare
+          line), and gone while muted, like the chevrons it replaces. */}
+      {xcap && (
+        <div className="vfader-xcap" style={{ bottom: `calc(${centerY} - 1px)` }} />
+      )}
+      {!simple && (
+        <div className="vfader-ball-slot" style={{ bottom: `calc(${centerY} - ${BALL_SIZE / 2}px)` }}>
+          {xy && !muted && <XyChevron dir="left" />}
+          <div className="vfader-ball" />
+          {xy && !muted && <XyChevron dir="right" />}
+        </div>
+      )}
     </div>
   );
 }

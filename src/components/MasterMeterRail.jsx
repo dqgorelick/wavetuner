@@ -13,7 +13,7 @@ import palette, { useTheme } from '../theme/palette';
 // top. The zones survive as three ink levels instead: a clipped meter
 // still reads differently from a quiet one, just by brightness.
 function zoneColor(hold) {
-  if (palette.theme === 'mono') {
+  if (palette.monoLike) {
     if (hold >= 0.999) return palette.ink(0.95);
     if (hold >= 0.85) return palette.ink(0.62);
     return palette.ink(0.42);

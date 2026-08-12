@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { DetuneScale, MAX_DETUNE_HZ } from '../audio/StereoMode';
 import { FREQ_CEIL } from '../audio/freqRange';
+import { useTheme } from '../theme/palette';
 
 // Shared controls for the frequency / ALL panels — web ports of the
 // small iOS pieces that live at the bottom of FrequencyPanel.swift:
@@ -183,24 +184,39 @@ export function FreqScrubber({ hz, getHz, color, onCommit, detuneMarkerHz = 0 })
  *  the settings ceiling slider is gone and the ceiling is pinned at
  *  MAX_DETUNE_HZ, so the travel runs on the log-ish DetuneScale (bottom
  *  half = 0–1 Hz). `value` stays the engine's curve weight [0, 1];
- *  effective detune = value × MAX_DETUNE_HZ. */
+ *  effective detune = value × MAX_DETUNE_HZ.
+ *
+ *  Drawn as the LEVEL fader laid on its side (Dan, 2026-08-11): the same
+ *  thin capsule track, fill and ball, in grey rather than the lane colour
+ *  — it's a per-voice trim, not a voice. Geometry mirrors VerticalFader:
+ *  the ball's CENTRE runs [r, width − r] so its outer edge lands flush
+ *  with the track's cap at both ends, and the fill rises to that centre
+ *  so the two stay joined. */
+const DETUNE_BALL = 20;
+
 export function DetuneSlider({ value, onChange, testid = 'panelDetune' }) {
   const rootRef = useRef(null);
   const dragRef = useRef(null);
+  // simple theme: no ball, so no end insets either — the fill runs the
+  // track's full width and its cap is the handle (VerticalFader's rule).
+  const simple = useTheme() === 'simple';
+  const ball = simple ? 0 : DETUNE_BALL;
   // Display position, not the raw curve weight — everything below (fill,
   // handle, drag math) is in axis space.
   const pos = DetuneScale.curveNorm(value);
 
   const setFromClientX = (clientX) => {
     const rect = rootRef.current.getBoundingClientRect();
-    const usable = rect.width - 32; // handle width
+    const usable = rect.width - ball;
     if (usable <= 0) return;
-    let p = (clientX - rect.left - 16) / usable;
+    let p = (clientX - rect.left - ball / 2) / usable;
     p = Math.max(0, Math.min(1, p));
     if (p < 0.02) p = 0;
     if (p > 0.98) p = 1;
     onChange(DetuneScale.curveValue(p));
   };
+  // Ball centre (and the fill's cap) along the inset travel.
+  const centerX = `calc(${ball / 2}px + (100% - ${ball}px) * ${pos})`;
 
   return (
     <div
@@ -227,8 +243,16 @@ export function DetuneSlider({ value, onChange, testid = 'panelDetune' }) {
       aria-valuenow={Number((value * MAX_DETUNE_HZ).toFixed(2))}
       aria-valuetext={`${(value * MAX_DETUNE_HZ).toFixed(2)} Hz`}
     >
-      <div className="vp-detune-fill" style={{ width: `calc(16px + ${(pos * 100).toFixed(1)}% - ${(pos * 32).toFixed(1)}px)` }} />
-      <div className="vp-detune-handle" style={{ left: `calc(${(pos * 100).toFixed(1)}% - ${(pos * 32).toFixed(1)}px)` }} />
+      <div className="vp-detune-track" />
+      <div className="vp-detune-fill" style={{ width: centerX }} />
+      {!simple && (
+        <div
+          className="vp-detune-ball-slot"
+          style={{ left: `calc(${centerX} - ${DETUNE_BALL / 2}px)` }}
+        >
+          <div className="vp-detune-ball" />
+        </div>
+      )}
     </div>
   );
 }

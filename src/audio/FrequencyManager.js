@@ -36,6 +36,14 @@ import {
   stepCandidate,
 } from './jiRatios';
 
+// Pitch-lock escape hatch (AudioEngine.pitchLocked). Passed only where
+// the mover IS the voice's own editor — a Hz/ratio commit on that slot,
+// or an explicit root edit — and by whole-state restores (undo / recall),
+// which have to be able to put every voice back. Bulk moves that merely
+// happen to touch the slot (root-follow propagation, Align/Load, dice,
+// orb drags) stay unforced so the lock actually holds.
+const FORCE = { force: true };
+
 // Drift tolerance for locked-ratio detection. Above ±1¢, we consider
 // the slot to have been dragged off its locked ratio and unlock it.
 // Below the underline-exact threshold (1.5¢) so a freshly-typed ratio
@@ -540,11 +548,11 @@ class FrequencyManager {
     if (next.n != null && next.d != null) {
       // Rational candidate — lock the ratio so it tracks anchor moves.
       this._slotRatios.set(slot, { n: next.n, d: next.d });
-      audioEngine.setFrequency(slot, anchorHz * next.ratio);
+      audioEngine.setFrequency(slot, anchorHz * next.ratio, FORCE);
     } else {
       // TET-style candidate — set Hz directly, drop any rational lock.
       this._slotRatios.delete(slot);
-      audioEngine.setFrequency(slot, anchorHz * next.ratio);
+      audioEngine.setFrequency(slot, anchorHz * next.ratio, FORCE);
     }
   }
 
@@ -560,7 +568,7 @@ class FrequencyManager {
       return;
     }
     this._slotRatios.delete(slot);
-    audioEngine.setFrequency(slot, hz);
+    audioEngine.setFrequency(slot, hz, FORCE);
   }
 
   /**
@@ -576,7 +584,7 @@ class FrequencyManager {
     if (!Number.isFinite(anchorHz) || anchorHz <= 0) return;
     const newHz = anchorHz * (n / d);
     this._slotRatios.set(slot, { n, d });
-    audioEngine.setFrequency(slot, newHz);
+    audioEngine.setFrequency(slot, newHz, FORCE);
   }
 
   /**
@@ -594,7 +602,7 @@ class FrequencyManager {
       // Follow-root OFF: move only the anchor. The engine listener then
       // pulls any locked-ratio slots along; free voices stay put. Keeps
       // the typed-root / octave path consistent with dragging the orb.
-      audioEngine.setFrequency(this._anchorSlot, newHz);
+      audioEngine.setFrequency(this._anchorSlot, newHz, FORCE);
       return;
     }
     const factor = newHz / oldHz;
@@ -604,7 +612,11 @@ class FrequencyManager {
       for (let slot = 0; slot < count; slot++) {
         const cur = audioEngine.getFrequency(slot);
         if (!Number.isFinite(cur) || cur <= 0) continue;
-        audioEngine.setFrequency(slot, cur * factor);
+        // The anchor IS the edited voice, so it moves even when locked;
+        // every follower is unforced, so a pitch-locked voice sits out
+        // the root move.
+        audioEngine.setFrequency(slot, cur * factor,
+          slot === this._anchorSlot ? FORCE : undefined);
       }
     } finally {
       this._inPropagation = false;
@@ -1863,7 +1875,7 @@ class FrequencyManager {
     const dur = Math.max(0, Number(durationMs) || 0);
     if (dur <= 0) {
       // Instant: batch-write then settle synchronously.
-      if (wantFreq) audioEngine.setAllFrequenciesBatch(snap.frequencies.slice(0, count));
+      if (wantFreq) audioEngine.setAllFrequenciesBatch(snap.frequencies.slice(0, count), FORCE);
       if (wantVol && Array.isArray(snap.volumes)) audioEngine.setAllVolumesBatch(snap.volumes.slice(0, count));
       if (wantTranspose) audioEngine.setTransposeSemitones(snap.transpose);
       finish();
@@ -1876,7 +1888,8 @@ class FrequencyManager {
     const done = () => { pending -= 1; if (pending <= 0) finish(); };
     if (wantFreq) {
       pending += 1;
-      audioEngine.glideToFrequencies(snap.frequencies.slice(0, count), dur, done, this._recallCurveFn());
+      audioEngine.glideToFrequencies(snap.frequencies.slice(0, count), dur, done,
+        this._recallCurveFn(), FORCE);
     }
     if (wantVol && Array.isArray(snap.volumes)) {
       pending += 1;

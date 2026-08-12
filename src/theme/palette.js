@@ -15,6 +15,15 @@
  *     and voices are told apart by their numbers and their position, not
  *     by color. Only the visualizer keeps its own palette — it's the
  *     art, not the chrome.
+ *   'simple' - mono's chrome with the controls reduced to LINES. No dots
+ *     or balls anywhere: the pan pots read from a radial tick, the
+ *     faders from their fill's rounded end, the master meter is two
+ *     thin capsules. Labels retreat to the edges, the ruler thins out,
+ *     the frequency menus drop their outlines. The NON-voice chrome
+ *     inherits mono's gray cap (monoLike below), but every per-voice
+ *     site — orbs AND the console lanes under them — draws the full
+ *     classic spectrum (Dan, round 4: "the full spectrum, not just
+ *     the duo").
  *
  * Two color roles, because mono splits what the other two themes fuse:
  *   oscColor - the general per-voice color. Chrome: note readouts,
@@ -60,9 +69,29 @@ const INK_RGB = {
   duo: '255, 255, 255',
   classic: '255, 255, 255',
   mono: '150, 150, 150',
+  simple: '150, 150, 150',
 };
 
-const VALID_THEMES = new Set(['duo', 'classic', 'mono']);
+const VALID_THEMES = new Set(['duo', 'classic', 'mono', 'simple']);
+
+/**
+ * Blend a #rrggbb hex toward white by `amt` (0..1), returning plain hex.
+ * Plain hex on purpose: oscColor feeds canvas strokeStyle in places, so
+ * the brightened palette can't lean on CSS color-mix() strings.
+ */
+function lighten(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (shift) => {
+    const c = (n >> shift) & 0xff;
+    return Math.round(c + (255 - c) * amt).toString(16).padStart(2, '0');
+  };
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
+}
+
+// simple wears the classic hues one step brighter (Dan, round 5: the
+// straight classic hexes read subdued there — the theme's washes and
+// line-weight dims pull harder than classic's chunkier controls do).
+const SIMPLE_PALETTE = CLASSIC_PALETTE.map((c) => lighten(c, 0.18));
 
 /**
  * Is `t` a theme this palette knows? Exported so the URL parser can
@@ -108,6 +137,15 @@ class Palette {
   get theme() { return this._theme; }
 
   /**
+   * The themes with the gray CHROME cap (--ink-rgb at 150). Covers the
+   * non-voice decisions the two share — the desaturated accents, the
+   * ink-level master meter, the capped consonance field. It says
+   * nothing about VOICE color anymore: mono's voices are gray, simple's
+   * carry the classic spectrum — oscColor/orbColor branch per theme.
+   */
+  get monoLike() { return this._theme === 'mono' || this._theme === 'simple'; }
+
+  /**
    * Mirror the active theme onto <body> — `data-theme` for CSS hooks and
    * `--ink-rgb` for the chrome cap. Done here rather than in a React
    * effect so the URL-restore path (which calls setTheme before mount)
@@ -140,6 +178,12 @@ class Palette {
    * at count ≥ 5, and its position depends on N.
    */
   oscColor(index, count) {
+    // simple: full-spectrum voices over the gray chrome — the console
+    // lanes, faders and pan ticks carry the classic colors (lightened a
+    // step) while the non-voice chrome stays capped (Dan, rounds 4–5).
+    if (this._theme === 'simple') {
+      return SIMPLE_PALETTE[index % SIMPLE_PALETTE.length];
+    }
     if (this._theme === 'classic') {
       return CLASSIC_PALETTE[index % CLASSIC_PALETTE.length];
     }
@@ -149,7 +193,9 @@ class Palette {
 
   /**
    * The orb glyph and its drag readout. Identical to oscColor except in
-   * mono, where the orbs hold the brightness the chrome gave up.
+   * mono, where the orbs hold a bright neutral above the gray chrome.
+   * (simple's round-3 duo accents became round-4 "full spectrum" — now
+   * just oscColor, same as duo/classic.)
    */
   orbColor(index, count) {
     if (this._theme === 'mono') return MONO_ORB;

@@ -87,10 +87,46 @@ function buildHilbertTables(p) {
   return { x, y };
 }
 
+// Band-limited time-domain table from the same Fourier coefficients the
+// audio's PeriodicWave uses (256 harmonics — Wave.js HARMONICS), peak-
+// normalized to match createPeriodicWave's disableNormalization:false
+// scaling. The idealized table above stays the right look for the
+// standing-line modes; this one exists for viz code that replays
+// amplitude-sensitive nonlinearities over the waveform (the tape
+// fairy's wavefold replay): a folded square's visible filigree IS the
+// band-limited edge sweeping through the fold curve, which a sharp-
+// corner table erases entirely. Build cost (1024 × 256 sins ≈ 2 ms) is
+// paid only on first use after a shape-slider move.
+const BANDLIMITED_HARMONICS = 256;
+function buildBandlimitedTable(p) {
+  const coeffs = shapeCoeffs(p);
+  const nMax = Math.min(BANDLIMITED_HARMONICS, coeffs.length - 1);
+  const wt = new Float32Array(WT_SIZE);
+  let peak = 0;
+  for (let i = 0; i < WT_SIZE; i++) {
+    const theta = (i / WT_SIZE) * TWO_PI;
+    let s = 0;
+    for (let n = 1; n <= nMax; n++) {
+      const c = coeffs[n];
+      if (c === 0) continue;
+      s += c * Math.sin(n * theta);
+    }
+    wt[i] = s;
+    const a = Math.abs(s);
+    if (a > peak) peak = a;
+  }
+  if (peak > 0) {
+    const inv = 1 / peak;
+    for (let i = 0; i < WT_SIZE; i++) wt[i] *= inv;
+  }
+  return wt;
+}
+
 // Lazy per-Wave caches: rebuilt on first use after the pool's position
 // moves. Keyed by the singleton itself so drone/keyboard stay separate.
 const shapeCache = new WeakMap();    // wave → { position, table }
 const hilbertCache = new WeakMap();  // wave → { position, x, y }
+const bandlimitedCache = new WeakMap(); // wave → { position, table }
 
 export function getShapeTable(wave) {
   let entry = shapeCache.get(wave);
@@ -108,6 +144,15 @@ export function getHilbertTables(wave) {
     hilbertCache.set(wave, entry);
   }
   return entry;
+}
+
+export function getBandlimitedTable(wave) {
+  let entry = bandlimitedCache.get(wave);
+  if (!entry || entry.position !== wave.position) {
+    entry = { position: wave.position, table: buildBandlimitedTable(wave.position) };
+    bandlimitedCache.set(wave, entry);
+  }
+  return entry.table;
 }
 
 // Linear-interp lookup at normalized phase ∈ [0, 1). Caller keeps norm

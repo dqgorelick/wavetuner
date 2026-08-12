@@ -243,6 +243,11 @@ export default function NoteKeyboard({ hz, color, slot, onCommitHz, transposeRat
         </div>
       </div>
       <div className="nkb-tuning">
+        {/* Section header: the word + ⓘ lead, the root reference rides
+            the same row trailing-aligned (Dan, 2026-08-11) — it's the
+            reference the just/equal chips below are relative to, so it
+            reads as a caption ON the section rather than a footnote
+            hanging off the bottom of the face. */}
         <div className="nkb-tuning-head">
           <span>tuning</span>
           <button
@@ -254,6 +259,7 @@ export default function NoteKeyboard({ hz, color, slot, onCommitHz, transposeRat
           >
             ⓘ
           </button>
+          <span className="nkb-tuning-root" data-testid="tuningRoot">{rootLabel}</span>
         </div>
         {showTip && <div className="nkb-tuning-tip" data-testid="tuningInfoTip">{TUNING_TIP}</div>}
         <div className="nkb-tuning-chips">
@@ -277,7 +283,6 @@ export default function NoteKeyboard({ hz, color, slot, onCommitHz, transposeRat
             equal
           </button>
         </div>
-        <span className="nkb-tuning-root" data-testid="tuningRoot">{rootLabel}</span>
       </div>
     </div>
   );

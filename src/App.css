@@ -4674,8 +4674,9 @@ kbd {
      side-menu column, so on phones they're the same full-width sheet
      between the rails as every other menu.) */
   /* (Nothing to say about the panel toggles here any more: the KBD and
-     MIXER surfaces don't ship on mobile at all, so NavRail omits both
-     tabs — see App.jsx's showKbdMixer.) */
+     MIXER surfaces don't ship on mobile at all, so NavRail omits the MIX
+     tab — see App.jsx's showMixer — and Settings omits the keyboard-tray
+     row that replaced the KBD tab — showKbdTray.) */
 
   /* Side menus are covering sheets on mobile (iOS-iPhone behavior), not a
      side column: full-width, pinned to the bottom of the viewport, closed
@@ -4949,6 +4950,14 @@ kbd {
   justify-content: center;
   height: 21px;
   margin-bottom: 4px;
+  /* Above the edge scrim (28), below a held orb (30). The scrim overflows
+     the spectrum component by design — it has to, the chrome it swallows
+     does too — and without this the ALL orb, the transpose readout and the
+     ± count buttons would sit inside the black whenever a voice left the
+     frame. 29 keeps the one thing that IS meant to cross them, an orb under
+     the finger, on top as before. (z-index applies here without position:
+     these are flex items of .fsb-row.) */
+  z-index: 29;
 }
 .fsb-side-left {
   position: relative;
@@ -5136,6 +5145,20 @@ kbd {
   pointer-events: none;
   overflow: visible;
 }
+/* Edge-pan rate arrows, split out of .fsb-lines so they can clear the edge
+   scrim (28). They belong to an orb under the finger and they only ever
+   appear while it is out in the edge zone pushing the frame — i.e. squarely
+   inside the black — so they follow the held orb above it, not the position
+   lines below it. */
+.fsb-arrows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 32;
+}
 /* Release handle under each played-note line. The parent svg opts out of
    pointer events wholesale, so this opts back in — it's the one thing in
    there meant to be pressed. */
@@ -5166,6 +5189,58 @@ kbd {
 /* (The old .fsb-edge-zone-line-left/-right canvas-inset rules and the phone
    display:none are gone 2026-08-05: the zone is bar-anchored now, so the
    lines sit inside the lane at sensible spots on every width.) */
+
+/* Edge scrim — the black each end of the spectrum swallows outgoing voices
+   into (Dan, 2026-08-08). Before this, chrome leaving the frame just dimmed
+   in place, which read as each piece quietly switching itself off at a
+   different moment; now there is something visible doing the taking.
+
+   z-index 28 is the whole point: ABOVE every resting voice's chrome (orb and
+   its label, kbd dot, selection ring 27, pan dot 27, and the z-auto lines
+   layer) and BELOW a held orb (.fsb-dot.dragging/.grabbed 30) with its label
+   (32), edge arrows (.fsb-arrows 32) and the side controls (.fsb-side 29).
+   So the orb in your hand rides over the black; the ones being pushed out of
+   frame go under it.
+
+   Geometry: `left`/`width` are inline (they track barWidth). The horizontal
+   stops must match FrequencySpectrumBar.jsx — EDGE_FADE_PX 28 (the ramp, the
+   same band edgeFades measures), SCRIM_HOLD_PX 16, SCRIM_TAPER_PX 40, total
+   SCRIM_W 84. The taper back to transparent is not there to reveal anything
+   (chrome is at zero alpha well before it) — it keeps the far end from
+   cutting a hard black rectangle over the visuals. The vertical mask does the
+   same for the top edge, which is the one that crosses open canvas. */
+.fsb-edge-scrim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 28;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 100%);
+}
+.fsb-edge-scrim.showing {
+  opacity: 1;
+}
+.fsb-edge-scrim.right {
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 1) 28px,
+    rgba(0, 0, 0, 1) 44px,
+    rgba(0, 0, 0, 0) 84px
+  );
+}
+.fsb-edge-scrim.left {
+  background: linear-gradient(
+    to left,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 1) 28px,
+    rgba(0, 0, 0, 1) 44px,
+    rgba(0, 0, 0, 0) 84px
+  );
+}
 
 /* (.fsb-ghost retired 2026-08-04: nothing on the bar ghosts any more. The
    real orb rides the cursor in a DRAG and in a GRAB alike — iOS parity, see
@@ -5257,8 +5332,17 @@ kbd {
   border: 2px solid var(--ink-max);
   border-radius: 50%;
   pointer-events: none;
-  z-index: 31;
+  /* Above every resting orb state (hover/boosted 20, kbd-active 25, kbd dot
+     26) but UNDER the edge scrim (28), so the ring dissolves into the black
+     with the voice it marks instead of hovering over it as a bright circle
+     around nothing. */
+  z-index: 27;
   transition: transform 0.15s ease;
+}
+/* While its orb is held: back above the scrim, and above the held orb's own
+   z 30 — the ring must never slip under the disc it wraps. */
+.fsb-sel-ring.held {
+  z-index: 31;
 }
 /* Release settle: travel home on the same curve as .fsb-dot.settling (the
    class is stripped by the same timer). */
@@ -5446,6 +5530,13 @@ kbd {
   opacity: 0.9;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
 }
+/* Riding a held orb: over the edge scrim (28) and over the orb itself (30),
+   so dragging a voice into the edge zone can't swallow the very readout the
+   drag is being steered by. At rest the label has no z and dissolves into the
+   black with its orb. */
+.fsb-dot-label.held {
+  z-index: 32;
+}
 .fsb-label-text { /* the number itself sits in the flex row's center */ }
 
 /* Flipped (iOS-style) row: the label hangs BELOW the orb, so it grows
@@ -5483,6 +5574,15 @@ kbd {
      show/hide transition animates, so the two fades compose. */
   opacity: calc(var(--edge-fade, 1));
   transition-duration: 0.12s;
+}
+/* The voice being moved (finger drag or keyboard grab): its readout is
+   underlined, so among the whole chord's raised numbers the one your
+   gesture is changing reads apart. Same mark in both homes — the strip
+   and the raised above-orb float. */
+.fsb-hz-float.held {
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
 }
 /* Orb raised above the bar: the float leaves the strip and hangs off the
    orb's top edge, so it anchors from its bottom instead of its top. */
@@ -5581,6 +5681,12 @@ kbd {
    slip under the very orb it belongs to. */
 .fsb-status.pinned {
   animation: none;
+  /* At rest it only has to clear its own orb, so it sits UNDER the edge scrim
+     (28) and dissolves with the voice — see .fsb-sel-ring for the same trade.
+     The 31 that clears a DRAGGED orb is now scoped to the drag below. */
+  z-index: 27;
+}
+.fsb-status.pinned.dragging {
   z-index: 31;
 }
 /* Release settle: match .fsb-dot.settling exactly so the dot and its orb
@@ -5696,6 +5802,13 @@ kbd {
   opacity: 1;
   text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
   letter-spacing: -0.3px;
+}
+/* …and underlined, matching .fsb-hz-float.held: whichever layout the
+   readout appears in, the moving voice's number wears the underline. */
+.fsb-dot-label.active-freq .fsb-label-text {
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -7578,6 +7691,36 @@ kbd {
   border-radius: 12px;
 }
 .perform-panel .scope-panel { margin-top: 0; }
+/* Save slots inside the perform menu. The bar was authored for the old
+   floating transport pill — a centered row with `.cap-actions` absolutely
+   parked just PAST its right edge — which in a 280px menu column would
+   hang the GO / generative / delete cluster off the panel. Re-flow it as
+   two stacked rows that own the column's width, and shrink the chips so
+   undo · redo · I–V fit one line (Dan, 2026-08-11). */
+.perform-panel .capture-bar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.perform-panel .cap-center { gap: 4px; }
+.perform-panel .cap-actions {
+  position: static;
+  transform: none;
+  margin-left: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  backdrop-filter: none;
+  gap: 5px;
+}
+.perform-panel .cap-bar-btn,
+.perform-panel .cap-slot-wrap,
+.perform-panel .cap-launch,
+.perform-panel .cap-x {
+  width: 32px;
+  height: 30px;
+}
+.perform-panel .cap-bar-sep { height: 18px; }
 .scope-panel {
   display: flex;
   flex-direction: column;
@@ -7722,7 +7865,7 @@ kbd {
    list. They're the only color left in the app, and they're what says
    which row is which. */
 
-body[data-theme="mono"] :is(
+body:is([data-theme="mono"], [data-theme="simple"]) :is(
   .midi-row-x:hover,
   .midi-row-armed,
   .midi-row-armed-text,
@@ -7752,7 +7895,7 @@ body[data-theme="mono"] :is(
 /* The master meter's level segments (green → amber → red) gray out with
    the row above, but grayscale alone would leave them brighter than the
    cap — a lit meter would out-shine the orbs. Pull them under it. */
-body[data-theme="mono"] .mixer-master-meter-row {
+body:is([data-theme="mono"], [data-theme="simple"]) .mixer-master-meter-row {
   filter: grayscale(1) brightness(0.62);
 }
 
@@ -7761,7 +7904,7 @@ body[data-theme="mono"] .mixer-master-meter-row {
    second only to the orbs, which are meant to be alone up there. This
    one line covers the native slider accents, the detune viz arcs and
    the ALL/bus orb, since they all spend the same token. */
-body[data-theme="mono"] {
+body:is([data-theme="mono"], [data-theme="simple"]) {
   --ink-cool-rgb: var(--ink-rgb);
 
   /* The legibility tier: above the chrome cap, below the orbs. For the
@@ -7809,6 +7952,186 @@ body[data-theme="mono"] .console-note-name {
    that's left here is the number: the base takes it from --cell-color,
    which in mono is the chrome gray and would leave it dim. Lift it onto
    the same legibility tier as the frequency readouts instead. */
-body[data-theme="mono"] .console-mute.on {
+body:is([data-theme="mono"], [data-theme="simple"]) .console-mute.on {
   color: rgba(var(--ink-hi-rgb), 0.95);
 }
+
+/* ══ SIMPLE — mono reduced to lines (2026-08-11, prototype) ═══════════
+   Everything above (the mono scopes, now shared) is the COLOR system;
+   this block is the SHAPE system: no dots or balls anywhere, every
+   control is a line with rounded ends. The structural halves live in
+   the components (PanPot's radial tick, VerticalFader's ball-less
+   full-travel fill, NavRail's MIX word, the ruler's halved tick
+   density) — what's here is pure restyling. */
+
+/* (The orbs' rim pan/detune dots stay DOTS — Dan, round 2: the no-dots
+   rule is for the controls, not the orbs' own readouts.) */
+
+/* PanPot's indicator is a <line> here, so the state shift rides stroke,
+   not fill (the base .panpot-orb rule transitions fill). */
+body[data-theme="simple"] .panpot-orb {
+  transition: stroke 0.15s ease;
+}
+
+/* The master meter ("main mixer"): two thin capsules side by side, the
+   same grammar as the console faders' track + fill. The bar keeps its
+   overflow clip so the fill inherits the rounded foot; the peak-hold
+   dashes go — a floating dash above the line breaks the two-lines
+   shape, and the fill's cap already tells the level. */
+body[data-theme="simple"] .master-meter-bars {
+  gap: 3px;
+}
+body[data-theme="simple"] .master-meter-bar {
+  width: 5px;
+  border-radius: 2.5px;
+  background: rgba(var(--ink-soft-rgb), 0.1);
+}
+body[data-theme="simple"] .master-meter-fill {
+  border-radius: 2.5px;
+}
+body[data-theme="simple"] .master-meter-hold {
+  display: none;
+}
+
+/* Labels retreat to the edges and whisper: still present (they're the
+   only visible names these controls have — dropping them entirely fails
+   anyone who doesn't already know the layout), but one size down and
+   dimmer. Screen-reader labels are untouched. */
+body[data-theme="simple"] .console-rail-label {
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  color: rgba(var(--ink-soft-rgb), 0.3);
+}
+/* The knob names match the rail labels stroke for stroke (Dan, round 2:
+   "same font as the left side") — same size, weight, tracking, case and
+   ink as NOTE/MUTE/PAN/LEVEL. Selected/hover still brighten (their
+   rules are more specific). */
+body[data-theme="simple"] .source-knob-label {
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(var(--ink-soft-rgb), 0.3);
+}
+
+/* NOTE row: the Hz line is gone (MixerConsole skips it), so the cell
+   drops to the mute button's height — brackets and hit area included —
+   and the head lift becomes a margin above it. The freed height flows
+   to the LEVEL fader (flex: 1). The rail's NOTE label and the ALL
+   caption shrink in step so the rows stay aligned across the console. */
+body[data-theme="simple"] .console-note,
+body[data-theme="simple"] .console-all-caption {
+  height: var(--console-cell-h);
+  margin-top: var(--console-head, 0px);
+}
+body[data-theme="simple"] .console-rail-note {
+  height: var(--console-cell-h);
+  margin-top: var(--console-head, 0px);
+}
+/* The note is the cell's only line now — give it the size the Hz
+   figure used to carry. Color comes from the base rule's --osc-color
+   mix: round 4 put the classic spectrum on the lanes, so the note
+   wears its voice color like duo/classic. */
+body[data-theme="simple"] .console-note-name {
+  font-size: calc(11px * var(--console-scale, 1));
+}
+
+/* ── simple: the frequency menus drop their outlines ─────────────────
+   The panels' box grammar was fill + 1px ring (chips, joggers, keypad
+   keys, note keys, the voices pill). The ring is what read as busy —
+   the round-8 mute-cell lesson again: an outline is only ever a border
+   BRIGHTER than what it encloses. So in simple a control is its fill
+   and nothing else; states read by the wash and the text lightening,
+   never by a ring. border-color (not border) so the 1px keeps holding
+   the box size. Deliberately NOT stripped: .ekp-checkbox (a checkbox
+   without its box is a mystery meat toggle) and .ekp-buffer.invalid
+   (the error ring is an alarm, not chrome). */
+body[data-theme="simple"] :is(
+  .vp-chip,
+  .vp-mute.muted,
+  .ojog,
+  .ekp-sidebtn,
+  .ekp-key,
+  .nkb-white,
+  .nkb-black,
+  .nkb-chev,
+  .nkb-tuning-tip,
+  .tuning-chip,
+  .ap-voices,
+  .tuning-system-select
+) {
+  border-color: transparent;
+}
+/* The ring used to carry the active/selected states — compensate with
+   a step up in wash so the states survive its removal. */
+body[data-theme="simple"] :is(.vp-chip.active, .tuning-chip.active, .ekp-sidebtn.em) {
+  background-color: rgba(var(--ink-rgb), 0.18);
+}
+body[data-theme="simple"] .nkb-white.sel {
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 35%);
+}
+body[data-theme="simple"] .nkb-black.sel {
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 20%);
+}
+/* The system select loses its ring too, so it needs the chip wash to
+   stay findable on the black panel (its own bg is a near-black). */
+body[data-theme="simple"] .tuning-system-select {
+  background: rgba(var(--ink-rgb), 0.08);
+}
+
+/* Root readout in the tuning menu's title bar (TuningHeadRoot — simple
+   only): right-aligned across from the centered "tuning" title, inside
+   the ✕'s clear zone. Same quiet tier as the topbar label it replaces. */
+.side-menu-head-root {
+  position: absolute;
+  top: 50%;
+  right: 30px;
+  transform: translateY(-50%);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--ink-rgb), 0.55);
+  white-space: nowrap;
+}
+
+/* ── simple round 5: the voice colors, lit ────────────────────────────
+   Round 4 put the classic spectrum on the lanes but left the standard
+   dims on top (fill α.7, note mix −30%, wash −50%) — stacked on thin
+   lines they read subdued (Dan). The palette itself is one step
+   lighter for simple (SIMPLE_PALETTE, palette.js); these lift the
+   heaviest console dims to match. */
+body[data-theme="simple"] .vfader-fill { opacity: 0.92; }
+body[data-theme="simple"] .vfader.muted .vfader-fill { opacity: 0.3; }
+body[data-theme="simple"] .console-note-name {
+  color: color-mix(in srgb, var(--osc-color), transparent 10%);
+}
+body[data-theme="simple"] .console-mute {
+  --cell-fill: color-mix(in srgb, var(--cell-color), transparent 36%);
+}
+
+/* XY affordance on the level faders: a crossbar riding the fill's cap
+   (rendered by VerticalFader only when the fader has an X axis and
+   isn't muted). Same tick vocabulary as the master meter's volume
+   crossbar and the pan needle; widens a touch under the finger. */
+.vfader-xcap {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 13px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--vfader-color);
+  opacity: 0.95;
+  pointer-events: none;
+  transition: width 0.15s ease;
+}
+.vfader.active .vfader-xcap { width: 17px; }
+/* …and the fill meets that crossbar SQUARE. With the shared 3.5px cap
+   the fill's top curved away under the bar, so the pair read as a line
+   resting on a separate rounded line instead of one T-shaped handle
+   (Dan, 2026-08-11). Bottom stays round — it still has to sit inside
+   the track's own rounded end. Only faders that draw a crossbar get
+   this: on the rest (the ALL bus lane, and muted lanes) the rounded cap
+   is the indicator. */
+.vfader.has-xcap .vfader-fill { border-radius: 0 0 3.5px 3.5px; }

@@ -17,7 +17,7 @@ import OscillatorControls from './components/OscillatorControls';
 import TransportRail from './components/TransportRail';
 import NavRail from './components/NavRail';
 import FrequencySpectrumBar from './components/FrequencySpectrumBar';
-import { TuningPanel, PerformPanel } from './components/FrequencyManager';
+import { TuningPanel, PerformPanel, TuningHeadRoot } from './components/FrequencyManager';
 import GenerativePanel from './components/GenerativePanel';
 import StartScreen from './components/StartScreen';
 import SettingsPanel from './components/SettingsPanel';
@@ -407,9 +407,24 @@ function App() {
   }, [isColumnOpen]);
 
   // Transition (generative) panel visibility — deliberately NOT persisted
-  // while the feature is in development: every app load starts closed; the
-  // sparkle button next to TUNING opens it for the session.
+  // while the feature is in development: every app load starts closed.
+  // It has NO button any more (Dan, 2026-08-11: the dice tab came off the
+  // NavRail); the panel is a throw-away debug surface (GENERATIVE.md §7),
+  // so the only way in is the console handle below — `wtTransitions(true)`,
+  // alongside the other window.* test hooks in main.jsx.
   const [isTransitionOpen, setIsTransitionOpen] = useState(false);
+  useEffect(() => {
+    window.wtTransitions = (on = true) => setIsTransitionOpen(!!on);
+    return () => { delete window.wtTransitions; };
+  }, []);
+
+  // "Resume playback" handle, published by TransportRail (which owns the
+  // master-pause flag) and consumed by the perform menu's save slots, so
+  // GO / the generative transition are audible from a paused session.
+  // A ref, not state — re-registering must not re-render the tree.
+  const ensurePlayingRef = useRef(null);
+  const registerEnsurePlaying = useCallback((fn) => { ensurePlayingRef.current = fn; }, []);
+  const ensurePlaying = useCallback(() => { ensurePlayingRef.current?.(); }, []);
 
   // True while an orb is being dragged/grabbed in the spectrum bar. The
   // tuning panel uses this to freeze its inputs into plain text so the
@@ -1535,18 +1550,20 @@ function App() {
             // flanking the console row: play/pause + master meter fader on
             // the left, the nav icons (perform folder / Hz / dice) +
             // undo/redo on the right. They follow the section as it widens.
-            leftRail={<TransportRail isPaused={isPaused} onPausedChange={setIsPaused} />}
+            leftRail={(
+              <TransportRail
+                isPaused={isPaused}
+                onPausedChange={setIsPaused}
+                registerEnsurePlaying={registerEnsurePlaying}
+              />
+            )}
             rightRail={(
               <NavRail
                 sideMenu={sideMenu}
                 onToggleSideMenu={toggleSideMenu}
-                transitionOpen={isTransitionOpen}
-                onToggleTransition={() => setIsTransitionOpen((v) => !v)}
-                // KBD + mixer tabs are desktop-only (mobile drops both
-                // surfaces entirely — see the force-close effect above).
-                showKbdMixer={!isMobile}
-                kbdOpen={isKbdTrayOpen}
-                onToggleKbd={() => setIsKbdTrayOpen((v) => !v)}
+                // The mixer tab is desktop-only (mobile drops the surface
+                // entirely — see the force-close effect above).
+                showMixer={!isMobile}
               />
             )}
             oscillatorCount={oscillatorCount}
@@ -1614,6 +1631,7 @@ function App() {
                 {shown.menu != null && (
                   <div className="side-menu-head">
                     <span className="side-menu-title">{shown.menu}</span>
+                    {shown.menu === 'tuning' && <TuningHeadRoot />}
                     <button
                       type="button"
                       className="side-menu-close"
@@ -1648,7 +1666,7 @@ function App() {
                     frozen={isOrbDragging || isAligning}
                   />
                 )}
-                {shown.menu === 'perform' && <PerformPanel />}
+                {shown.menu === 'perform' && <PerformPanel onEnsurePlaying={ensurePlaying} />}
               </div>
             ) : null}
           />
@@ -1902,6 +1920,12 @@ function App() {
             onKbdRepressModeChange={setKbdRepressMode}
             showKbdLabels={showKbdLabels}
             onShowKbdLabelsChange={setShowKbdLabels}
+            // The keyboard tray's show/hide — its old KBD tab is off the
+            // NavRail, so this row is now the only way in. Desktop only,
+            // matching the force-close effect above.
+            showKbdTray={!isMobile}
+            kbdTrayOpen={isKbdTrayOpen}
+            onKbdTrayOpenChange={setIsKbdTrayOpen}
             orbsBelow={orbsBelow}
             onOrbsBelowChange={setOrbsBelow}
             panDots={panDots}

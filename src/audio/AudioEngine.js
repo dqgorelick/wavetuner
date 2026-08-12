@@ -283,6 +283,15 @@ class AudioEngine {
     this.volumeValues = [0.5, 0.5, 0.5, 0.5];
     this.mutedStates = [false, false, true, true]; // 3rd and 4th muted by default
     this.preMuteVolumes = [0.5, 0.5, 0.5, 0.5];
+    // Per-slot PITCH LOCK (iOS AudioEngine.pitchLocked parity, exposed by
+    // the frequency panel's lock button). A locked slot's frequency is
+    // frozen: orb drags, dice/generative, root-follow propagation and
+    // global transposes all skip it. The escape hatch is `force` on
+    // setFrequency / setAllFrequenciesBatch, which the slot's OWN editor
+    // and the restore paths (patch apply, undo) pass — the lock protects
+    // a voice from everything ELSE moving it, not from being edited
+    // directly. Session-only: not persisted to patches or save states.
+    this.pitchLocked = [false, false, false, false];
 
     // Per-oscillator detune offset in Hz, sampled from droneStereo's
     // detuneHz on creation and re-rolled on slider drag. Added to
@@ -551,6 +560,9 @@ class AudioEngine {
     }
     while (this.preMuteVolumes.length < this.oscillatorCount) {
       this.preMuteVolumes.push(0.5);
+    }
+    while (this.pitchLocked.length < this.oscillatorCount) {
+      this.pitchLocked.push(false);
     }
     while (this.droneDetuneOffsets.length < this.oscillatorCount) {
       this.droneDetuneOffsets.push(0);
@@ -2134,6 +2146,7 @@ class AudioEngine {
           this.volumeValues.splice(i, 1);
           this.mutedStates.splice(i, 1);
           this.preMuteVolumes.splice(i, 1);
+          this.pitchLocked.splice(i, 1);
           this.droneDetuneOffsets.splice(i, 1);
           this.panValues.splice(i, 1);
           this.phases.splice(i, 1);
@@ -2240,6 +2253,7 @@ class AudioEngine {
       this.volumeValues.splice(index, 1);
       this.mutedStates.splice(index, 1);
       this.preMuteVolumes.splice(index, 1);
+      this.pitchLocked.splice(index, 1);
       this.droneDetuneOffsets.splice(index, 1);
       this.panValues.splice(index, 1);
       this.phases.splice(index, 1);
@@ -2294,6 +2308,9 @@ class AudioEngine {
       this.volumeValues[newIndex] = this.volumeValues[sourceIndex];
       this.mutedStates[newIndex] = this.mutedStates[sourceIndex];
       this.preMuteVolumes[newIndex] = this.preMuteVolumes[sourceIndex];
+      // A clone starts free — the lock is a per-voice performance hold,
+      // not part of what a voice "is".
+      this.pitchLocked[newIndex] = false;
       // Cloned slot starts fresh — the source's partials don't copy
       // over. Use addPartial after clone if you want the same harmonic
       // stack on both.
@@ -2943,12 +2960,19 @@ class AudioEngine {
   }
   
   /**
-   * Set frequency for a specific oscillator
+   * Set frequency for a specific oscillator.
+   *
+   * `opts.force` overrides the slot's PITCH LOCK — pass it from the
+   * slot's own editor (the frequency panel / tuning menu commit paths)
+   * and from whole-state restores (patch apply, undo). Everything else
+   * — orb drags, dice, generative, root-follow, transpose — leaves the
+   * call unforced so a locked voice holds its pitch.
    */
-  setFrequency(index, frequency) {
+  setFrequency(index, frequency, { force = false } = {}) {
     if (!this.isInitialized || index < 0 || index >= this.oscillatorCount) return;
     if (!this.oscillators[index]) return;
-    
+    if (!force && this.pitchLocked[index]) return;
+
     const clampedFreq = Math.max(0.001, Math.min(FREQ_CEIL, frequency));
     
     if (Math.abs(clampedFreq - this.frequencyValues[index]) < 0.01) return;
@@ -3021,7 +3045,7 @@ class AudioEngine {
    * AudioParam change at the same currentTime so the relative offsets between
    * oscillators stay exactly preserved (critical for beat-preserving drags).
    */
-  setAllFrequenciesBatch(frequencies) {
+  setAllFrequenciesBatch(frequencies, { force = false } = {}) {
     if (!this.isInitialized) return;
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume();
@@ -3031,6 +3055,9 @@ class AudioEngine {
     let changed = false;
     for (let i = 0; i < count; i++) {
       if (!this.oscillators[i]) continue;
+      // Same pitch-lock rule as setFrequency, per slot: a locked voice
+      // sits out the batch while its neighbours still move together.
+      if (!force && this.pitchLocked[i]) continue;
       const clampedFreq = Math.max(0.001, Math.min(FREQ_CEIL, frequencies[i]));
       if (Math.abs(clampedFreq - this.frequencyValues[i]) < 0.01) continue;
       this.frequencyValues[i] = clampedFreq;
@@ -3251,7 +3278,8 @@ class AudioEngine {
    * @param {number}   durationMs    Glide length in ms. 0 = instant.
    * @param {Function} [onComplete]  Invoked when the glide finishes or is cancelled.
    */
-  glideToFrequencies(targets, durationMs = 1000, onComplete = null, easing = null) {
+  glideToFrequencies(targets, durationMs = 1000, onComplete = null, easing = null,
+    { force = false } = {}) {
     if (!this.isInitialized) return;
     if (this._glideRaf != null) {
       cancelAnimationFrame(this._glideRaf);
@@ -3265,7 +3293,7 @@ class AudioEngine {
     }
 
     if (durationMs <= 0) {
-      this.setAllFrequenciesBatch(safeTargets);
+      this.setAllFrequenciesBatch(safeTargets, { force });
       if (onComplete) onComplete();
       return;
     }
@@ -3288,7 +3316,7 @@ class AudioEngine {
       for (let i = 0; i < count; i++) {
         frame[i] = Math.pow(2, logStarts[i] + (logTargets[i] - logStarts[i]) * k);
       }
-      this.setAllFrequenciesBatch(frame);
+      this.setAllFrequenciesBatch(frame, { force });
       if (t >= 1) {
         this._glideRaf = null;
         if (onComplete) onComplete();
@@ -4069,6 +4097,30 @@ class AudioEngine {
    */
   isMuted(index) {
     return this.mutedStates[index] || false;
+  }
+
+  /**
+   * Pitch lock — is this slot's frequency frozen against everything but
+   * its own editor? (See the pitchLocked declaration in the constructor.)
+   */
+  isPitchLocked(index) {
+    return this.pitchLocked[index] || false;
+  }
+
+  setPitchLocked(index, locked) {
+    if (index < 0 || index >= this.oscillatorCount) return;
+    const next = !!locked;
+    if (this.pitchLocked[index] === next) return;
+    this.pitchLocked[index] = next;
+    // Rides the frequency-change channel so the panel readouts and the
+    // FrequencyManager observers repaint on the same tick they already
+    // poll (there is no separate lock listener).
+    this._notifyFrequencyChange();
+  }
+
+  togglePitchLocked(index) {
+    if (index < 0 || index >= this.oscillatorCount) return;
+    this.setPitchLocked(index, !this.pitchLocked[index]);
   }
   
   /**

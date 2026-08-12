@@ -14,7 +14,18 @@
    it, and its own header (mute · chips · ✕) is the title bar, pinned
    sticky while the stack scrolls. */
 
+/* Corner radius (Dan, 2026-08-11): the panel's cells match the CONSOLE's
+   mute cell at 4px rather than the old 8. With the outlines gone the
+   chips ARE their fills, and one shared cell radius is what makes the
+   console lanes and the menu beside them read as the same object — the
+   app's other language (ruler, spectrum, transport glyphs) is straight
+   lines, and 8px was the loudest curve on the surface. Two steps: the
+   cell radius, and a tighter one for the keypad-sized keys. Circles
+   (fader balls, pan dials) and the capsule fader tracks are not cells
+   and keep their own geometry. */
 .voice-panel {
+  --vp-radius: 4px;
+  --vp-radius-sm: 3px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -66,39 +77,84 @@
 .vp-head {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  /* 6, not the body's 8: the ✕ slot's widening to 38 left the face chips
+     landing on their worst-case labels with nothing to spare, and the
+     two gaps flanking the chips are the cheapest 4px to give back. The
+     ✕/octave/lock column is flush-right in both rows, so this doesn't
+     move it. */
+  gap: 6px;
 }
 
-/* Numbered mute chip — 38×36 in a 44 slot (iOS muteCell). Solid fill =
-   sounding, hollow = muted. */
+/* Numbered mute chip — 38×36 (iOS muteCell).
+
+   The one control in the panel that keeps a border, because its border
+   is not a frame: sounding, the ring is the SAME value as the fill and
+   draws no visible line at all; muted, the fill drops out and that ring
+   is the entire cell. Losing it would leave a muted voice with nothing
+   on screen.
+
+   Colour grammar is the CONSOLE's mute cell verbatim (App.css
+   .console-mute, Dan 2026-08-05 / 2026-08-11): ONE value, --cell-fill,
+   is both the sounding cell's wash and the outline BOTH states wear, so
+   muting only empties the shape rather than swapping it for a different
+   one. The old full-saturation slab with a knocked-out black number sat
+   a full step brighter than the level fader beside it (fill at 0.7) and
+   read as the loudest thing in the panel; at half strength with a light
+   number, the mute button and the sliders are the same material. */
 .vp-mute-slot {
-  width: 44px;
-  flex: 0 0 44px;
+  /* Shrink-wrapped to the cell (was 44, iOS's slot width) — the 6px of
+     slack went to the ✕ column so it could widen to 38 without taking
+     anything off the face chips. */
+  width: 38px;
+  flex: 0 0 38px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
 }
 .vp-mute {
+  --cell-fill: color-mix(in srgb, var(--vp-color, #888), transparent 50%);
+  box-sizing: border-box;
   width: 38px;
   height: 36px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: var(--vp-color, #888);
-  color: #000;
+  border-radius: var(--vp-radius);
+  border: 1px solid var(--cell-fill);
+  /* padding-box so a translucent fill can't stack with the same-colour
+     border into a denser ring (the console's lesson — see .console-mute). */
+  background-clip: padding-box;
+  background-color: var(--cell-fill);
+  color: var(--ink);
   font-family: inherit;
   font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
+.vp-mute:hover {
+  background-color: color-mix(in srgb, var(--vp-color, #888), transparent 34%);
+  border-color: color-mix(in srgb, var(--vp-color, #888), transparent 34%);
+}
+/* Muted: the same bar with its middle taken out. Ring AND number are
+   exactly --cell-fill — nothing on a hollow cell may sit above the
+   colour that unmuting will actually deliver. */
 .vp-mute.muted {
-  background: transparent;
-  border-color: color-mix(in srgb, var(--vp-color, #888), transparent 65%);
-  color: color-mix(in srgb, var(--vp-color, #888), transparent 65%);
+  background-color: transparent;
+  border-color: var(--cell-fill);
+  color: var(--cell-fill);
+}
+.vp-mute.muted:hover {
+  /* Previews the fill arriving, never by brightening the marks. */
+  background-color: color-mix(in srgb, var(--vp-color, #888), transparent 84%);
+  border-color: var(--cell-fill);
+  color: var(--cell-fill);
 }
 .vp-mute-slot .vp-caption { width: 38px; }
+/* simple's palette runs one step lighter, so its console cells sit at
+   0.64 — keep the panel's cell on the same step (App.css mirror). */
+body[data-theme="simple"] .vp-mute {
+  --cell-fill: color-mix(in srgb, var(--vp-color, #888), transparent 36%);
+}
 
 /* Face chips — live readouts doubling as the face radio. */
 .vp-chips {
@@ -118,11 +174,14 @@
 .vp-chip-wrap.freq { flex: 9 1 0; }
 .vp-chip-wrap.note { flex: 8 1 0; }
 .vp-chip-wrap.freq .vp-chip { padding: 0 3px; }
+/* Borderless (Dan, 2026-08-11): every chip in the panel is a filled
+   shape, never an outlined one. Selection is carried by the FILL — a
+   wash of the lane colour — so there's no ring to thicken or brighten. */
 .vp-chip {
   height: 36px;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border: none;
   color: rgba(var(--ink-rgb), 0.9);
   font-family: inherit;
   font-size: 16px;
@@ -136,32 +195,45 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .vp-chip.active {
-  background: rgba(var(--ink-rgb), 0.12);
-  border-color: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 40%);
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 78%);
+  color: var(--ink);
 }
 
-/* Corner ✕ — bare glyph trailing-aligned (iOS closeCell). The slot is
-   narrower than iOS's 44 on purpose: the freed width goes to the face
-   chips, whose worst-case labels don't fit the row otherwise. */
+/* ✕ — the top of the panel's RIGHT COLUMN (Dan, 2026-08-11). Its slot is
+   the same 38px as the octave rocker and the lock beneath it, so the
+   three line up in one column down the trailing edge instead of the ✕
+   floating in a narrower corner of its own. It wears the same chip
+   chassis as the two below it for the same reason: the column reads as
+   one stack of controls.
+
+   The 38 comes back out of the mute slot (was 44 — the iOS cell width
+   with 6px of slack) rather than out of the face chips, whose worst-case
+   labels ("999.99 Hz" / "A#4 +49¢") already only just fit the row. */
 .vp-close-slot {
-  width: 28px;
-  flex: 0 0 28px;
+  width: 38px;
+  flex: 0 0 38px;
   display: flex;
   justify-content: flex-end;
-  padding-right: 3px;
   box-sizing: border-box;
 }
 .vp-close {
+  width: 38px;
   height: 36px;
-  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: var(--vp-radius);
   border: none;
-  background: none;
+  background: rgba(var(--ink-rgb), 0.06);
   color: rgba(var(--ink-rgb), 0.7);
   font-size: 15px;
   font-weight: 600;
+  padding: 0;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.vp-close:hover { color: rgba(var(--ink-rgb), 1); }
+.vp-close:hover {
+  background: rgba(var(--ink-rgb), 0.12);
+  color: rgba(var(--ink-rgb), 1);
+}
 
 /* Body row: [lane 44][center flex][rail] */
 .vp-body {
@@ -199,13 +271,53 @@
   align-items: center;
   gap: 1px;
 }
+/* Pitch column — the octave rocker with the lock in line beneath it.
+   Top-aligned so it stays put whatever the centre column's height is
+   (on desktop the level lane is gone and the body gets shorter). */
+.vp-rail-col {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Pitch lock (iOS FrequencyPanel.lockButton). Locked = the voice's Hz
+   is frozen against everything but its own editor, so the button wears
+   the lane colour; unlocked it's the panel's neutral chip. */
+.vp-lock {
+  width: 38px;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: var(--vp-radius);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: none;
+  color: rgba(var(--ink-rgb), 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.vp-lock:hover { color: rgba(var(--ink-rgb), 0.85); }
+/* Locked reads as a lit chip: the lane colour in the fill AND the glyph,
+   the same fill-not-ring rule the face chips follow. */
+.vp-lock.locked {
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 78%);
+  color: var(--vp-color, var(--ink));
+}
+.vp-lock-glyph { width: 16px; height: 16px; display: block; }
 
 /* ── Octave jogger — rocker pill, − | + (iOS OctaveJogger) ── */
+/* The pill's outline is gone; the ojog-sep hairline STAYS — it divides
+   two halves of one segmented control rather than framing it. */
 .ojog {
   display: flex;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border: none;
   overflow: hidden;
 }
 .ojog.vertical { flex-direction: column; width: 38px; }
@@ -240,7 +352,7 @@
 .fscrub-bar {
   position: relative;
   height: 40px;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   background: rgba(var(--ink-rgb), 0.06);
   overflow: hidden;
   touch-action: none;
@@ -291,32 +403,81 @@
   pointer-events: none;
 }
 
-/* ── Stereo-detune trim slider (iOS DetuneSlider) ── */
+/* ── Stereo-detune trim slider (iOS DetuneSlider) ──
+   The LEVEL fader (App.css .vfader) laid on its side, in grey (Dan,
+   2026-08-11): same 7px capsule track, same fill, same 20px ball on its
+   opaque black backing. Grey rather than the lane colour because this
+   is a trim ON the voice, not the voice itself — the colour in this
+   panel belongs to the mute cell and the level fader. Track and fill
+   are siblings of the ball, not a filled box, so the geometry (and the
+   flush end caps) match the fader's exactly. */
 .vp-detune {
+  --vp-detune-color: rgba(var(--ink-soft-rgb), 0.62);
   position: relative;
   height: 28px;
-  border-radius: 8px;
-  background: rgba(var(--ink-rgb), 0.08);
-  overflow: hidden;
   touch-action: none;
   cursor: ew-resize;
 }
+.vp-detune-track,
 .vp-detune-fill {
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  background: rgba(var(--ink-rgb), 0.13);
+  top: 50%;
+  transform: translateY(-50%);
+  height: 7px;
+  border-radius: 3.5px;
 }
-.vp-detune-handle {
+.vp-detune-track {
+  left: 0;
+  right: 0;
+  background: rgba(var(--ink-soft-rgb), 0.1);
+}
+.vp-detune-fill {
+  left: 0;
+  background: var(--vp-detune-color);
+}
+.vp-detune-ball-slot {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 32px;
-  border-radius: 8px;
-  background: rgba(var(--ink-rgb), 0.85);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
+}
+.vp-detune-ball {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  /* Opaque black backing under the tint so the track never shows
+     through — the fader's rule, and the reason the tint goes in as a
+     background-IMAGE (--vp-detune-color carries its own alpha). */
+  background-color: #000;
+  background-image: linear-gradient(var(--vp-detune-color), var(--vp-detune-color));
+}
+/* simple runs its lines brighter, like .vfader-fill there. */
+body[data-theme="simple"] .vp-detune { --vp-detune-color: rgba(var(--ink-soft-rgb), 0.85); }
+
+/* ── Desktop / tablet: pitch only ──────────────────────────────────
+   Above 768px the panel lives in the side-menu column, right-aligned
+   against the console — and the console is RIGHT THERE, three inches
+   left, already showing this voice's pan dial and level fader in its
+   own lanes. Repeating them inside the panel was the only reason its
+   centre column was 44px narrower than the surface it sits in, so on
+   this breakpoint the lane goes and the tune / fine-tune / stereo-detune
+   bars take the width back (Dan, 2026-08-11). The mute button stays —
+   it's in the header, not the lane, and it's the one console control
+   you reach for while editing a pitch. The pitch column (octave + lock)
+   keeps its own side.
+
+   Mobile (≤768px) is the full-width bottom sheet, which COVERS the
+   console — nothing else is showing pan/level there, so the lane stays.
+
+   Both panels (Dan, 2026-08-11): the ALL panel's lane holds the BUS pan
+   mode + bus gain, and the console's own ALL lane is showing that same
+   pair one column to the left, so the argument is identical. */
+@media (min-width: 769px) {
+  .side-menu-stack .voice-panel .vp-lane { display: none; }
 }
 
 /* ── Entry keypad (freq face) ── */
@@ -342,7 +503,7 @@
   height: 38px;
   padding: 0 8px;
   box-sizing: border-box;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   background: rgba(var(--ink-rgb), 0.06);
   border: 1px solid transparent;
   align-items: center;
@@ -371,18 +532,19 @@
 }
 .ekp-sidebtn {
   height: 38px;
-  border-radius: 6px;
+  border-radius: var(--vp-radius-sm);
   background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border: none;
   color: rgba(var(--ink-rgb), 0.85);
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
+/* SET is the emphasised one — carried by a heavier fill now that there
+   is no border to firm up. */
 .ekp-sidebtn.em {
-  background: rgba(var(--ink-rgb), 0.12);
-  border-color: rgba(var(--ink-rgb), 0.25);
+  background: rgba(var(--ink-rgb), 0.16);
 }
 /* clear + "[ ] apply transpose" — bare underlined words below SET (the
    ALL panel's .ap-word grammar; the checkbox rides along un-underlined).
@@ -436,9 +598,9 @@
 .ekp-key {
   flex: 1 1 0;
   height: 38px;
-  border-radius: 6px;
+  border-radius: var(--vp-radius-sm);
   background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border: none;
   color: rgba(var(--ink-rgb), 0.9);
   font-family: inherit;
   font-size: 17px;
@@ -530,9 +692,9 @@
 .nkb-chev {
   width: 34px;
   height: 30px;
-  border-radius: 6px;
+  border-radius: var(--vp-radius-sm);
   background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border: none;
   color: rgba(var(--ink-rgb), 0.75);
   font-size: 13px;
   cursor: pointer;
@@ -592,7 +754,7 @@
   color: rgba(var(--ink-rgb), 0.85);
   background: rgba(var(--ink-rgb), 0.06);
   border: 1px solid rgba(var(--ink-rgb), 0.12);
-  border-radius: 6px;
+  border-radius: var(--vp-radius-sm);
   padding: 8px 10px;
   white-space: pre-line;
 }
@@ -600,9 +762,9 @@
 .tuning-chip {
   flex: 1 1 0;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   background: rgba(var(--ink-rgb), 0.06);
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border: none;
   color: rgba(var(--ink-rgb), 0.6);
   font-family: inherit;
   font-size: 13px;
@@ -610,12 +772,20 @@
   cursor: pointer;
 }
 .tuning-chip.active {
-  background: rgba(var(--ink-rgb), 0.12);
-  border-color: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 40%);
+  background: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 78%);
   color: color-mix(in srgb, var(--vp-color, var(--ink)), transparent 5%);
 }
 .tuning-chip:disabled { color: rgba(var(--ink-rgb), 0.25); cursor: default; }
+/* Root reference — trailing end of the tuning header row (2026-08-11;
+   it used to hang below the chips). `margin-left: auto` pushes it off
+   the ⓘ; it may ellipsize before the header word does. */
 .nkb-tuning-root {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
   font-size: 10px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -638,8 +808,8 @@
   /* The head top-aligns its slots; centre the 30px pill against the
      36px mute cell beside it. */
   margin: 3px auto 0;
-  border: 1px solid rgba(var(--ink-rgb), 0.2);
-  border-radius: 6px;
+  border: none;
+  border-radius: var(--vp-radius-sm);
   background: rgba(var(--ink-rgb), 0.08);
   overflow: hidden;
 }
@@ -687,7 +857,7 @@
 .ap-mute {
   width: 38px;
   height: 36px;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   border: 1px solid transparent;
   background: rgba(140, 140, 140, 0.8);
   color: #000;
@@ -716,11 +886,6 @@
   padding: 0;
 }
 .ap-bus-toggle:hover { color: rgba(var(--ink-rgb), 0.95); }
-.ap-transpose-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
 .ap-transpose-col {
   flex: 1 1 auto;
   min-width: 0;
@@ -728,34 +893,41 @@
   flex-direction: column;
   gap: 3px;
 }
-.ap-transpose-title {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.4px;
-  color: rgba(var(--ink-rgb), 0.4);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ap-transpose-title b {
-  font-size: 14px;
+/* The dial's two offsets, parked at its two ENDS above it: frequency
+   left, note right. At rest ("0hz" / "0 cents") they sit at caption
+   weight so a centred transpose says nothing loudly; off centre they
+   come up to full ink. */
+.ap-transpose-ends {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+  font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: rgba(var(--ink-rgb), 0.9);
+  white-space: nowrap;
+  color: rgba(var(--ink-rgb), 0.4);
+  transition: color 0.15s ease;
 }
+.ap-transpose-ends.live { color: rgba(var(--ink-rgb), 0.9); }
+/* Name + RESET / APPLY under the dial — the .ap-detune-head row again:
+   caption takes the slack, the words ride trailing. */
+.ap-transpose-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 1px;
+}
+.ap-transpose-foot .vp-caption { flex: 1 1 auto; text-align: left; }
 .ap-dial {
   position: relative;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--vp-radius);
   background: rgba(var(--ink-rgb), 0.06);
   overflow: hidden;
   touch-action: none;
   cursor: ew-resize;
-}
-.ap-words {
-  display: flex;
-  gap: 8px;
-  margin-top: 2px;
 }
 .ap-word {
   flex: 1 1 0;

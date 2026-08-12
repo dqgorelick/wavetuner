@@ -30,6 +30,26 @@ const POLL_MIN_MS = 1000 / 30 - 1.5;
 const HZ_MIN = 0.1;
 const HZ_MAX = FREQ_CEIL;   // sounding-domain entry needs the transpose headroom
 
+// Padlock glyph for the pitch-lock button — the iOS panel's
+// lock.fill / lock.open SF Symbols drawn as one shape whose shackle
+// swings open (SF's own open state lifts and rotates the same way).
+function LockGlyph({ open }) {
+  return (
+    <svg className="vp-lock-glyph" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d={open
+          ? 'M5.6 7.2V4.6a2.9 2.9 0 0 1 5.8 0'
+          : 'M5.1 7.2V4.9a2.9 2.9 0 0 1 5.8 0v2.3'}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <rect x="2.6" y="7.2" width="8.8" height="6.4" rx="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
 export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClose }) {
   const [face, setFace] = useState('controls');
   const [buffer, setBuffer] = useState('');
@@ -45,6 +65,7 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
   const [ratio, setRatio] = useState(() => audioEngine.getTransposeRatio?.() ?? 1);
   const [vol, setVol] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [locked, setLocked] = useState(false);
   const [, setStereoTick] = useState(0);
 
   const themeName = useTheme();
@@ -72,7 +93,9 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
         // change threshold below behaves exactly as before.
         const nextVol = Math.round((audioEngine.getVolume(voice) ?? 0) * 100) / 100;
         const nextMuted = !!audioEngine.isMuted(voice);
+        const nextLocked = !!audioEngine.isPitchLocked?.(voice);
         setHz((p) => (Math.abs(p - nextHz) > 1e-6 ? nextHz : p));
+        setLocked((p) => (p === nextLocked ? p : nextLocked));
         setRatio((p) => (Math.abs(p - nextRatio) > 1e-9 ? nextRatio : p));
         setVol((p) => (Math.abs(p - nextVol) > 1e-4 ? nextVol : p));
         setMuted((p) => (p === nextMuted ? p : nextMuted));
@@ -232,12 +255,32 @@ export default function FreqPanel({ voice, voicePans = [], onSetVoicePan, onClos
               </span>
             </div>
           </div>
-          <OctaveJogger
-            vertical
-            height={40}
-            onUp={() => commitHz(hz * 2)}
-            onDown={() => commitHz(hz / 2)}
-          />
+          {/* Right column: the octave rocker with the pitch lock in line
+              beneath it. Both act on this voice's pitch, so they share a
+              column and the level/pan lane stays a separate concern. */}
+          <div className="vp-rail-col">
+            <OctaveJogger
+              vertical
+              height={40}
+              onUp={() => commitHz(hz * 2)}
+              onDown={() => commitHz(hz / 2)}
+            />
+            <div className="vp-rail">
+              <button
+                type="button"
+                className={`vp-lock${locked ? ' locked' : ''}`}
+                onClick={() => audioEngine.initialized && audioEngine.togglePitchLocked(voice)}
+                data-testid="panelLock"
+                aria-pressed={locked}
+                aria-label={locked
+                  ? `Unlock voice ${voice + 1} pitch`
+                  : `Lock voice ${voice + 1} pitch`}
+              >
+                <LockGlyph open={!locked} />
+              </button>
+              <span className="vp-caption">LOCK</span>
+            </div>
+          </div>
         </div>
       )}
 

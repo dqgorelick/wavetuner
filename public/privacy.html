@@ -1,0 +1,115 @@
+<!doctype html>
+<!--
+  Privacy policy for the "just waves" iOS app.
+
+  Vite copies public/ into dist/ verbatim and .github/workflows/deploy.yml
+  publishes dist/ to GitHub Pages, so this lands at
+      https://dqgorelick.github.io/wavetuner/privacy.html
+  which is the URL given to App Store Connect (App Information → Privacy
+  Policy URL, and TestFlight → Test Information).
+
+  ⚠️ This text must stay TRUE to the build. It was written against the
+  2026-08-12 audit that also produced ios/WaveTuner/Resources/PrivacyInfo.xcprivacy:
+  no analytics, no crash SDK, no accounts, no servers, no third-party SDKs,
+  and no recording capability anywhere in the app. If any of that changes —
+  analytics, crash reporting, a feedback form that transmits, saving audio —
+  this page AND the privacy manifest AND the App Store privacy answers all
+  have to change together.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>just waves — privacy policy</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --ink: #1a1a1a;
+    --dim: #666666;
+    --rule: #e0e0e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d0d0d; --ink: #e8e8e8; --dim: #999999; --rule: #262626; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 3rem 1.25rem 6rem;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  main { max-width: 34rem; margin: 0 auto; }
+  h1 { font-size: 1.35rem; font-weight: 500; letter-spacing: 0.04em; margin: 0 0 0.35rem; }
+  .sub { color: var(--dim); font-size: 0.8rem; margin: 0 0 2.5rem; }
+  h2 {
+    font-size: 0.8rem; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--dim);
+    margin: 2.5rem 0 0.6rem; padding-top: 1.25rem; border-top: 1px solid var(--rule);
+  }
+  p { margin: 0 0 0.9rem; }
+  .lede { font-size: 1.02rem; }
+  a { color: inherit; }
+  footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--dim); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>just waves</h1>
+  <p class="sub">privacy policy · effective 12 august 2026</p>
+
+  <p class="lede">just waves does not collect your data. There are no
+  accounts, no analytics, no advertising, no tracking, and no servers that
+  receive anything from the app. Everything the app does happens on your
+  device.</p>
+
+  <h2>Microphone</h2>
+  <p>With your permission, just waves listens to your surroundings and
+  analyzes the incoming sound in real time to drive the tuning and the
+  visuals. That analysis happens entirely on your device, moment to moment.</p>
+  <p>The app has no recording capability. Audio from your microphone is never
+  written to storage, never sent anywhere, and does not persist after it has
+  been analyzed.</p>
+
+  <h2>Camera</h2>
+  <p>With your permission, just waves uses the camera to render the visual
+  layer you see on screen. Frames are processed on your device as they arrive
+  and are never saved, exported, or transmitted. The app cannot record video.</p>
+
+  <h2>Local network</h2>
+  <p>The listen-along feature lets one device share a session with others on
+  the same Wi-Fi network. Devices discover each other and connect directly.
+  What travels between them is the sound settings — synth parameters — so
+  each device can render the sound itself.</p>
+  <p>No audio is transmitted, no personal information is included, no server
+  sits in the middle, and nothing leaves your local network. This only
+  operates while you host or join a session.</p>
+
+  <h2>What stays on your device</h2>
+  <p>Songs and patches you save, audio you choose to import, and your
+  preferences are stored in the app's own storage on your device. They are
+  not uploaded anywhere. Deleting the app deletes them.</p>
+
+  <h2>Third parties</h2>
+  <p>just waves contains no third-party SDKs, no analytics or crash-reporting
+  services, and no advertising. No third party receives information about you
+  through this app.</p>
+
+  <h2>Children</h2>
+  <p>just waves does not collect personal information from anyone, including
+  children.</p>
+
+  <h2>Changes</h2>
+  <p>If a future version of the app collects anything, this policy will be
+  updated before that version ships, and the App Store privacy information
+  will be updated to match. The effective date above will change.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy:
+  <a href="mailto:dqgorelick@gmail.com">dqgorelick@gmail.com</a></p>
+
+  <footer>just waves · Dan Gorelick</footer>
+</main>
+</body>
+</html>

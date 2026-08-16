@@ -1,0 +1,2454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>parametric lab v1 (frozen) — listen faceplates</title>
+<!-- ⛔ FROZEN 2026-08-14. This is version 1, kept so v2 can be compared
+     against it. Do not edit — work happens in parametric-lab.html.
+     It keeps the ORIGINAL localStorage keys (wt-parametric-lab-v3 /
+     -locks-v2 / -gens-v1) so the ratings already collected stay attached
+     to the gene set they were collected against; v2 bumps its keys. -->
+<style>
+  /* ── Lab chrome wears the simple theme's own tokens ────────────── */
+  :root {
+    --ink-rgb: 150, 150, 150;      /* simple's chrome cap */
+    --ink-hi-rgb: 215, 215, 215;   /* legibility tier */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #000;
+    color: rgba(var(--ink-rgb), 0.9);
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    padding: 16px 20px 60px;
+  }
+  h1 {
+    font-size: 11px; font-weight: 500; letter-spacing: 1.5px;
+    text-transform: uppercase; color: rgba(var(--ink-rgb), 0.5);
+    margin-bottom: 14px;
+  }
+  h1 b { color: rgba(var(--ink-hi-rgb), 0.95); font-weight: 500; }
+
+  .bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin-bottom: 8px; font-size: 11px;
+  }
+  .bar button, .bar select, .bar label.chk {
+    background: rgba(var(--ink-rgb), 0.10);
+    border: none; border-radius: 4px;
+    color: rgba(var(--ink-hi-rgb), 0.9);
+    font-size: 10px; font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;
+    padding: 6px 12px; cursor: pointer;
+  }
+  .bar button:hover { background: rgba(var(--ink-rgb), 0.18); }
+  .bar button.primary { background: rgba(var(--ink-rgb), 0.22); }
+  .bar label.chk { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+  .bar .stat { font-size: 10px; letter-spacing: 0.5px; color: rgba(var(--ink-rgb), 0.45); font-variant-numeric: tabular-nums; }
+  .bar .gennav { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; }
+  .bar .gennav button { padding: 6px 9px; }
+  .bar .gennav button:disabled { opacity: 0.3; cursor: default; }
+  .bar .gennav .stat { min-width: 96px; text-align: center; }
+  .hint { font-size: 10px; color: rgba(var(--ink-rgb), 0.35); letter-spacing: 0.3px; margin-bottom: 16px; line-height: 1.7; }
+
+  /* manifest editor */
+  #manifestEditor {
+    display: none; margin: 4px 0 14px; padding: 10px 12px;
+    background: rgba(var(--ink-rgb), 0.05); border-radius: 6px;
+    font-size: 10px; letter-spacing: 0.4px;
+  }
+  #manifestEditor.open { display: block; }
+  #manifestEditor .fam { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-bottom: 6px; }
+  #manifestEditor .famname {
+    width: 58px; text-align: right; text-transform: uppercase;
+    color: rgba(var(--ink-rgb), 0.35); font-weight: 500;
+  }
+  #manifestEditor label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: rgba(var(--ink-rgb), 0.75); }
+  #manifestEditor input[type="number"] { width: 40px; background: rgba(var(--ink-rgb),0.1); border: none; border-radius: 3px; color: rgba(var(--ink-hi-rgb),0.9); padding: 2px 4px; }
+  #manifestEditor .pairnote { margin-top: 8px; color: rgba(var(--ink-rgb), 0.3); }
+
+  /* card grid */
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+  .card {
+    position: relative; border-radius: 8px; overflow: hidden;
+    background: #000; outline: 1px solid rgba(var(--ink-rgb), 0.10);
+    cursor: pointer; transition: outline-color 0.15s;
+  }
+  .card:hover { outline-color: rgba(var(--ink-rgb), 0.30); }
+  .card.liked   { outline: 1px solid rgba(120, 220, 150, 0.55); }
+  .card.disliked{ outline: 1px solid rgba(230, 100, 90, 0.4); opacity: 0.45; }
+  .card.focus { outline: 2px solid rgba(var(--ink-hi-rgb), 0.8); }
+  .card svg { display: block; width: 100%; height: auto; }
+  .card .meta {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 5px 8px 7px; font-size: 9px; letter-spacing: 0.5px;
+    color: rgba(var(--ink-rgb), 0.4); font-variant-numeric: tabular-nums;
+  }
+  .card .meta .votes { display: flex; gap: 4px; }
+  .card .meta button {
+    background: rgba(var(--ink-rgb), 0.10); border: none; border-radius: 3px;
+    color: rgba(var(--ink-hi-rgb), 0.85); font-size: 10px; width: 26px; height: 20px; cursor: pointer;
+  }
+  .card .meta button:hover { background: rgba(var(--ink-rgb), 0.22); }
+  .card .meta button.wide { width: auto; padding: 0 8px; letter-spacing: 0.5px; text-transform: uppercase; font-size: 9px; }
+  .card .meta button.on { background: rgba(230, 160, 90, 0.25); color: rgba(245, 205, 155, 0.95); }
+  .card.excluded { outline: 1px solid rgba(230, 160, 90, 0.35); opacity: 0.34; }
+  .card.excluded:hover { opacity: 0.7; }
+  .card .score { color: rgba(var(--ink-rgb), 0.55); }
+  .card .sweepval b { color: rgba(var(--ink-hi-rgb), 0.95); font-weight: 500; }
+  .card.locked { outline: 1px solid rgba(120, 220, 150, 0.65); }
+
+  /* locks panel */
+  #locks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; font-size: 10px; }
+  #locks .lk {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(120, 220, 150, 0.12); border-radius: 4px; padding: 4px 8px;
+    color: rgba(var(--ink-hi-rgb), 0.85); letter-spacing: 0.4px; font-variant-numeric: tabular-nums;
+  }
+  #locks .ex {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(230, 160, 90, 0.12); border-radius: 4px; padding: 4px 8px;
+    color: rgba(240, 200, 155, 0.9); letter-spacing: 0.4px; font-variant-numeric: tabular-nums;
+  }
+  #locks .lk button, #locks .ex button { background: none; border: none; color: rgba(var(--ink-rgb), 0.6); cursor: pointer; font-size: 11px; padding: 0; }
+  #locks .none b { color: rgba(var(--ink-hi-rgb), 0.8); font-weight: 500; }
+  #locks .none { color: rgba(var(--ink-rgb), 0.3); letter-spacing: 0.4px; }
+
+  /* swept-gene description */
+  #geneDesc { max-width: 780px; margin: 2px 0 14px; font-size: 11px; line-height: 1.65; }
+  #geneDesc .dsc { color: rgba(var(--ink-rgb), 0.62); letter-spacing: 0.2px; }
+  #geneDesc .dsc b { color: rgba(var(--ink-hi-rgb), 0.95); font-weight: 500; letter-spacing: 0.5px; }
+  #geneDesc .warn {
+    display: block; margin-top: 5px; padding: 5px 9px; border-radius: 4px;
+    background: rgba(230, 160, 90, 0.10); color: rgba(235, 185, 130, 0.92);
+    font-size: 10px; letter-spacing: 0.3px;
+  }
+
+  /* zoom modal */
+  #modal {
+    display: none; position: fixed; inset: 0; z-index: 10;
+    background: rgba(0,0,0,0.88); align-items: center; justify-content: center; gap: 28px;
+  }
+  #modal.open { display: flex; }
+  #modal .plate { background: #000; outline: 1px solid rgba(var(--ink-rgb), 0.15); border-radius: 12px; overflow: hidden; }
+  #modal .plate svg { display: block; width: 500px; height: auto; }
+  #modal .genes {
+    max-width: 260px; font-size: 10px; letter-spacing: 0.4px; line-height: 1.9;
+    color: rgba(var(--ink-rgb), 0.6); font-variant-numeric: tabular-nums;
+  }
+  #modal .genes b { color: rgba(var(--ink-hi-rgb), 0.9); font-weight: 500; }
+
+  /* model weight panel */
+  #weights { margin-top: 26px; max-width: 560px; }
+  #weights h2 { font-size: 10px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; color: rgba(var(--ink-rgb), 0.4); margin-bottom: 8px; }
+  .wrow { display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: 0.4px; margin-bottom: 3px; font-variant-numeric: tabular-nums; }
+  .wrow .wname { width: 190px; color: rgba(var(--ink-rgb), 0.7); text-align: right; }
+  .wrow .wbar { height: 4px; border-radius: 2px; }
+  .wrow .wpos { background: rgba(120, 220, 150, 0.7); }
+  .wrow .wneg { background: rgba(230, 100, 90, 0.6); }
+</style>
+</head>
+<body>
+
+<h1><b>parametric lab v1 · frozen</b> — listen pane region (393×292) · simple theme · braun ⇄ bauhaus</h1>
+
+<div class="bar">
+  <select id="songSel"></select>
+  <button id="editManifest">edit manifest</button>
+  <button id="modeBatch" class="primary">batch</button>
+  <button id="modeSweep">sweep</button>
+  <span class="stat" id="stats"></span>
+</div>
+
+<div class="bar" id="batchBar">
+  <button id="newBatch" class="primary">new batch</button>
+  <button id="evolve">evolve from likes</button>
+  <span class="gennav">
+    <button id="genBack" title="previous generation">◀</button>
+    <span class="stat" id="genLabel">gen —</span>
+    <button id="genFwd" title="next generation">▶</button>
+  </span>
+  <label class="chk"><input type="checkbox" id="biasChk"> bias by model</label>
+  <button id="exportBtn">export json</button>
+  <button id="resetBtn">reset ratings</button>
+</div>
+
+<div class="bar" id="sweepBar" style="display:none">
+  <select id="geneSel"></select>
+  <select id="baseSel">
+    <option value="neutral">neutral base</option>
+    <option value="random">random base</option>
+  </select>
+  <button id="reroll">reroll base</button>
+  <button id="exportBtn2">export json</button>
+  <span class="stat">every card shares one seed — only this gene moves</span>
+</div>
+<div id="geneDesc"></div>
+
+<div class="hint" id="hint"></div>
+
+<div id="locks"></div>
+<div id="manifestEditor"></div>
+<div id="grid"></div>
+
+<div id="weights"></div>
+
+<div id="modal"><div class="plate" id="modalPlate"></div><div class="genes" id="modalGenes"></div></div>
+
+<script>
+'use strict';
+
+/* ════════════════════════════════════════════════════════════════════
+   0 · THEME TOKENS — lifted from src/theme/palette.js + App.css simple
+   ════════════════════════════════════════════════════════════════════ */
+const CLASSIC_PALETTE = [
+  '#ff4136', '#2ecc40', '#0074d9', '#ffdc00', '#bb8fce',
+  '#85c1e9', '#82e0aa', '#f8b500', '#e74c3c', '#1abc9c',
+  '#ff7eb6', '#a78bfa',
+];
+function lighten(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (s) => { const c = (n >> s) & 0xff; return Math.round(c + (255 - c) * amt).toString(16).padStart(2, '0'); };
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
+}
+const SIMPLE_PALETTE = CLASSIC_PALETTE.map(c => lighten(c, 0.18));
+const INK = (a) => `rgba(150,150,150,${a})`;   // simple's chrome cap
+const HI  = (a) => `rgba(215,215,215,${a})`;   // legibility tier
+const TRACK = 'rgba(255,255,255,0.10)';        // arc/fader track level
+function dim(color, pct) {                     // PanPot's dim idiom: mix over black
+  return pct >= 100 ? color : `color-mix(in srgb, ${color} ${pct}%, black)`;
+}
+function voiceColor(i) { return SIMPLE_PALETTE[i % SIMPLE_PALETTE.length]; }
+
+/* ════════════════════════════════════════════════════════════════════
+   0b · iPHONE 17 LISTEN-PAGE GEOMETRY (pt) — from ListenView.swift
+   field (square, elided to a sliver) → spectrum bar (56) →
+   pane region (~292, ⛔ fixed height) → ListenRail (52)
+   ════════════════════════════════════════════════════════════════════ */
+const PHONE_W  = 393;
+const FIELD_H  = 84;
+const SPECT_H  = 56;
+const REGION_H = 292;
+const RAIL_H   = 52;
+const TOTAL_H  = FIELD_H + SPECT_H + REGION_H + RAIL_H;
+/* Fixed rails flanking the pane, each a hairline away from it.
+   LEFT  — play/pause + volume (+ auto, under `autoPlace: column`)
+   RIGHT — snapshot · prev/next song · shuffle. ⛔ PARKED: the buttons
+           are built (`chromeRightColumn`) but the rail is switched off
+           until the UX for them is settled, and the pane takes back the
+           width. Rating designs against a reserved-but-empty strip
+           would be composing for a layout that does not exist — so the
+           space is either used or given back, never held.
+           Flip RIGHT_RAIL to restore it. */
+const RIGHT_RAIL = false;
+const LCOL_W   = 46;
+const RCOL_W   = RIGHT_RAIL ? 46 : 0;
+/* How far through the current auto-cycle the mock-ups are drawn. A
+   static number on purpose — these are faceplates, not a running app —
+   but it must be the SAME everywhere so the ring and the bar agree. */
+const CYCLE_PROGRESS = 0.42;
+
+/* Which control render() last promoted to hero. Set inside render and
+   read by the card meta immediately after, so it is always the hero of
+   the plate directly above it. A return value would be cleaner, but
+   render() is called from inside template literals in three places. */
+let LAST_HERO = null;
+
+/* ════════════════════════════════════════════════════════════════════
+   1 · PARAM CATALOG — the control VOCABULARY.
+   Every song control is one id from here. `family` drives grouping,
+   `kind` drives which primitive renders it, `def` is the shown value.
+   Adding a new control to the app = one row here, nothing else.
+   ════════════════════════════════════════════════════════════════════ */
+const FAMILY_ORDER = ['voices', 'motion', 'tone', 'filter', 'space', 'tuning', 'arp', 'action', 'view'];
+
+const PARAMS = {
+  // ── motion: how the patch moves on its own ──────────────────────
+  drift:      { label: 'drift',  family: 'motion', kind: 'knob',   def: 0.35, fmt: v => `${Math.round(v * 100)}` },
+  slide:      { label: 'slide',  family: 'motion', kind: 'knob',   def: 0.45, fmt: v => `${(v * 4).toFixed(1)}s` },
+  autoCycle:  { label: 'cycle',  family: 'motion', kind: 'knob',   def: 0.40, fmt: v => `${Math.round(15 + v * 105)}s` },
+
+  // ── tone: the timbre knobs ──────────────────────────────────────
+  noise:      { label: 'noise',  family: 'tone',   kind: 'knob',   def: 0.20, fmt: v => `${Math.round(v * 100)}` },
+  saturation: { label: 'drive',  family: 'tone',   kind: 'knob',   def: 0.35, fmt: v => `${Math.round(v * 100)}` },
+  satButton:  { label: 'sat',    family: 'tone',   kind: 'segment', opts: ['soft', 'warm', 'hot'], def: 1 },
+  width:      { label: 'width',  family: 'tone',   kind: 'knob',   def: 0.50, fmt: v => `${Math.round(v * 100)}%` },
+
+  // ── filter: cutoff + its peak, twice over ───────────────────────
+  lpf:        { label: 'lpf',    family: 'filter', kind: 'knob',   def: 0.62, fmt: v => `${Math.round(120 * Math.pow(2, v * 7))}` },
+  lpfPeak:    { label: 'peak',   family: 'filter', kind: 'knob',   def: 0.22, fmt: v => `${(v * 20).toFixed(1)}` },
+  hpf:        { label: 'hpf',    family: 'filter', kind: 'knob',   def: 0.18, fmt: v => `${Math.round(30 * Math.pow(2, v * 7))}` },
+  hpfPeak:    { label: 'peak',   family: 'filter', kind: 'knob',   def: 0.25, fmt: v => `${(v * 20).toFixed(1)}` },
+  filter:     { label: 'filter', family: 'filter', kind: 'knob',   def: 0.55, fmt: v => `${Math.round(120 * Math.pow(2, v * 7))}` },
+  resonance:  { label: 'res',    family: 'filter', kind: 'knob',   def: 0.30, fmt: v => `${(v * 20).toFixed(1)}` },
+
+  // ── space ───────────────────────────────────────────────────────
+  reverb:     { label: 'reverb', family: 'space',  kind: 'knob',   def: 0.40, fmt: v => `${Math.round(v * 100)}` },
+  room:       { label: 'room',   family: 'space',  kind: 'knob',   def: 0.55, fmt: v => `${Math.round(v * 100)}` },
+
+  // ── tuning ──────────────────────────────────────────────────────
+  detune:     { label: 'detune', family: 'tuning', kind: 'knob',   def: 0.25, fmt: v => `${(v * 10).toFixed(1)}¢` },
+  detuneBtn:  { label: 'detune', family: 'tuning', kind: 'button', glyph: 'spread' },
+  fineTune:   { label: 'fine',   family: 'tuning', kind: 'voiceBipolar' },
+  levels:     { label: 'level',  family: 'voices', kind: 'voiceFaders' },
+  pans:       { label: 'pan',    family: 'voices', kind: 'voicePans' },
+  orbs:       { label: '',       family: 'voices', kind: 'orbs' },
+
+  // ── arp ─────────────────────────────────────────────────────────
+  arpOn:      { label: 'arp',    family: 'arp',    kind: 'toggle', def: true },
+  arpBpm:     { label: 'tempo',  family: 'arp',    kind: 'slider', def: 0.45, fmt: v => `${Math.round(50 + v * 130)}` },
+  arpOct:     { label: 'octaves',family: 'arp',    kind: 'steps',  def: 4 },
+  arpDir:     { label: 'dir',    family: 'arp',    kind: 'segment', opts: ['up', 'down', 'updn', 'rand'], def: 0 },
+  arpRatio:   { label: 'ratio',  family: 'arp',    kind: 'segment', opts: ['1:1', '1:2', '2:3', '1:4'], def: 1 },
+
+  // ── actions: momentary, they DO something ───────────────────────
+  remix:      { label: 'remix',  family: 'action', kind: 'button', glyph: 'dice' },
+  tune:       { label: 'tune',   family: 'action', kind: 'button', glyph: 'align' },
+  /* Auto-advance on/off. The only control that can live EITHER in the
+     fixed left column (under play, where it reads as transport) or in
+     the pane next to remix (where it reads as "keep re-rolling") —
+     see the `autoPlace` gene. It is genuinely both, which is why the
+     position is worth testing rather than deciding. */
+  auto:       { label: 'auto',   family: 'action', kind: 'button', glyph: 'auto', on: true },
+
+  // ── view: not instrument controls — quiet tier, pinned last ─────
+  satViz:     { label: 'sat viz', family: 'view',  kind: 'toggle', def: true },
+};
+
+/* ── COUPLINGS ──────────────────────────────────────────────────────
+   The layout ATOM is the pair, not the control. A pair only fires when
+   BOTH members are in the song; otherwise each renders alone.
+     concentric — cutoff outer ring, peak inner ring, one body
+     timerRing  — the action button wearing its timer as a progress ring
+     adjacent   — two controls that must touch, drawn side by side
+   ──────────────────────────────────────────────────────────────── */
+const PAIRS = [
+  // a voice's level and its pan belong to each other before they belong
+  // to the row — so they render as ONE cluster block, which is what lets
+  // the pair travel together when the layout scatters (`mixerScatter`)
+  { a: 'levels', b: 'pans',      style: 'cluster',    label: 'mix' },
+  { a: 'lpf',    b: 'lpfPeak',   style: 'concentric', label: 'lpf' },
+  { a: 'hpf',    b: 'hpfPeak',   style: 'concentric', label: 'hpf' },
+  { a: 'filter', b: 'resonance', style: 'concentric', label: 'filter' },
+  { a: 'remix',  b: 'autoCycle', style: 'timerRing',  label: 'remix' },
+  { a: 'tune',   b: 'detune',    style: 'adjacent',   label: '' },
+  { a: 'tune',   b: 'detuneBtn', style: 'adjacent',   label: '' },
+];
+
+/* ════════════════════════════════════════════════════════════════════
+   2 · SONGS — Dan's four, verbatim. The manifest is authored per song
+   and is INPUT, never a gene: the song decides WHAT, the genome HOW.
+   ════════════════════════════════════════════════════════════════════ */
+const SONGS = {
+  'square waves immediate slide': {
+    voices: 4,
+    controls: ['remix', 'auto', 'tune', 'drift', 'slide', 'reverb', 'autoCycle', 'lpf', 'lpfPeak'],
+  },
+  /* Same patch with the arp bolted on — 12 controls, deliberately over
+     the 6–9 budget so the two can be compared side by side. The arp is
+     its own family, so it packs as one unit rather than scattering. */
+  'square waves immediate slide + arp': {
+    voices: 4,
+    controls: ['remix', 'auto', 'tune', 'drift', 'slide', 'reverb', 'autoCycle', 'lpf', 'lpfPeak',
+               'arpOn', 'arpBpm', 'arpOct', 'arpDir', 'arpRatio'],
+  },
+  'cello drone': {
+    voices: 3,
+    controls: ['remix', 'detune', 'tune', 'reverb', 'filter', 'resonance', 'noise'],
+  },
+  'square wave exploration': {
+    voices: 4,
+    controls: ['width', 'reverb', 'lpf', 'lpfPeak', 'hpf', 'hpfPeak',
+               'remix', 'detune'],
+  },
+  /* ── the hello-world trio ──────────────────────────────────────────
+     All three hand FREQUENCY to the spectrum bar's orb handles, so none
+     of them carries a fine-tune: the pane is free for everything else.
+     1 and 2 differ in CONTENT (2 gains the mixer); 2 and 3 differ only
+     in CHARACTER, which is what `pins` is for. */
+  'hello world 1 · no mixer': {
+    voices: 4,
+    controls: ['noise', 'saturation', 'filter', 'tune', 'remix', 'detune'],
+  },
+  'hello world 2 · mixer, ordered': {
+    voices: 4,
+    controls: ['levels', 'pans', 'noise', 'saturation', 'filter', 'tune', 'remix', 'detune'],
+    pins: { mixerScatter: 0, align: 'center', jitter: 0, school: 0.1 },
+  },
+  'hello world 3 · mixer, abstract': {
+    voices: 4,
+    controls: ['levels', 'pans', 'noise', 'saturation', 'filter', 'tune', 'remix', 'detune'],
+    pins: { mixerScatter: 0.92, school: 0.8, hero: 'on' },
+  },
+  /* The two halves on their own. Neither fires the `cluster` pair — it
+     needs both members — so pan-only renders a plain arc row and
+     mixer-only a plain fader row, and `mixerScatter` has nothing to
+     compose in either. That is the honest answer: scatter is a property
+     of the PAIRING, not of faders or pans by themselves. */
+  'hello world 4 · pan only': {
+    voices: 4,
+    controls: ['pans', 'noise', 'saturation', 'filter', 'tune', 'remix', 'detune'],
+  },
+  'hello world 5 · mixer only': {
+    voices: 4,
+    controls: ['levels', 'noise', 'saturation', 'filter', 'tune', 'remix', 'detune'],
+  },
+  /* a fifth slot for the example that didn't come through — kept as the
+     denser stress case so the generator keeps getting tested against a
+     song that does NOT fit comfortably. */
+  'full console (stress)': {
+    voices: 4,
+    controls: ['levels', 'orbs', 'arpBpm', 'arpOct', 'arpDir', 'noise', 'saturation',
+               'width', 'lpf', 'lpfPeak', 'hpf', 'hpfPeak', 'reverb', 'room',
+               'remix', 'tune', 'detune', 'fineTune', 'satViz'],
+  },
+};
+/* ?song=<substring> deep-links a manifest — handy for screenshots and for
+   sending someone a specific song's batch. */
+const SONG_KEYS = Object.keys(SONGS);
+const songParam = new URLSearchParams(location.search).get('song');
+let currentSongKey = (songParam
+  && SONG_KEYS.find(k => k.toLowerCase().includes(songParam.toLowerCase())))
+  || 'square waves immediate slide';
+let manifest = JSON.parse(JSON.stringify(SONGS[currentSongKey]));
+
+/* ════════════════════════════════════════════════════════════════════
+   3 · GENOME — pure style + layout. school 0 = braun, 1 = bauhaus.
+   ════════════════════════════════════════════════════════════════════ */
+/* Does this song contain anything the gene can act on? A sweep of a gene
+   with nothing to bite renders 8 identical cards, which reads as "the
+   gene is broken" rather than "this song has no faders". */
+const hasKind = (m, ...kinds) => m.controls.some(c => PARAMS[c] && kinds.includes(PARAMS[c].kind));
+const hasPair = (m) => PAIRS.some(p => m.controls.includes(p.a) && m.controls.includes(p.b));
+
+/* `d` is the human description shown under the sweep picker.
+   `gate` marks genes that `school` multiplies or gates to nothing.
+   `needs` / `needsLabel` mark genes that need something in the song. */
+const GENES = [
+  { k: 'school',     t: 'f', min: 0,    max: 1,
+    d: 'Braun ⇄ Bauhaus — the master dial on composure. At 0: sections keep their order, nothing wanders, no hero, no wash. At 1 all four turn on together. It changes composition only, never the control vocabulary.' },
+  { k: 'flow',       t: 'e', o: ['rows', 'columns'],
+    d: 'rows = sections pack into horizontal shelves, wrapping when full. columns = each section becomes its own column left to right, mixer-style.' },
+  { k: 'accent',     t: 'e', o: ['none', 'voice0', 'rotate'],
+    d: 'What colour the NON-voice controls take. none = gray chrome throughout · voice0 = everything wears the root voice\'s colour · rotate = each control takes the next voice colour.' },
+  { k: 'voiceLit',   t: 'e', o: ['lit', 'gray'],
+    d: 'lit = per-voice controls (faders, pans, fine-tune, orbs) wear the voice spectrum over the gray chrome — the simple theme\'s own rule. gray = they follow the plate\'s accent instead. ⚠️ Works WITH accent, never against it: under accent=voice0 the whole plate wears one colour and the voices come with it, so you never get one accent knob beside a rainbow pan row.',
+    needs: (m) => hasKind(m, 'voiceBipolar', 'voiceFaders', 'voicePans', 'orbs'), needsLabel: 'per-voice controls' },
+  { k: 'knobStyle',  t: 'e',
+    o: ['ring', 'ringValue', 'tickOnly', 'cap', 'dot', 'band', 'scale', 'wedge', 'segments', 'needle'],
+    d: 'The knob vocabulary — all ten run the same 270° travel. ring = track + tick · ringValue = + filled value arc · tickOnly = tick alone ⚠️ nearly invisible · cap = circle body + pointer · dot = body + a dot marker, the classic Braun cap ⚠️ breaks the theme\'s no-dots rule on purpose · band = the iOS bottom knob band\'s dial (SourceDial): opaque disc, thick 270° track, thick value arc, and the value as a NUMERAL inside the circle — no tick, no cap dot · scale = Braun dial marks, live one lit · wedge = solid sector, the boldest · segments = 9 cells lit to the value · needle = meter pointer crossing the face.' },
+  { k: 'remixGlyph', t: 'e', o: ['dots', 'dice', 'shuffle', 'cycle'],
+    d: 'What the remix button shows. dots = two abstract pips, says nothing specific · dice = a real die face, names the mechanism · shuffle = the media-player crossing arrows, says re-ARRANGE rather than re-roll · cycle = a circular arrow, just "again".',
+    needs: (m) => m.controls.includes('remix'), needsLabel: 'a remix button' },
+  { k: 'fineOrient', t: 'e', o: ['vertical', 'horizontal'],
+    d: 'The fine-tune lanes as a vertical mixer strip, or stacked horizontal lines reading as a tuning ladder.',
+    needs: (m) => hasKind(m, 'voiceBipolar'), needsLabel: 'a fine-tune control' },
+  { k: 'autoShape', t: 'e', o: ['circle', 'pill', 'rect'],
+    d: 'circle = a wash circle with the lemniscate + a label under, matching remix and tune at the cost of a knob-sized footprint. pill = a rounded horizontal rectangle with AUTO set INSIDE it and ⛔ no label under — the word IS the button. rect = a small rounded rectangle + label under; about a third of the circle\'s area, for when auto shouldn\'t cost as much room as a knob.',
+    needs: (m) => m.controls.includes('auto'), needsLabel: 'an auto button' },
+  { k: 'autoPlace',  t: 'e', o: ['column', 'beside', 'below'],
+    d: 'Where the auto button sits. column = in the FIXED left column under play, reading as transport — "the thing that keeps it going". beside / below = glued to remix in the pane, reading as "keep re-rolling". It is genuinely both, so this is worth testing rather than deciding.',
+    needs: (m) => m.controls.includes('auto'), needsLabel: 'an auto button' },
+  { k: 'cycleReadout', t: 'e', o: ['ring', 'bar', 'both'],
+    d: 'How the auto-cycle\'s countdown shows. ring = around the remix button, so the timer is drawn ON the thing it re-clicks. bar = a thin capsule across the top of the pane, the iOS listen page\'s own walk-progress line. both = belt and braces.',
+    needs: (m) => m.controls.includes('autoCycle'), needsLabel: 'an auto-cycle timer' },
+  { k: 'orbInk',     t: 'e', o: ['mono', 'spectrum', 'grayscale'],
+    d: 'The spectrum bar\'s frequency handles, which are fixed chrome on EVERY song. mono = one flat tone for every orb, what the listen page ships (⛔ the root is deliberately NOT lifted — on this page every orb does the same job). spectrum = the voice colours, as on the instrument page. grayscale = told apart by VALUE not hue, root brightest, each voice stepping down — readable without colour vision.' },
+  { k: 'panFill',    t: 'e', o: ['none', 'noon'],
+    d: 'Where a pan\'s fill starts. none = from the beginning of travel, like every other knob. noon = from the MIDDLE out to the position, so the offset reads as a length and centre marks itself. ⚠️ Only visible on the filled knob styles (ringValue · wedge · segments · band) — the pan wears whatever knobStyle the knobs wear, and the unfilled ones have no fill to move.',
+    needs: (m) => m.controls.includes('pans'), needsLabel: 'a pan control' },
+  { k: 'mixerScatter', t: 'f', min: 0, max: 1,
+    d: 'How loosely the level+pan cluster is composed. 0 = a strict console: even columns, equal fader heights, each pan squarely under its own fader. 1 = a composition: faders take the spectrum bar\'s stem spacing so a voice sits where its pitch sits, heights vary, and each pan swings out to its own bearing around its fader\'s foot. ⛔ The pan never leaves its fader\'s neighbourhood at any value — it orbits the foot, so which pan belongs to which voice survives the scattering.',
+    needs: (m) => m.controls.includes('levels') && m.controls.includes('pans'),
+    needsLabel: 'both levels and pans' },
+  { k: 'fineWidth',  t: 'f', min: 0.4,  max: 1,
+    d: 'How much of the zone the fine-tune block claims — 0.4 is a compact cluster beside other controls, 1.0 spans the full width and makes it the plate\'s spine.',
+    needs: (m) => hasKind(m, 'voiceBipolar'), needsLabel: 'a fine-tune control' },
+  { k: 'fineSpacing', t: 'e', o: ['even', 'varied'],
+    d: 'even = a uniform comb. varied = the lanes take the SAME placement rule as the spectrum stems above, so each voice\'s lane sits under its own stem — irregular, but for a reason.',
+    needs: (m) => hasKind(m, 'voiceBipolar'), needsLabel: 'a fine-tune control' },
+  { k: 'knobSize',   t: 'f', min: 0.9,  max: 1.45,
+    d: 'Knob diameter. Watch for the inflection where the layout breaks from one full-width row into two — that\'s the real decision, not the diameter itself.' },
+  { k: 'pairStyle',  t: 'e', o: ['declared', 'flatten'],
+    d: 'declared = coupled controls render as ONE body (cutoff + peak as concentric rings, remix wearing its auto-cycle timer as a ring). flatten = every control drawn separately.',
+    needs: hasPair, needsLabel: 'a coupled pair' },
+  { k: 'playStyle',  t: 'e', o: ['washCircle', 'triangle', 'capsule'],
+    d: 'The fixed play button in the left column: filled circle wash, bare triangle, or capsule. Its position never moves — this is styling only.' },
+  { k: 'align',      t: 'e', o: ['center', 'left'],
+    d: 'Rows centred in the zone, or flush left against the divider that separates them from the play/volume column.' },
+  { k: 'margin',     t: 'f', min: 8,    max: 20,
+    d: 'Padding between the pane region\'s edges and the content — the outer breathing room.' },
+  { k: 'gapScale',   t: 'f', min: 0.75, max: 1.7,
+    d: 'One multiplier on every gap at once: between rows, between sections, between blocks. ⚠️ On a dense song shrink-to-fit eats most of the effect.' },
+  { k: 'labels',     t: 'e', o: ['below', 'hidden'],
+    d: 'The 8pt uppercase name under each control (DRIFT, REVERB…), or nothing at all.' },
+  { k: 'readouts',   t: 'e', o: ['on', 'off'],
+    d: 'The numeric value under each control — 2430, 57s, 2.5¢. Independent of the label.' },
+  { k: 'dividers',   t: 'e', o: ['none', 'hairline'],
+    d: 'A hairline rule between rows, reading them as shelves. Does nothing on a single-row layout.' },
+  { k: 'hero',       t: 'e', o: ['on', 'off'],
+    d: 'Whether the plate has a dominant element at all — one control drawn oversize (1.3–1.8×). WHICH one is `heroPick`.', gate: 0.35 },
+  { k: 'heroPick',   t: 'e', o: ['first', 'filter', 'space', 'motion', 'tone', 'action'],
+    d: 'WHICH control gets promoted. first = whatever leads in reading order (so the identity rides on orderSeed — the old behaviour). Naming a family instead makes it a real choice: promoting the FILTER says something very different from promoting REMIX. A family this song lacks falls back to first rather than dropping the hero. ⚠️ Inert unless hero = on.', gate: 0.35 },
+  { k: 'jitter',     t: 'f', min: 0,    max: 1,
+    d: 'How far rows and blocks wander off the grid.', scaledBySchool: true },
+  { k: 'backdrop',   t: 'e', o: ['none', 'circle', 'quarter', 'bar'],
+    d: 'A faint geometric wash behind the controls, placed at random. Currently decoration — it groups nothing.', gate: 0.25 },
+  { k: 'orderSeed',  t: 'f', min: 0,    max: 1,
+    d: 'Which shuffle of the section order you get. ⚠️ Not a quality axis — just a different draw, so there is no "best" value to lock.' },
+  { k: 'faderW',     t: 'f', min: 4,    max: 7,
+    d: 'Stroke width of the voice level faders.',
+    needs: (m) => hasKind(m, 'voiceFaders'), needsLabel: 'voice faders' },
+  { k: 'chipStyle',  t: 'e', o: ['wash', 'text'],
+    d: 'wash = active chips and buttons get a filled background. text = the text brightening alone carries the state, no fill.',
+    needs: (m) => hasKind(m, 'segment', 'button', 'toggle'), needsLabel: 'buttons or chips' },
+];
+/* Both samplers draw only from what exclusions/bounds have left alive,
+   so a ruled-out value never reappears in a batch or a bred child.
+   (allowedOptions/floatBounds are declared further down with the lock
+   store; these run long after that, at first batch.) */
+function randomGenome(rng) {
+  const g = {};
+  for (const gene of GENES) {
+    if (gene.t === 'f') {
+      const [lo, hi] = floatBounds(gene);
+      g[gene.k] = lo + rng() * (hi - lo);
+    } else {
+      const keep = allowedOptions(gene);
+      g[gene.k] = keep[Math.floor(rng() * keep.length)];
+    }
+  }
+  return g;
+}
+function mutate(g, rng, rate = 0.18) {
+  const out = { ...g };
+  for (const gene of GENES) {
+    if (rng() >= rate) continue;
+    if (gene.t === 'f') {
+      const [lo, hi] = floatBounds(gene);
+      out[gene.k] = Math.max(lo, Math.min(hi,
+        out[gene.k] + (rng() - 0.5) * (gene.max - gene.min) * 0.4));
+    } else {
+      const keep = allowedOptions(gene);
+      out[gene.k] = keep[Math.floor(rng() * keep.length)];
+    }
+  }
+  return out;
+}
+function crossover(a, b, rng) {
+  const out = {};
+  for (const gene of GENES) out[gene.k] = rng() < 0.5 ? a[gene.k] : b[gene.k];
+  return out;
+}
+function featureNames() {
+  const names = [];
+  for (const gene of GENES) {
+    if (gene.t === 'f') names.push(gene.k);
+    else for (const o of gene.o) names.push(`${gene.k}=${o}`);
+  }
+  return names;
+}
+function featurize(g) {
+  const v = [];
+  for (const gene of GENES) {
+    if (gene.t === 'f') v.push((((g[gene.k] ?? gene.min) - gene.min) / (gene.max - gene.min)));
+    else for (const o of gene.o) v.push(g[gene.k] === o ? 1 : 0);
+  }
+  return v;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   4 · SEEDED PRNG
+   ════════════════════════════════════════════════════════════════════ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const newSeed = () => Math.floor(Math.random() * 0xffffffff);
+
+/* ════════════════════════════════════════════════════════════════════
+   5 · FIXED PAGE CHROME — identical on every card
+   ════════════════════════════════════════════════════════════════════ */
+function stemXs(n, w) {
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push(w * (0.14 + (0.72 * (i + 0.5)) / n) + ((i * 37) % 11) - 5);
+  return xs;
+}
+function chromeFieldSliver() {
+  let d = `M 0 ${FIELD_H * 0.55}`;
+  for (let x = 0; x <= PHONE_W; x += 6) {
+    const y = FIELD_H * 0.55
+      + Math.sin(x * 0.045) * 14 * Math.sin(x * 0.008 + 1.2)
+      + Math.sin(x * 0.013 + 0.5) * 7;
+    d += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }
+  return `<path d="${d}" fill="none" stroke="${INK(0.32)}" stroke-width="1.4" stroke-linecap="round"/>
+    <text x="${PHONE_W - 10}" y="14" text-anchor="end" font-size="7" letter-spacing="1" fill="${INK(0.18)}">FIELD</text>`;
+}
+function chromeSpectrumBar(y0, voices, g) {
+  const xs = stemXs(voices, PHONE_W - 24);
+  const base = y0 + SPECT_H - 16;
+  let out = `<line x1="12" y1="${base}" x2="${PHONE_W - 12}" y2="${base}" stroke="${INK(0.25)}" stroke-width="1"/>`;
+  let d = `M 12 ${base - 4}`;
+  for (let x = 12; x <= PHONE_W - 12; x += 8) d += ` L ${x} ${base - 4 - Math.abs(Math.sin(x * 0.02)) * 9}`;
+  out += `<path d="${d}" fill="none" stroke="${INK(0.10)}" stroke-width="1"/>`;
+  xs.forEach((x, i) => {
+    const h = 14 + ((i * 29) % 13);
+    out += `<line x1="${12 + x}" y1="${base}" x2="${12 + x}" y2="${base - h}"
+      stroke="${i === 0 ? HI(0.9) : INK(0.5)}" stroke-width="2" stroke-linecap="round"/>`;
+  });
+  /* The draggable frequency handles (SPEC-listen-orbs): half-size,
+     sitting UNDER the line. FIXED CHROME on every song, like the
+     play/volume column and the rail — frequency is always reachable,
+     so no song has to spend pane space on a fine-tune. Only their
+     colour varies.
+
+     `orbInk` gives them the three readings the app itself has:
+
+       mono       one flat tone for every orb — what the listen page
+                  ships. ⛔ Deliberately does NOT lift the root: on this
+                  page every orb does the same job, and one bright coin
+                  would say otherwise
+       spectrum   the voice colours, as on the instrument page
+       grayscale  told apart by VALUE rather than hue — the root is
+                  brightest and each voice steps down. Distinguishable
+                  without relying on colour vision at all  */
+  const n = xs.length;
+  const orbFill = (i) => {
+    if (g.orbInk === 'spectrum') {
+      // same coherence rule as the pane: one accent means one colour
+      return g.accent === 'voice0' ? voiceColor(0) : voiceColor(i);
+    }
+    if (g.orbInk === 'grayscale') return INK(0.78 - (i / Math.max(1, n - 1)) * 0.42);
+    return INK(0.55);
+  };
+  xs.forEach((x, i) => {
+    out += `<circle cx="${12 + x}" cy="${base + 7}" r="4.5" fill="${orbFill(i)}"/>`;
+  });
+  return out;
+}
+function chromeRail(y0) {
+  const cellW = PHONE_W / 5, cy = y0 + RAIL_H / 2 - 2, c = INK(0.35);
+  const glyph = (i, cx) => {
+    switch (i) {
+      case 0: return `<rect x="${cx - 5}" y="${cy - 5}" width="10" height="10" rx="2" fill="none" stroke="${c}" stroke-width="1.3"/>`;
+      case 1: return `<circle cx="${cx}" cy="${cy}" r="5" fill="none" stroke="${c}" stroke-width="1.3"/>`;
+      case 2: return `<rect x="${cx - 2.5}" y="${cy - 6}" width="5" height="9" rx="2.5" fill="none" stroke="${c}" stroke-width="1.3"/>
+                      <line x1="${cx}" y1="${cy + 3}" x2="${cx}" y2="${cy + 6}" stroke="${c}" stroke-width="1.3" stroke-linecap="round"/>`;
+      case 3: return `<path d="M ${cx - 6} ${cy + 3} L ${cx - 2} ${cy + 3} L ${cx + 2} ${cy - 4} L ${cx + 6} ${cy - 4}" fill="none" stroke="${c}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>`;
+      default: return `<line x1="${cx - 6}" y1="${cy - 3}" x2="${cx + 6}" y2="${cy - 3}" stroke="${c}" stroke-width="1.3" stroke-linecap="round"/>
+                       <line x1="${cx - 6}" y1="${cy + 2}" x2="${cx + 2}" y2="${cy + 2}" stroke="${c}" stroke-width="1.3" stroke-linecap="round"/>`;
+    }
+  };
+  let out = `<line x1="0" y1="${y0}" x2="${PHONE_W}" y2="${y0}" stroke="${INK(0.08)}" stroke-width="1"/>`;
+  for (let i = 0; i < 5; i++) out += glyph(i, cellW * (i + 0.5));
+  return out;
+}
+/* ── the auto button ────────────────────────────────────────────────
+   Three shapes, one drawing function, because auto appears in two
+   places (the left rail and the pane) and they must not drift apart.
+
+     circle  wash circle + lemniscate + label under — matches remix and
+             tune, at the cost of a knob-sized footprint
+     pill    a rounded horizontal rectangle with AUTO set INSIDE it and
+             no label under. The word is the button
+     rect    a small rounded rectangle + label under. The compact one:
+             a third of the circle's area
+
+   `AUTO_SIZE` is exported so a block can size itself before drawing. */
+const AUTO_SIZE = { circle: { w: 34, h: 34 }, pill: { w: 38, h: 20 }, rect: { w: 28, h: 19 } };
+
+function lemniscate(cx, cy, w, hh, color, sw) {
+  return `<path d="M ${cx - w} ${cy} C ${cx - w} ${cy - hh}, ${cx - w * 0.18} ${cy - hh}, ${cx} ${cy}
+    C ${cx + w * 0.18} ${cy + hh}, ${cx + w} ${cy + hh}, ${cx + w} ${cy}
+    C ${cx + w} ${cy - hh}, ${cx + w * 0.18} ${cy - hh}, ${cx} ${cy}
+    C ${cx - w * 0.18} ${cy + hh}, ${cx - w} ${cy + hh}, ${cx - w} ${cy} Z"
+    fill="none" stroke="${color}" stroke-width="${sw}" stroke-linejoin="round"/>`;
+}
+
+/* Draws centred on (cx, cy). Returns the svg; the caller owns layout. */
+function autoMark(cx, cy, g, accent, wash) {
+  const shape = g.autoShape || 'circle';
+  const s = AUTO_SIZE[shape];
+  let out = '';
+  if (shape === 'pill') {
+    out += `<rect x="${cx - s.w / 2}" y="${cy - s.h / 2}" width="${s.w}" height="${s.h}"
+      rx="${s.h / 2}" fill="${wash ? INK(0.12) : 'none'}"/>`;
+    out += `<text x="${cx}" y="${cy + 3.2}" text-anchor="middle" font-size="9" font-weight="600"
+      letter-spacing="1" fill="${accent}">AUTO</text>`;
+    return out;   // ⛔ never a label under — the word IS the button
+  }
+  if (shape === 'rect') {
+    out += `<rect x="${cx - s.w / 2}" y="${cy - s.h / 2}" width="${s.w}" height="${s.h}"
+      rx="4" fill="${wash ? INK(0.12) : 'none'}"/>`;
+    out += lemniscate(cx, cy, s.w * 0.26, s.h * 0.24, accent, 1.6);
+    return out;
+  }
+  out += `<circle cx="${cx}" cy="${cy}" r="${s.w / 2}" fill="${wash ? INK(0.12) : 'none'}"/>`;
+  out += lemniscate(cx, cy, s.w * 0.25, s.w * 0.17, accent, 1.7);
+  return out;
+}
+
+function chromeLeftColumn(y0, g, accent, showAuto) {
+  const cx = LCOL_W / 2 + 2, py = y0 + 20, psize = 32;
+  let out = '';
+  const pc = { x: cx, y: py + psize / 2 };
+  if (g.playStyle === 'washCircle') out += `<circle cx="${pc.x}" cy="${pc.y}" r="${psize * 0.46}" fill="${INK(0.14)}"/>`;
+  else if (g.playStyle === 'capsule') out += `<rect x="${cx - psize * 0.5}" y="${pc.y - psize * 0.24}" width="${psize}" height="${psize * 0.48}" rx="${psize * 0.24}" fill="${INK(0.14)}"/>`;
+  const tr = psize * 0.17;
+  out += `<path d="M ${pc.x - tr * 0.7} ${pc.y - tr} L ${pc.x + tr * 1.1} ${pc.y} L ${pc.x - tr * 0.7} ${pc.y + tr} Z"
+    fill="none" stroke="${accent}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  /* auto, when `autoPlace: column` puts it here — smaller than play,
+     because it modifies the transport rather than being it. */
+  let autoBot = py + psize;
+  if (showAuto) {
+    const s = AUTO_SIZE[g.autoShape || 'circle'];
+    const ay = py + psize + 14 + s.h / 2;
+    out += autoMark(cx, ay, g, accent, true);
+    const labelled = g.autoShape !== 'pill' && g.labels === 'below';
+    if (labelled) {
+      out += `<text x="${cx}" y="${ay + s.h / 2 + 10}" text-anchor="middle" font-size="8" font-weight="500"
+        letter-spacing="0.5" fill="${INK(0.3)}">AUTO</text>`;
+    }
+    autoBot = ay + s.h / 2 + (labelled ? 12 : 2);
+  }
+  const vTop = autoBot + 20, vBot = y0 + REGION_H - 20, vw = 5;
+  const vh = vBot - vTop, fill = 0.68;
+  out += `<rect x="${cx - vw / 2}" y="${vTop}" width="${vw}" height="${vh}" rx="${vw / 2}" fill="${TRACK}"/>`;
+  out += `<rect x="${cx - vw / 2}" y="${vTop + vh * (1 - fill)}" width="${vw}" height="${vh * fill}" rx="${vw / 2}" fill="${INK(0.75)}"/>`;
+  if (g.labels === 'below') {
+    out += `<text x="${cx}" y="${vBot + 12}" text-anchor="middle" font-size="8" font-weight="500" letter-spacing="0.5" fill="${INK(0.3)}">VOL</text>`;
+  }
+  return out;
+}
+
+/* ── the right rail ─────────────────────────────────────────────────
+   snapshot · prev/next patch · shuffle. Mirrors the left: same glyph
+   weight, same label tier, same hairline against the pane. Spread down
+   the full region height so the two rails read as a matched pair
+   rather than a loaded left and an empty right.
+
+   Stubs for now — the buttons are drawn, not wired, because what they
+   do lives in the app. What matters here is that the pane's width is
+   already paying for them. */
+function chromeRightColumn(y0, g, accent) {
+  const cx = PHONE_W - RCOL_W / 2 - 2;
+  const lab = (y, text) => g.labels === 'below'
+    ? `<text x="${cx}" y="${y}" text-anchor="middle" font-size="8" font-weight="500"
+        letter-spacing="0.5" fill="${INK(0.3)}">${text}</text>` : '';
+  const ink = INK(0.72);
+  let out = '';
+
+  // 1 · snapshot — a bookmark: take THIS state and keep it
+  const sy = y0 + REGION_H * 0.16, bw = 7, bh = 9;
+  out += `<path d="M ${cx - bw} ${sy - bh} L ${cx + bw} ${sy - bh} L ${cx + bw} ${sy + bh}
+    L ${cx} ${sy + bh * 0.42} L ${cx - bw} ${sy + bh} Z"
+    fill="none" stroke="${ink}" stroke-width="1.6" stroke-linejoin="round"/>`;
+  out += lab(sy + bh + 12, 'SNAP');
+
+  /* 2 · previous / next SONG — chevrons stacked vertically, up over
+     down. In a rail this narrow a side-by-side pair has to shrink to
+     fit; stacked, each keeps a full-size target, and up/down is the
+     axis a vertical rail already implies. */
+  const py2 = y0 + REGION_H * 0.46, dy = 9;
+  const chev = (y, dir) => `<path d="M ${cx - 5} ${y + 2.5 * dir} L ${cx} ${y - 2.5 * dir}
+    L ${cx + 5} ${y + 2.5 * dir}" fill="none" stroke="${ink}" stroke-width="1.8"
+    stroke-linecap="round" stroke-linejoin="round"/>`;
+  out += chev(py2 - dy, 1) + chev(py2 + dy, -1);
+  out += lab(py2 + dy + 16, 'SONG');
+
+  // 3 · shuffle — the same crossing lanes as the remix glyph, so the
+  // two never read as different ideas
+  const fy = y0 + REGION_H * 0.76, w = 9, h = 4.5, k = 3.4;
+  for (const dir of [1, -1]) {
+    const ty = fy + h * dir, tx = cx + w;
+    out += `<path d="M ${cx - w} ${fy - h * dir} L ${cx - w * 0.42} ${fy - h * dir}
+      L ${cx + w * 0.30} ${ty} L ${tx - k * 0.5} ${ty}" fill="none" stroke="${ink}"
+      stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`;
+    out += `<path d="M ${tx - k} ${ty - 2} L ${tx} ${ty} L ${tx - k} ${ty + 2}" fill="none"
+      stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  out += lab(fy + 18, 'SHUFFLE');
+  return out;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   6 · RENDERER — (manifest, genome, seed) → the whole listen page
+   ════════════════════════════════════════════════════════════════════ */
+function render(manifest, g, seed) {
+  const rng = mulberry32(seed ^ 0x9e3779b9);
+  const stableBase = mulberry32(seed ^ 0x51ed270b);
+  const stableVals = Array.from({ length: 64 }, () => stableBase());
+  const rs = (i) => stableVals[i % 64];
+
+  const t = g.school;
+  const regionY = FIELD_H + SPECT_H;
+  const margin = g.margin;
+  /* The walk-progress capsule (ListenView's `walkProgressBar`): a thin
+     line across the top of the pane filling over the current cycle. It
+     takes a strip off the top of the zone, so the content below never
+     has to know about it. */
+  const cycleBarOn = manifest.controls.includes('autoCycle')
+    && (g.cycleReadout === 'bar' || g.cycleReadout === 'both');
+  const cycleBarH = cycleBarOn ? 12 : 0;
+  const zone = {
+    x: LCOL_W + 12, y: regionY + margin + cycleBarH,
+    w: PHONE_W - LCOL_W - RCOL_W - 24, h: REGION_H - margin * 2 - cycleBarH,
+  };
+  const accentFor = (i) =>
+    g.accent === 'none' ? INK(0.85)
+    : g.accent === 'voice0' ? voiceColor(0)
+    : voiceColor(i % SIMPLE_PALETTE.length);
+
+  /* ── the one source of per-voice colour ───────────────────────────
+     Faders, pans, fine-tune lanes and pane orbs ALL come through here,
+     so a voice can never be one colour in the mixer and another in the
+     pan row.
+
+     `voiceLit` and `accent` are separate genes and used to be able to
+     contradict each other — `accent: voice0` painted every knob one
+     voice's colour while the pans stayed a full rainbow, which reads as
+     a bug rather than a choice. So:
+
+       voiceLit: gray      → follow the plate's accent, whatever it is
+       accent:   voice0    → ONE accent means one colour, voices included
+       otherwise           → the spectrum (the `simple` theme's own rule:
+                             full-spectrum voices over gray chrome)  */
+  const voiceInk = (i) => {
+    if (g.voiceLit !== 'lit') return accentFor(0);
+    if (g.accent === 'voice0') return voiceColor(0);
+    return voiceColor(i % SIMPLE_PALETTE.length);
+  };
+
+  /* ── primitives ─────────────────────────────────────────────────── */
+  const label = (x, y, text, w) => (g.labels === 'hidden' || !text) ? '' :
+    `<text x="${x + w / 2}" y="${y}" text-anchor="middle" font-size="8" font-weight="500"
+      letter-spacing="0.5" fill="${INK(0.3)}">${String(text).toUpperCase()}</text>`;
+  const readout = (x, y, text, w) => (g.readouts !== 'on' || text == null) ? '' :
+    `<text x="${x + w / 2}" y="${y}" text-anchor="middle" font-size="9" fill="${HI(0.7)}"
+      style="font-variant-numeric:tabular-nums">${text}</text>`;
+
+  const polar = (cx, cy, deg, rad) => {
+    const rd = (deg - 90) * Math.PI / 180;
+    return [cx + rad * Math.cos(rd), cy + rad * Math.sin(rd)];
+  };
+  const arcPath = (cx, cy, from, to, rad) => {
+    const [x1, y1] = polar(cx, cy, from, rad), [x2, y2] = polar(cx, cy, to, rad);
+    return `M ${x1} ${y1} A ${rad} ${rad} 0 ${Math.abs(to - from) > 180 ? 1 : 0} 1 ${x2} ${y2}`;
+  };
+
+  /* ── the knob vocabulary ──────────────────────────────────────────
+     All eight run the same 270° travel (−135°…135°) at radius `r`, so
+     they are swappable anywhere a knob is drawn and a sweep of
+     `knobStyle` is a straight comparison.
+
+       ring       track arc + radial tick — the PanPot grammar
+       ringValue  …plus a filled arc showing the value
+       tickOnly   the tick alone, no track
+       cap        the knob BODY: circle outline + pointer centre→rim
+       scale      Braun dial — discrete marks round the arc, live one lit
+       wedge      a solid annulus sector; the boldest of the set
+       segments   the arc split into 9 cells, lit up to the value
+       needle     a meter pointer crossing the whole face
+
+     `plain` forces the quiet form. The inner ring of a concentric pair
+     always takes it: the pair needs a hierarchy, so the primary control
+     wears the expressive style and the secondary stays out of its way. */
+  function ring(cx, cy, r, value, color, sw, plain, bipolar) {
+    const a0 = -135, a1 = 135, av = a0 + value * (a1 - a0);
+    const style = plain ? 'ring' : g.knobStyle;
+    /* Where a filled style STARTS. Normally the beginning of travel; on
+       a bipolar control with `panFill: noon` it is the middle, so the
+       fill grows out of centre in whichever direction the value went.
+       Drawn low→high so a leftward fill sweeps back out of the middle
+       rather than the long way round. */
+    const from = (bipolar && g.panFill === 'noon') ? 0 : a0;
+    const fillArc = (rad, width) => {
+      const lo = Math.min(from, av), hi = Math.max(from, av);
+      if (hi - lo < 1.5) return '';
+      return `<path d="${arcPath(cx, cy, lo, hi, rad)}" fill="none"
+        stroke="${dim(color, style === 'band' ? 60 : 78)}" stroke-width="${width}" stroke-linecap="round"/>`;
+    };
+    const track = (rad, w) =>
+      `<path d="${arcPath(cx, cy, a0, a1, rad)}" fill="none" stroke="${TRACK}" stroke-width="${w}" stroke-linecap="round"/>`;
+    const tick = (from, to, col, w) => {
+      const [ix, iy] = polar(cx, cy, av, from), [ox, oy] = polar(cx, cy, av, to);
+      return `<line x1="${ix}" y1="${iy}" x2="${ox}" y2="${oy}" stroke="${col}" stroke-width="${w}" stroke-linecap="round"/>`;
+    };
+    let out = '';
+    switch (style) {
+      case 'ringValue':
+        out += track(r, sw);
+        out += fillArc(r, sw);
+        out += tick(r * 0.75, r * 1.25, color, sw);
+        break;
+
+      case 'tickOnly':
+        out += tick(r * 0.75, r * 1.25, color, sw);
+        break;
+
+      case 'cap':
+        out += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${INK(0.22)}" stroke-width="1"/>`;
+        out += tick(r * 0.12, r * 0.84, color, sw);
+        break;
+
+      case 'dot': {
+        // the classic Braun cap: a body with a single dot marker rather
+        // than a line. ⚠️ deliberately breaks the theme's no-dots rule —
+        // it is here to be judged, not because it already fits
+        out += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${INK(0.22)}" stroke-width="1"/>`;
+        const [dx, dy] = polar(cx, cy, av, r * 0.6);
+        out += `<circle cx="${dx}" cy="${dy}" r="${sw * 1.05}" fill="${color}"/>`;
+        break;
+      }
+
+      case 'band': {
+        /* The iOS bottom knob band's dial, ported straight from
+           `SourceDial.swift`:
+             · an OPAQUE black disc under the ring — the band's knobs sit
+               over live faces, and an unfilled circle let the visuals
+               read through the numeral
+             · a 270° track at ink-soft 0.10, stroke = 10% of the
+               DIAMETER, floored at 3 — it grows with the circle (the
+               2026-08-10 PanPot-parity pass) rather than sitting at a
+               fixed hairline
+             · the value arc in the voice colour at 0.6
+             · ⛔ NO tick and NO cap dot. The cap orb retired 2026-08-13
+               with the fader ball and the pan orb: the arc's own length
+               plus the centre numeral say the value between them.
+           The numeral itself is drawn by knobBlock, since it sits inside
+           the circle rather than under it. */
+        const bw = Math.max(3, r * 0.2);
+        out += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#000"/>`;
+        out += `<path d="${arcPath(cx, cy, a0, a1, r)}" fill="none" stroke="${TRACK}" stroke-width="${bw}" stroke-linecap="round"/>`;
+        out += fillArc(r, bw);
+        break;
+      }
+
+      case 'scale': {
+        const N = 11, active = Math.round(value * (N - 1));
+        for (let i = 0; i < N; i++) {
+          const a = a0 + (i / (N - 1)) * 270, on = i === active;
+          const [x1, y1] = polar(cx, cy, a, r);
+          const [x2, y2] = polar(cx, cy, a, r + (on ? 5 : 2.5));
+          out += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+            stroke="${on ? color : INK(0.22)}" stroke-width="${on ? sw : 1}" stroke-linecap="round"/>`;
+        }
+        out += tick(0, r * 0.62, color, sw);
+        break;
+      }
+
+      case 'wedge':
+        out += track(r, 1);
+        out += fillArc(r * 0.72, r * 0.55).replace('stroke-linecap="round"', '');
+        break;
+
+      case 'segments': {
+        const N = 9, pad = 2.5;
+        const lo = Math.min(from, av), hi = Math.max(from, av);
+        for (let i = 0; i < N; i++) {
+          const s0 = a0 + (i / N) * 270 + pad, s1 = a0 + ((i + 1) / N) * 270 - pad;
+          const mid = a0 + ((i + 0.5) / N) * 270;
+          const lit = mid >= lo && mid <= hi;
+          out += `<path d="${arcPath(cx, cy, s0, s1, r)}" fill="none"
+            stroke="${lit ? dim(color, 88) : TRACK}" stroke-width="${sw}" stroke-linecap="butt"/>`;
+        }
+        break;
+      }
+
+      case 'needle':
+        out += track(r, 1);
+        out += tick(-r * 0.34, r * 1.04, color, sw);
+        break;
+
+      default:   // 'ring'
+        out += track(r, sw);
+        out += tick(r * 0.75, r * 1.25, color, sw);
+    }
+    return out;
+  }
+
+  /* ── block builders (each returns {w, h, draw(x,y,scale)}) ──────── */
+  const KNOB = 44 * g.knobSize;
+  const labelH = g.labels === 'hidden' ? 4 : 12;
+  const readH  = g.readouts === 'on' ? 11 : 0;
+
+  /* `band` moves the value numeral INSIDE the circle, so its block is a
+     row shorter than the others — the readout below would be the same
+     number twice. */
+  const bandStyle = g.knobStyle === 'band';
+  function centreNumeral(cx, cy, s, text) {
+    if (!text || g.readouts !== 'on') return '';
+    // SourceDial's readoutFont: semibold, compressed, monospaced digits,
+    // scaled off the dial and floored so it never goes wiry.
+    const fs = Math.max(9, Math.min(13, s * 0.26));
+    return `<text x="${cx}" y="${cy + fs * 0.35}" text-anchor="middle" font-size="${fs}"
+      font-weight="600" letter-spacing="-0.3" fill="${HI(0.9)}"
+      style="font-variant-numeric:tabular-nums">${text}</text>`;
+  }
+
+  function knobBlock(pid, colorIdx) {
+    const p = PARAMS[pid], size = KNOB;
+    const h = size + labelH + (bandStyle ? 0 : readH);
+    return {
+      kind: 'knob', pid, w: size, h, family: p.family,
+      draw: (x, y, sc = 1) => {
+        const s = size * sc, cx = x + s / 2, cy = y + s / 2, r = s * 0.38;
+        const color = accentFor(colorIdx);
+        let out = ring(cx, cy, r, p.def, color, sc > 1.3 ? 3 : 2);
+        if (bandStyle) out += centreNumeral(cx, cy, s, p.fmt ? p.fmt(p.def) : null);
+        out += label(x, y + s + (labelH ? 8 : 0), p.label, s);
+        if (!bandStyle) {
+          out += readout(x, y + s + (labelH ? 8 : 0) + (labelH ? 11 : 9), p.fmt ? p.fmt(p.def) : null, s);
+        }
+        return out;
+      },
+    };
+  }
+
+  /* concentric pair: cutoff outer, peak inner — one body, two rings */
+  function concentricBlock(aid, bid, name, colorIdx) {
+    const A = PARAMS[aid], B = PARAMS[bid], size = KNOB * 1.18;
+    const h = size + labelH + readH;
+    return {
+      kind: 'pair', pid: aid, w: size, h, family: A.family,
+      draw: (x, y, sc = 1) => {
+        const s = size * sc, cx = x + s / 2, cy = y + s / 2;
+        const color = accentFor(colorIdx);
+        let out = ring(cx, cy, s * 0.40, A.def, color, sc > 1.3 ? 3 : 2);
+        // `plain` — the peak stays a quiet track+tick whatever style the
+        // cutoff wears, so the pair reads as primary + secondary rather
+        // than two controls competing at different radii.
+        out += ring(cx, cy, s * 0.20, B.def, dim(color, 62), 2, true);
+        out += label(x, y + s + (labelH ? 8 : 0), name, s);
+        out += readout(x, y + s + (labelH ? 8 : 0) + (labelH ? 11 : 9),
+          A.fmt ? `${A.fmt(A.def)}·${B.fmt(B.def)}` : null, s);
+        return out;
+      },
+    };
+  }
+
+  /* ── the remix mark ───────────────────────────────────────────────
+     What "give me another one" looks like. Four readings of the same
+     action, behind the `remixGlyph` gene:
+
+       dots     two pips — abstract, quiet, says nothing specific
+       dice     a real die face: rounded square + three pips. Names the
+                mechanism (this app already calls it rolling dice)
+       shuffle  the media-player shuffle: two paths swapping places.
+                Says re-ARRANGE rather than re-ROLL — closer to what a
+                remix does to a chord you already have
+       cycle    a circular arrow — "again", the weakest claim of the four
+
+     All drawn in the theme's own grammar: round-capped lines, no fills
+     except the die pips, which are the one place a dot is the subject
+     rather than an indicator. */
+  function remixMark(cx, cy, r, color) {
+    const sw = 1.8;
+    const line = (x1, y1, x2, y2) =>
+      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>`;
+    switch (g.remixGlyph) {
+      case 'dice': {
+        /* A real face, not an abstract pair of pips — and the face is
+           drawn from the seed, so the die on screen has actually been
+           rolled. 1 and 4 are left out: 1 reads as a bullet and 4 as a
+           square of dots, neither of which says "die" at 18pt. */
+        const FACES = {
+          2: [[-1, -1], [1, 1]],
+          3: [[-1, -1], [0, 0], [1, 1]],
+          5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]],
+          6: [[-1, -1], [-1, 0], [-1, 1], [1, -1], [1, 0], [1, 1]],
+        };
+        const counts = [2, 3, 5, 6];
+        const n = counts[Math.floor(rs(41) * counts.length) % counts.length];
+        // ⛔ No die outline (Dan): the pips alone carry it. The button's
+        // own wash is already a container, so a box inside a circle was
+        // two enclosures doing one job.
+        const p = r * 0.38, pr = n === 6 ? 1.35 : 1.65;
+        let out = '';
+        for (const [px, py] of FACES[n]) {
+          out += `<circle cx="${cx + px * p}" cy="${cy + py * p}" r="${pr}" fill="${color}"/>`;
+        }
+        return out;
+      }
+      case 'shuffle': {
+        /* The media-player shuffle: two lanes that cross and swap. Both
+           arrowheads sit on the RIGHT so the glyph has a direction —
+           symmetric heads at both ends read as "swap", which is a
+           different verb. Heads are chevrons on the path's own
+           tangent (horizontal at the tip), never a filled triangle:
+           the theme has no filled marks on controls. */
+        const w = r * 0.74, h = r * 0.36;
+        const k = r * 0.26, kx = k * 0.86, ky = k * 0.52;
+        let out = '';
+        for (const dir of [1, -1]) {
+          const ty = cy + h * dir, tx = cx + w;
+          out += `<path d="M ${cx - w} ${cy - h * dir} L ${cx - w * 0.42} ${cy - h * dir}
+            L ${cx + w * 0.30} ${ty} L ${tx - kx * 0.55} ${ty}"
+            fill="none" stroke="${color}" stroke-width="${sw}"
+            stroke-linecap="round" stroke-linejoin="round"/>`;
+          out += line(tx - kx, ty - ky, tx, ty) + line(tx - kx, ty + ky, tx, ty);
+        }
+        return out;
+      }
+      case 'cycle': {
+        // the head sits ON the arc's end angle, chevroned across the
+        // tangent — an arrowhead pointing anywhere else reads as a nick
+        const rr = r * 0.62, end = 380;
+        const [tx, ty] = polar(cx, cy, end, rr);
+        const [b1x, b1y] = polar(cx, cy, end - 16, rr + 3.4);
+        const [b2x, b2y] = polar(cx, cy, end - 16, rr - 3.4);
+        return `<path d="${arcPath(cx, cy, 60, end, rr)}" fill="none" stroke="${color}"
+            stroke-width="${sw}" stroke-linecap="round"/>` +
+          line(b1x, b1y, tx, ty) + line(b2x, b2y, tx, ty);
+      }
+      default:   // 'dots'
+        return `<circle cx="${cx - r * 0.3}" cy="${cy - r * 0.3}" r="1.9" fill="${color}"/>
+                <circle cx="${cx + r * 0.3}" cy="${cy + r * 0.3}" r="1.9" fill="${color}"/>`;
+    }
+  }
+
+  /* action button; `timer` draws the auto-cycle ring around it */
+  function buttonBlock(pid, timerPid, colorIdx) {
+    const p = PARAMS[pid], T = timerPid ? PARAMS[timerPid] : null;
+    /* The CELL is a knob's cell; the BUTTON inside it stays smaller.
+       Sizing the block to the glyph made remix and tune sit on a
+       tighter grid than the knobs beside them, so a row of controls
+       had two different rhythms and their labels never lined up. This
+       is padding only — the drawn button is the size it was. */
+    const cell = KNOB;
+    const size = KNOB * (T ? 1.05 : 0.86);
+    const h = cell + labelH + (bandStyle && !T ? 0 : readH);
+    return {
+      kind: 'button', pid, w: cell, h, family: p.family,
+      draw: (x, y, sc = 1) => {
+        const c = cell * sc, s = size * sc;
+        const cx = x + c / 2, cy = y + c / 2, r = s * 0.34;
+        const color = accentFor(colorIdx);
+        let out = '';
+        if (g.chipStyle === 'wash') out += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${INK(0.12)}"/>`;
+        // the timer IS the ring: how far to the next auto-remix. Skipped
+        // when `cycleReadout: bar` moves that job to the capsule up top.
+        if (T && g.cycleReadout !== 'bar') {
+          out += `<path d="${arcPath(cx, cy, -135, 135, r + 5)}" fill="none" stroke="${TRACK}" stroke-width="2" stroke-linecap="round"/>`;
+          out += `<path d="${arcPath(cx, cy, -135, -135 + T.def * CYCLE_PROGRESS * 270, r + 5)}" fill="none" stroke="${dim(color, 70)}" stroke-width="2" stroke-linecap="round"/>`;
+        }
+        // glyph: dice = the `remixGlyph` gene, align = 3 converging
+        // lines, spread = 3 diverging
+        if (p.glyph === 'dice') {
+          out += remixMark(cx, cy, r, color);
+        } else if (p.glyph === 'align') {
+          // Three VERTICAL lines, equal height and evenly spaced (Dan).
+          // Vertical is the right axis for this button: the spectrum bar
+          // above draws each voice as a vertical stem, so "tune" shows
+          // those stems standing level — horizontal lines read as a list.
+          // Equal heights ARE the message: aligned.
+          const hh = r * 0.52;
+          for (const dx of [-0.42, 0, 0.42]) {
+            out += `<line x1="${cx + r * dx}" y1="${cy - hh}" x2="${cx + r * dx}" y2="${cy + hh}"
+              stroke="${color}" stroke-width="2" stroke-linecap="round"/>`;
+          }
+        } else if (p.glyph === 'auto') {
+          // a lemniscate — "it keeps going". Deliberately NOT a circular
+          // arrow: `remixGlyph: cycle` already owns that shape, and the
+          // two buttons sit next to each other under two of the three
+          // `autoPlace` values.
+          const w = r * 0.72, hh = r * 0.5;
+          out += `<path d="M ${cx - w} ${cy} C ${cx - w} ${cy - hh}, ${cx - w * 0.18} ${cy - hh}, ${cx} ${cy}
+            C ${cx + w * 0.18} ${cy + hh}, ${cx + w} ${cy + hh}, ${cx + w} ${cy}
+            C ${cx + w} ${cy - hh}, ${cx + w * 0.18} ${cy - hh}, ${cx} ${cy}
+            C ${cx - w * 0.18} ${cy + hh}, ${cx - w} ${cy + hh}, ${cx - w} ${cy} Z"
+            fill="none" stroke="${color}" stroke-width="1.9" stroke-linejoin="round"/>`;
+        } else {   // spread
+          out += `<line x1="${cx - r * 0.55}" y1="${cy - r * 0.45}" x2="${cx + r * 0.55}" y2="${cy - r * 0.45}" stroke="${color}" stroke-width="2" stroke-linecap="round"/>
+                  <line x1="${cx - r * 0.3}" y1="${cy + r * 0.1}" x2="${cx + r * 0.3}" y2="${cy + r * 0.1}" stroke="${color}" stroke-width="2" stroke-linecap="round"/>
+                  <line x1="${cx - r * 0.7}" y1="${cy + r * 0.55}" x2="${cx + r * 0.7}" y2="${cy + r * 0.55}" stroke="${color}" stroke-width="2" stroke-linecap="round"/>`;
+        }
+        // label + readout hang off the CELL, so they sit on the same
+        // baseline as a knob's in the same row
+        out += label(x, y + c + (labelH ? 8 : 0), p.label, c);
+        out += readout(x, y + c + (labelH ? 8 : 0) + (labelH ? 11 : 9), T ? T.fmt(T.def) : null, c);
+        return out;
+      },
+    };
+  }
+
+  /* auto in the PANE — same three shapes as the rail, sized so the
+     block packs honestly. `pill` carries its own word, so it never
+     reserves a label row. */
+  function autoBlock() {
+    const shape = g.autoShape || 'circle';
+    const s = AUTO_SIZE[shape];
+    const labelled = shape !== 'pill' && labelH > 0;
+    return {
+      kind: 'button', pid: 'auto', w: s.w, h: s.h + (labelled ? labelH : 0),
+      family: 'action',
+      draw: (x, y) => {
+        let out = autoMark(x + s.w / 2, y + s.h / 2, g, accentFor(0), g.chipStyle === 'wash');
+        if (labelled) out += label(x, y + s.h + 9, 'auto', s.w);
+        return out;
+      },
+    };
+  }
+
+  /* Compose two blocks vertically into one unit — `autoPlace: below`
+     stacks auto under remix. Centred on the wider of the two so the
+     pair reads as one column rather than two left-aligned things. */
+  function stackBlock(a, b, gap = 5) {
+    const w = Math.max(a.w, b.w);
+    return {
+      kind: 'stack', pid: a.pid, w, h: a.h + gap + b.h, family: a.family,
+      draw: (x, y, sc = 1) =>
+        a.draw(x + (w - a.w) / 2, y, sc) + b.draw(x + (w - b.w) / 2, y + a.h + gap, sc),
+    };
+  }
+
+  function segmentBlock(pid) {
+    const p = PARAMS[pid], cw = 32, ch = 18;
+    const w = p.opts.length * (cw + 3), h = ch + labelH;
+    return {
+      kind: 'segment', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        let out = '';
+        p.opts.forEach((o, i) => {
+          const cx = x + i * (cw + 3);
+          if (i === p.def && g.chipStyle === 'wash') out += `<rect x="${cx}" y="${y}" width="${cw}" height="${ch}" rx="4" fill="${INK(0.18)}"/>`;
+          out += `<text x="${cx + cw / 2}" y="${y + ch / 2 + 3}" text-anchor="middle" font-size="8" font-weight="500"
+            letter-spacing="0.5" fill="${i === p.def ? HI(0.9) : INK(0.35)}">${o.toUpperCase()}</text>`;
+        });
+        out += label(x, y + ch + 10, p.label, w);
+        return out;
+      },
+    };
+  }
+
+  /* A toggle: a line + a travelling cap. A VIEW toggle stays on the
+     quiet tier (gray, never lit) because it is not an instrument
+     control; anything else — an arp on/off — lights in the accent when
+     on, like the control it is. */
+  function toggleBlock(pid, colorIdx) {
+    const p = PARAMS[pid], w = 52, h = 14 + labelH;
+    const quiet = p.family === 'view';
+    return {
+      kind: 'toggle', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        const tw = 26, cy = y + 7;
+        const lit = quiet ? INK(0.7) : accentFor(colorIdx ?? 0);
+        let out = `<line x1="${x + w / 2 - tw / 2}" y1="${cy}" x2="${x + w / 2 + tw / 2}" y2="${cy}"
+          stroke="${TRACK}" stroke-width="3" stroke-linecap="round"/>`;
+        const kx = x + w / 2 + (p.def ? tw / 2 - 4 : -tw / 2 + 4);
+        out += `<line x1="${kx - 3}" y1="${cy}" x2="${kx + 3}" y2="${cy}" stroke="${p.def ? lit : INK(0.3)}" stroke-width="3" stroke-linecap="round"/>`;
+        out += label(x, y + 14 + 8, p.label, w);
+        return out;
+      },
+    };
+  }
+
+  /* A single horizontal slider — the VerticalFader's grammar laid flat:
+     capsule track, capsule fill, and the fill's own rounded end IS the
+     handle. No ball, per the theme. */
+  function sliderBlock(pid, colorIdx) {
+    const p = PARAMS[pid], w = 66, sw = 4;
+    const h = sw + 10 + labelH + readH;
+    return {
+      kind: 'slider', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        const cy = y + sw, color = accentFor(colorIdx);
+        let out = `<line x1="${x}" y1="${cy}" x2="${x + w}" y2="${cy}"
+          stroke="${TRACK}" stroke-width="${sw}" stroke-linecap="round"/>`;
+        out += `<line x1="${x}" y1="${cy}" x2="${x + Math.max(sw, w * p.def)}" y2="${cy}"
+          stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>`;
+        out += label(x, cy + (labelH ? 14 : 8), p.label, w);
+        out += readout(x, cy + (labelH ? 25 : 15), p.fmt ? p.fmt(p.def) : null, w);
+        return out;
+      },
+    };
+  }
+
+  function stepsBlock(pid) {
+    const p = PARAMS[pid], w = 50, h = 40 + labelH;
+    return {
+      kind: 'steps', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        let out = '';
+        const bw = 3, gap = (w - 14) / (p.def - 1);
+        for (let i = 0; i < p.def; i++) {
+          const bh = 7 + i * 5.5;
+          out += `<rect x="${x + 7 + i * gap - bw / 2}" y="${y + 34 - bh}" width="${bw}" height="${bh}" rx="1.5"
+            fill="${i < 2 ? INK(0.8) : TRACK}"/>`;
+        }
+        out += label(x, y + 34 + 10, p.label, w);
+        return out;
+      },
+    };
+  }
+
+  /* per-voice bipolar fine-tune: centre-marked lanes, tick off centre.
+     Two orientations (the `fineOrient` gene) — the lanes stacked as
+     horizontal rows read as a tuning LADDER, one line per voice, which
+     suits the short-wide zone; the vertical form reads as a mixer strip.
+     Same grammar either way: track, faint centre mark, coloured tick
+     perpendicular to the track. */
+  function voiceBipolarBlock(pid, voices) {
+    const p = PARAMS[pid];
+    // `fineWidth` claims a share of the ZONE, not a fixed size — at 1.0
+    // the block spans the full width and becomes the plate's spine.
+    const span = Math.max(voices * 15, zone.w * g.fineWidth);
+
+    /* Lane placement across `span`. `varied` reuses stemXs — the very
+       rule that places the voice stems in the spectrum bar above — so a
+       lane sits under its own stem. Irregular, but for a reason: the
+       alternative (random gaps) is noise wearing the same clothes. */
+    const laneCentres = (n, w) => {
+      if (g.fineSpacing !== 'varied') {
+        return Array.from({ length: n }, (_, i) => w * (i + 0.5) / n);
+      }
+      return stemXs(n, w).map(v => Math.max(6, Math.min(w - 6, v)));
+    };
+
+    if (g.fineOrient === 'horizontal') {
+      // stacked rows; `varied` gives them uneven vertical gaps instead
+      const base = 11;
+      const gaps = Array.from({ length: voices }, (_, i) =>
+        g.fineSpacing === 'varied' ? base * (0.68 + rs(i * 17 + 5) * 0.85) : base);
+      const ys = []; let acc = 0;
+      for (const gp of gaps) { ys.push(acc + gp / 2); acc += gp; }
+      const w = span, h = acc + labelH;
+      return {
+        kind: 'voiceBipolar', pid, w, h, family: p.family,
+        draw: (x, y) => {
+          let out = '';
+          for (let i = 0; i < voices; i++) {
+            const cy = y + ys[i];
+            const color = voiceInk(i);
+            out += `<line x1="${x}" y1="${cy}" x2="${x + w}" y2="${cy}" stroke="${TRACK}" stroke-width="3" stroke-linecap="round"/>`;
+            out += `<line x1="${x + w / 2}" y1="${cy - 3}" x2="${x + w / 2}" y2="${cy + 3}" stroke="${INK(0.14)}" stroke-width="1"/>`;
+            const off = (rs(i * 11 + 2) - 0.5) * w * 0.62;
+            out += `<line x1="${x + w / 2 + off}" y1="${cy - 4.5}" x2="${x + w / 2 + off}" y2="${cy + 4.5}"
+              stroke="${color}" stroke-width="3" stroke-linecap="round"/>`;
+          }
+          out += label(x, y + acc + 9, p.label, w);
+          return out;
+        },
+      };
+    }
+
+    const trackH = 46, w = span, h = trackH + labelH + 4;
+    const xs = laneCentres(voices, w);
+    return {
+      kind: 'voiceBipolar', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        let out = '';
+        for (let i = 0; i < voices; i++) {
+          const cx = x + xs[i], color = voiceInk(i);
+          out += `<line x1="${cx}" y1="${y}" x2="${cx}" y2="${y + trackH}" stroke="${TRACK}" stroke-width="3" stroke-linecap="round"/>`;
+          out += `<line x1="${cx - 4}" y1="${y + trackH / 2}" x2="${cx + 4}" y2="${y + trackH / 2}" stroke="${INK(0.14)}" stroke-width="1"/>`;
+          const off = (rs(i * 11 + 2) - 0.5) * trackH * 0.7;
+          out += `<line x1="${cx - 3}" y1="${y + trackH / 2 + off}" x2="${cx + 3}" y2="${y + trackH / 2 + off}"
+            stroke="${color}" stroke-width="3" stroke-linecap="round"/>`;
+        }
+        out += label(x, y + trackH + 10, p.label, w);
+        return out;
+      },
+    };
+  }
+
+  /* ── the pan mark ─────────────────────────────────────────────────
+     A pan is a knob, so it wears whatever `knobStyle` the knobs wear —
+     it just runs bipolar. Delegating to `ring()` is the whole
+     implementation: the pan's −1…1 maps onto the same 270° travel, and
+     `panFill: noon` makes the filled styles grow out of the middle
+     instead of out of the start.
+
+     ⛔ No centre pip (Dan): the fill starting at the middle IS the
+     centre marker, and on the unfilled styles the plate is already a
+     grid of knobs — a lone dot floating over one of them was a second
+     vocabulary for no gain. */
+  function panMark(cx, cy, pr, pan, color) {
+    return ring(cx, cy, pr, (pan + 1) / 2, color, 2, false, true);
+  }
+
+  /* ── the mixer CLUSTER ────────────────────────────────────────────
+     level + pan for every voice, positioned by `mixerScatter`:
+
+       0   a strict console — even columns, equal fader heights, each
+           pan squarely beneath its own fader
+       1   a composition — the faders take the spectrum bar's own stem
+           spacing (so a voice sits where its pitch sits), their heights
+           vary, and each pan swings out to a seeded angle and distance
+           around its fader's foot instead of always hanging below it
+
+     The pan never leaves its fader's neighbourhood at any scatter: it
+     orbits the foot rather than being thrown somewhere else, so which
+     pan belongs to which voice survives the scattering. That is the
+     whole difference between a composition and a mess. */
+  function clusterBlock(voices) {
+    const s = g.mixerScatter;
+    const W = Math.max(voices * 26, zone.w * (0.55 + 0.45 * s));
+    const baseH = 60, panR = 8, panGap = 15;
+
+    const stems = stemXs(voices, W);
+    const units = [];
+    for (let i = 0; i < voices; i++) {
+      const even = W * (i + 0.5) / voices;
+      const fx = Math.max(panR + 2, Math.min(W - panR - 2,
+        even + (stems[i] - even) * s + (rs(i * 31 + 4) - 0.5) * s * 26));
+      const fh = baseH * (1 - s * 0.35 + rs(i * 13 + 6) * s * 0.7);
+      const fy = (rs(i * 7 + 11) - 0.5) * s * 34;          // vertical drift
+      // the pan orbits the fader's foot: straight below at s=0, out to a
+      // seeded bearing as s→1
+      const bearing = 90 + (rs(i * 23 + 9) * 360 - 90) * s;
+      const dist = panGap * (1 + (rs(i * 29 + 3) * 1.5 - 0.35) * s);
+      const rad = bearing * Math.PI / 180;
+      units.push({
+        i, fx, fy, fh,
+        px: fx + Math.cos(rad) * dist * 0.95,
+        py: fy + fh + Math.sin(rad) * dist,
+        pan: (rs(i * 17 + 1) - 0.5) * 2,
+        val: 0.25 + rs(i * 5) * 0.65,
+      });
+    }
+    // normalise to the real bounding box so the layout packs it honestly
+    const fw = g.faderW;
+    const minX = Math.min(...units.map(u => Math.min(u.fx - fw / 2, u.px - panR - 1)));
+    const maxX = Math.max(...units.map(u => Math.max(u.fx + fw / 2, u.px + panR + 1)));
+    const minY = Math.min(...units.map(u => Math.min(u.fy, u.py - panR - 1)));
+    const maxY = Math.max(...units.map(u => Math.max(u.fy + u.fh, u.py + panR + 1)));
+    const w = maxX - minX, h = (maxY - minY) + labelH;
+
+    return {
+      kind: 'cluster', pid: 'levels', w, h, family: 'voices',
+      draw: (x, y) => {
+        let out = '';
+        for (const u of units) {
+          const color = voiceInk(u.i);
+          const cx = x + u.fx - minX, ty = y + u.fy - minY;
+          out += `<rect x="${cx - fw / 2}" y="${ty}" width="${fw}" height="${u.fh}" rx="${fw / 2}" fill="${TRACK}"/>`;
+          const filled = Math.max(fw, u.fh * u.val);
+          out += `<rect x="${cx - fw / 2}" y="${ty + u.fh - filled}" width="${fw}" height="${filled}"
+            rx="${fw / 2}" fill="${color}" opacity="0.92"/>`;
+          out += panMark(x + u.px - minX, y + u.py - minY, panR, u.pan, dim(color, 100));
+        }
+        out += label(x, y + (maxY - minY) + 9, 'mix', w);
+        return out;
+      },
+    };
+  }
+
+  /* pans on their own — a plain row of PanPot arcs */
+  function voicePansBlock(pid, voices) {
+    const p = PARAMS[pid], laneW = 22, pr = 8;
+    const w = laneW * voices, h = pr * 2 + 6 + labelH;
+    return {
+      kind: 'voicePans', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        let out = '';
+        for (let i = 0; i < voices; i++) {
+          const color = voiceInk(i);
+          out += panMark(x + laneW * (i + 0.5), y + pr + 2, pr, (rs(i * 17 + 1) - 0.5) * 2, color);
+        }
+        out += label(x, y + pr * 2 + 12, p.label, w);
+        return out;
+      },
+    };
+  }
+
+  function voiceFadersBlock(pid, voices) {
+    const p = PARAMS[pid], laneW = 20, trackH = 74;
+    const w = laneW * voices, h = trackH + labelH + 4;
+    return {
+      kind: 'voiceFaders', pid, w, h, family: p.family,
+      draw: (x, y) => {
+        let out = '';
+        for (let i = 0; i < voices; i++) {
+          const cx = x + laneW * (i + 0.5), fw = g.faderW;
+          const color = voiceInk(i);
+          const v = 0.25 + rs(i * 5) * 0.65;
+          out += `<rect x="${cx - fw / 2}" y="${y}" width="${fw}" height="${trackH}" rx="${fw / 2}" fill="${TRACK}"/>`;
+          out += `<rect x="${cx - fw / 2}" y="${y + trackH * (1 - v)}" width="${fw}" height="${trackH * v}" rx="${fw / 2}"
+            fill="${color}" opacity="0.92"/>`;
+        }
+        out += label(x, y + trackH + 10, p.label, w);
+        return out;
+      },
+    };
+  }
+
+  function orbsBlock(voices) {
+    const gap = 26, w = gap * voices, h = 22;
+    return {
+      kind: 'orbs', pid: 'orbs', w, h, family: 'voices',
+      draw: (x, y) => {
+        let out = '';
+        for (let i = 0; i < voices; i++) {
+          out += `<circle cx="${x + gap * (i + 0.5)}" cy="${y + 10}" r="${4 + rs(i * 3) * 3}"
+            fill="${voiceInk(i)}" opacity="0.95"/>`;
+        }
+        return out;
+      },
+    };
+  }
+
+  /* ── manifest → blocks, honouring the declared pairs ─────────────── */
+  const present = new Set(manifest.controls);
+  const consumed = new Set();
+  const blocks = [];
+  let colorIdx = 0;
+
+  /* ── auto's placement ────────────────────────────────────────────
+     `column` hands it to the fixed left column (drawn by the chrome,
+     not laid out here). `beside` / `below` glue it to remix — which
+     means the remix BLOCK has to absorb it, because remix is usually
+     already a pair (its timer ring) and the layout only knows how to
+     keep whole units together. */
+  const autoInPane = present.has('auto') && g.autoPlace !== 'column';
+  const autoAttached = autoInPane && present.has('remix');
+  if (present.has('auto')) consumed.add('auto');
+  const attachAuto = (remixBlock) => {
+    const ab = autoBlock();
+    if (g.autoPlace === 'below') return stackBlock(remixBlock, ab);
+    remixBlock.glue = ab.glue = 'glueAuto';   // side by side, tight
+    blocks.push(remixBlock);
+    return ab;
+  };
+
+  if (g.pairStyle === 'declared') {
+    for (const pr of PAIRS) {
+      if (!present.has(pr.a) || !present.has(pr.b)) continue;
+      if (consumed.has(pr.a) || consumed.has(pr.b)) continue;
+      consumed.add(pr.a); consumed.add(pr.b);
+      if (pr.style === 'cluster') {
+        blocks.push(clusterBlock(manifest.voices));
+      } else if (pr.style === 'concentric') {
+        blocks.push(concentricBlock(pr.a, pr.b, pr.label, colorIdx++));
+      } else if (pr.style === 'timerRing') {
+        const rx = buttonBlock(pr.a, pr.b, colorIdx++);
+        blocks.push(autoAttached ? attachAuto(rx) : rx);
+      } else {   // adjacent — two blocks, marked so layout keeps them together
+        const g1 = buttonBlock(pr.a, null, colorIdx);
+        const g2 = PARAMS[pr.b].kind === 'button'
+          ? buttonBlock(pr.b, null, colorIdx) : knobBlock(pr.b, colorIdx);
+        g1.glue = g2.glue = `glue${colorIdx++}`;
+        blocks.push(g1, g2);
+      }
+    }
+  }
+  for (const pid of manifest.controls) {
+    if (consumed.has(pid)) continue;
+    const p = PARAMS[pid];
+    if (!p) continue;
+    switch (p.kind) {
+      case 'knob':         blocks.push(knobBlock(pid, colorIdx++)); break;
+      case 'slider':       blocks.push(sliderBlock(pid, colorIdx++)); break;
+      case 'button': {
+        // remix may still need to absorb auto: it only got its own
+        // block above if the timerRing pair fired (i.e. autoCycle
+        // exists). Without a cycle, remix arrives here plain.
+        const bb = buttonBlock(pid, null, colorIdx++);
+        blocks.push(pid === 'remix' && autoAttached ? attachAuto(bb) : bb);
+        break;
+      }
+      case 'segment':      blocks.push(segmentBlock(pid)); break;
+      case 'toggle':       blocks.push(toggleBlock(pid, colorIdx++)); break;
+      case 'steps':        blocks.push(stepsBlock(pid)); break;
+      case 'voiceBipolar': blocks.push(voiceBipolarBlock(pid, manifest.voices)); break;
+      case 'voiceFaders':  blocks.push(voiceFadersBlock(pid, manifest.voices)); break;
+      case 'voicePans':    blocks.push(voicePansBlock(pid, manifest.voices)); break;
+      case 'orbs':         blocks.push(orbsBlock(manifest.voices)); break;
+    }
+  }
+
+  /* ── group into family sections; ⛔ view is ALWAYS last ──────────── */
+  const byFamily = new Map();
+  for (const b of blocks) {
+    if (!byFamily.has(b.family)) byFamily.set(b.family, []);
+    byFamily.get(b.family).push(b);
+  }
+  let sections = FAMILY_ORDER.filter(f => byFamily.has(f)).map(f => ({ key: f, blocks: byFamily.get(f) }));
+  const viewSec = sections.filter(s => s.key === 'view');
+  sections = sections.filter(s => s.key !== 'view');
+
+  const orderRng = mulberry32(Math.floor(g.orderSeed * 0xffffffff) ^ seed);
+  for (let i = sections.length - 1; i > 0; i--) {
+    const j = Math.floor(orderRng() * (i + 1));
+    [sections[i], sections[j]] = [sections[j], sections[i]];
+  }
+  if (t < 0.45) {   // braun: the voice block leads if there is one
+    const vi = sections.findIndex(s => s.key === 'voices');
+    if (vi > 0) { const [v] = sections.splice(vi, 1); sections.unshift(v); }
+  }
+  sections = sections.concat(viewSec);
+
+  /* hero: one knob/pair drawn oversize (bauhaus half of the axis) */
+  /* WHICH control is the hero, not merely whether there is one. Before
+     `heroPick` this took the first eligible block in reading order,
+     which made the identity a side-effect of `orderSeed` — a gene
+     explicitly documented as "not a quality axis". So the taste model
+     could never learn that promoting the FILTER reads differently from
+     promoting REMIX, even though that is the most semantically loaded
+     choice on the plate. Now the family is its own gene.
+
+     `first` keeps the old behaviour. A named family that this song does
+     not have falls back to `first` rather than dropping the hero. */
+  let heroBlock = null;
+  if (g.hero === 'on' && t > 0.35) {
+    const eligible = (b) => !b.glue &&
+      (b.kind === 'knob' || b.kind === 'pair' ||
+       (b.kind === 'button' && g.heroPick === 'action'));
+    const all = sections.flatMap(sec => sec.blocks).filter(eligible);
+    heroBlock = (g.heroPick !== 'first' && all.find(b => b.family === g.heroPick))
+      || all[0] || null;
+  }
+  LAST_HERO = heroBlock ? heroBlock.pid : null;
+  const heroScale = 1.3 + t * 0.5;
+
+  /* ── layout ──────────────────────────────────────────────────────── */
+  const rowGap = 12 * g.gapScale, sectionGap = 15 * g.gapScale, blockGap = 11 * g.gapScale;
+  const glueGap = 5;
+  const placed = [], marks = [];
+  let contentW = 0, contentH = 0;
+
+  if (g.flow === 'rows') {
+    /* ── 1. sections → UNITS ─────────────────────────────────────────
+       A unit is a run of blocks that must stay adjacent. Normally that
+       is a whole section; a section too wide for the zone splits into
+       several units so it wraps rather than overflowing. Pairs keep
+       their tight `glueGap` inside a unit. */
+    const units = [];
+    for (const sec of sections) {
+      let items = [], w = 0;
+      for (const b of sec.blocks) {
+        const scale = b === heroBlock ? heroScale : 1;
+        const bw = b.w * scale;
+        const gap = items.length
+          ? (b.glue && items[items.length - 1].b.glue === b.glue ? glueGap : blockGap) : 0;
+        if (items.length && w + gap + bw > zone.w) {
+          units.push({ key: sec.key, items, w }); items = []; w = 0;
+        }
+        const gg = items.length
+          ? (b.glue && items[items.length - 1].b.glue === b.glue ? glueGap : blockGap) : 0;
+        items.push({ b, scale, bw, gap: gg });
+        w += gg + bw;
+      }
+      if (items.length) units.push({ key: sec.key, items, w });
+    }
+
+    /* ── 2. pack units into rows, BALANCED ───────────────────────────
+       One section per row wasted this zone: 7 controls in 4 families
+       laid out 2-1-1-1 and filled a third of the width. So units share
+       rows, separated by the wider `sectionGap` (blocks inside a unit
+       keep `blockGap`) — the gap itself says where one group ends.
+
+       Greedy wrap finds the minimum row count R, then a second pass
+       re-packs into exactly R rows aiming at an equal width each, so
+       the last row isn't left holding one lonely knob. */
+    const packRows = () => {
+      let n = 0, w = 0, rowsMin = 1;
+      for (const u of units) {
+        const gap = n ? sectionGap : 0;
+        if (n && w + gap + u.w > zone.w) { rowsMin++; n = 0; w = 0; }
+        w += (n ? sectionGap : 0) + u.w; n++;
+      }
+      const R = rowsMin;
+      const total = units.reduce((a, u) => a + u.w, 0) + sectionGap * (units.length - 1);
+      const target = total / R;
+      const rows = [];
+      let i = 0;
+      for (let r = 0; r < R; r++) {
+        const row = [];
+        let rw = 0;
+        const rowsAfter = R - r - 1;
+        while (i < units.length) {
+          // never take a unit a later row still needs
+          if (row.length && (units.length - i) <= rowsAfter) break;
+          const gap = row.length ? sectionGap : 0;
+          if (row.length && rw + gap + units[i].w > zone.w) break;
+          if (row.length && rw >= target) break;   // this row has its share
+          rw += gap + units[i].w;
+          row.push(units[i]); i++;
+        }
+        if (row.length) rows.push(row);
+      }
+      while (i < units.length) rows[rows.length - 1].push(units[i++]);  // safety
+      return rows;
+    };
+
+    /* ── 3. place ───────────────────────────────────────────────────── */
+    let cursorY = 0;
+    const rows = packRows();
+    rows.forEach((row, ri) => {
+      const totalW = row.reduce((a, u) => a + u.w, 0) + sectionGap * (row.length - 1);
+      let x = g.align === 'center' ? (zone.w - totalW) / 2 : 0;
+      x += (rng() - 0.5) * 2 * t * g.jitter * Math.max(0, (zone.w - totalW) * 0.45);
+      x = Math.max(0, Math.min(Math.max(0, zone.w - totalW), x));
+      let rowH = 0;
+      row.forEach((u, ui) => {
+        if (ui) x += sectionGap;
+        for (const e of u.items) {
+          x += e.gap;
+          placed.push({ block: e.b, x, y: cursorY + (rng() - 0.5) * 2 * t * g.jitter * 5, scale: e.scale });
+          x += e.bw;
+          rowH = Math.max(rowH, e.b.h * e.scale);
+        }
+      });
+      contentW = Math.max(contentW, totalW);
+      cursorY += rowH;
+      if (ri < rows.length - 1) {
+        // the hairline now separates ROWS (shelves), not sections —
+        // sections share rows, so a rule between them would cut a row
+        // in half rather than group anything.
+        cursorY += rowGap / 2;
+        marks.push({ kind: 'h', at: cursorY });
+        cursorY += rowGap / 2;
+      }
+    });
+    contentH = cursorY;
+  } else {
+    let cursorX = 0;
+    sections.forEach((sec, si) => {
+      const colW = Math.max(...sec.blocks.map(b => b.w * (b === heroBlock ? heroScale : 1)));
+      let y = Math.max(0, (rng() - 0.5) * 2 * t * g.jitter * 12);
+      for (const b of sec.blocks) {
+        const scale = b === heroBlock ? heroScale : 1;
+        placed.push({ block: b, x: cursorX + (colW - b.w * scale) / 2, y, scale });
+        y += b.h * scale + rowGap;
+      }
+      contentH = Math.max(contentH, y - rowGap);
+      cursorX += colW;
+      if (si < sections.length - 1) {
+        cursorX += sectionGap / 2;
+        marks.push({ kind: 'v', at: cursorX });
+        cursorX += sectionGap / 2;
+      }
+    });
+    contentW = cursorX;
+  }
+
+  const fit = Math.min(1, zone.w / Math.max(1, contentW), zone.h / Math.max(1, contentH));
+  const ox = zone.x + (zone.w - contentW * fit) / 2;
+  const oy = zone.y + (zone.h - contentH * fit) / 2;
+
+  let markSvg = '';
+  if (g.dividers === 'hairline') {
+    for (const m of marks) {
+      markSvg += m.kind === 'h'
+        ? `<line x1="0" y1="${m.at}" x2="${contentW}" y2="${m.at}" stroke="${INK(0.08)}" stroke-width="1"/>`
+        : `<line x1="${m.at}" y1="0" x2="${m.at}" y2="${contentH}" stroke="${INK(0.08)}" stroke-width="1"/>`;
+    }
+  }
+
+  let backdrop = '';
+  if (g.backdrop !== 'none' && t > 0.25) {
+    const op = 0.035 + t * 0.035;
+    const bx = zone.x + rng() * zone.w, by = zone.y + rng() * zone.h;
+    let shape;
+    if (g.backdrop === 'circle') shape = `<circle cx="${bx}" cy="${by}" r="${50 + rng() * 70}" fill="rgba(150,150,150,${op})"/>`;
+    else if (g.backdrop === 'quarter') {
+      const r = 80 + rng() * 90;
+      shape = `<path d="M ${zone.x + zone.w} ${zone.y + zone.h} L ${zone.x + zone.w - r} ${zone.y + zone.h} A ${r} ${r} 0 0 1 ${zone.x + zone.w} ${zone.y + zone.h - r} Z" fill="rgba(150,150,150,${op})"/>`;
+    } else {
+      const bw2 = 24 + rng() * 40;
+      shape = `<rect x="${Math.min(bx, zone.x + zone.w - bw2)}" y="${zone.y}" width="${bw2}" height="${zone.h}" fill="rgba(150,150,150,${op})"/>`;
+    }
+    backdrop = `<clipPath id="zc${seed}"><rect x="${zone.x}" y="${zone.y - margin}" width="${zone.w}" height="${REGION_H}"/></clipPath>
+      <g clip-path="url(#zc${seed})">${shape}</g>`;
+  }
+
+  const regionTop = FIELD_H + SPECT_H;
+  const body = placed.map(p => p.block.draw(p.x, p.y, p.scale)).join('');
+  /* One hairline each side of the pane, mirrored — the rails are read
+     as rails by the lines, not by any background of their own. */
+  const rule = (x) => `<line x1="${x}" y1="${regionTop + 14}" x2="${x}"
+    y2="${regionTop + REGION_H - 14}" stroke="${INK(0.16)}" stroke-width="1"/>`;
+  const colDivider = rule(LCOL_W + 6) + (RIGHT_RAIL ? rule(PHONE_W - RCOL_W - 6) : '');
+
+  let cycleBar = '';
+  if (cycleBarOn) {
+    const by = regionY + margin + 4, bh = 3;
+    cycleBar = `<rect x="${zone.x}" y="${by}" width="${zone.w}" height="${bh}" rx="${bh / 2}" fill="${INK(0.12)}"/>
+      <rect x="${zone.x}" y="${by}" width="${zone.w * CYCLE_PROGRESS}" height="${bh}" rx="${bh / 2}" fill="${INK(0.55)}"/>`;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${PHONE_W} ${TOTAL_H}" width="${PHONE_W}" height="${TOTAL_H}">
+    <rect width="${PHONE_W}" height="${TOTAL_H}" fill="#000"/>
+    ${chromeFieldSliver()}
+    ${chromeSpectrumBar(FIELD_H, manifest.voices, g)}
+    ${backdrop}
+    ${chromeLeftColumn(regionTop, g, accentFor(0), present.has('auto') && g.autoPlace === 'column')}
+    ${RIGHT_RAIL ? chromeRightColumn(regionTop, g, accentFor(0)) : ''}
+    ${colDivider}
+    ${cycleBar}
+    <g transform="translate(${ox} ${oy}) scale(${fit})">${body}${markSvg}</g>
+    ${chromeRail(regionTop + REGION_H)}
+  </svg>`;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   7 · TASTE MODEL — logistic regression over gene features
+   ════════════════════════════════════════════════════════════════════ */
+const STORE_KEY = 'wt-parametric-lab-v3';
+let ratings = [];
+try { ratings = JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch { ratings = []; }
+function saveRatings() { localStorage.setItem(STORE_KEY, JSON.stringify(ratings)); }
+
+let model = null;
+function trainModel() {
+  if (ratings.length < 8) { model = null; return; }
+  const X = ratings.map(r => featurize(r.genome));
+  const Y = ratings.map(r => (r.vote > 0 ? 1 : 0));
+  const d = X[0].length, w = new Array(d).fill(0);
+  let b = 0;
+  const lr = 0.15, l2 = 0.01, epochs = 300;
+  for (let ep = 0; ep < epochs; ep++) {
+    for (let i = 0; i < X.length; i++) {
+      let z = b;
+      for (let j = 0; j < d; j++) z += w[j] * X[i][j];
+      const p = 1 / (1 + Math.exp(-z)), err = p - Y[i];
+      for (let j = 0; j < d; j++) w[j] -= lr * (err * X[i][j] + l2 * w[j]);
+      b -= lr * err;
+    }
+  }
+  model = { w, b };
+}
+function score(genome) {
+  if (!model) return null;
+  const x = featurize(genome);
+  let z = model.b;
+  for (let j = 0; j < x.length; j++) z += model.w[j] * x[j];
+  return 1 / (1 + Math.exp(-z));
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   8 · BATCHES, GRID, INTERACTION
+   ════════════════════════════════════════════════════════════════════ */
+const BATCH = 12;
+let batch = [], focusIdx = -1;
+let mode = 'batch';                 // 'batch' | 'sweep'
+/* ?gene=<name> opens a specific sweep — deep-links a single decision. */
+const geneParam = new URLSearchParams(location.search).get('gene');
+let sweepGene = (geneParam && GENES.some(g => g.k === geneParam)) ? geneParam : 'knobSize';
+let sweepSeed = newSeed();
+
+/* ── LOCKS and EXCLUSIONS ────────────────────────────────────────────
+   A sweep's output is a DECISION, not a rating, and it comes in two
+   strengths:
+
+     LOCK       pin the gene to exactly this value. Total commitment.
+     EXCLUDE    rule this value OUT and keep sampling the rest.
+
+   The second is usually the honest one. On an 8-option gene you rarely
+   think "it must be `cap`" — you think "not tickOnly, not wedge, the
+   other six are all fine". Excluding narrows the space without
+   pretending to a decision you have not made, and several exclusions
+   compose where a lock cannot.
+
+   For a FLOAT gene, excluding a swept step narrows the RANGE from
+   whichever end the step sits nearer — an interior hole in a continuous
+   parameter is not a thing you can sample around meaningfully, but "the
+   bottom third is too small" is exactly what a float sweep tells you.
+
+   Everything downstream honours both: random batches, evolve children,
+   and the base genome of every later sweep.
+   ─────────────────────────────────────────────────────────────────── */
+const LOCK_KEY = 'wt-parametric-lab-locks-v2';
+let LOCKS = {};      // gene → pinned value
+let EXCLUDES = {};   // enum gene → [banned options]
+let BOUNDS = {};     // float gene → [min, max]
+try {
+  const raw = JSON.parse(localStorage.getItem(LOCK_KEY) || '{}');
+  LOCKS = raw.locks || {}; EXCLUDES = raw.excludes || {}; BOUNDS = raw.bounds || {};
+} catch { LOCKS = {}; EXCLUDES = {}; BOUNDS = {}; }
+const saveLocks = () => localStorage.setItem(LOCK_KEY,
+  JSON.stringify({ locks: LOCKS, excludes: EXCLUDES, bounds: BOUNDS }));
+
+/* The options / range a gene may still be drawn from. */
+function allowedOptions(gene) {
+  const ex = EXCLUDES[gene.k] || [];
+  const keep = gene.o.filter(o => !ex.includes(o));
+  return keep.length ? keep : gene.o;      // never strand a gene with nothing
+}
+function floatBounds(gene) {
+  const b = BOUNDS[gene.k];
+  return b ? [Math.max(gene.min, b[0]), Math.min(gene.max, b[1])] : [gene.min, gene.max];
+}
+function isNarrowed(gene) {
+  if (gene.t === 'e') return (EXCLUDES[gene.k] || []).length > 0;
+  const [lo, hi] = floatBounds(gene);
+  return lo > gene.min || hi < gene.max;
+}
+
+/* ── song PINS ───────────────────────────────────────────────────────
+   A deliberate hole in the manifest/genome split: a song may pin named
+   genes to give itself a CHARACTER. It is what separates "hello world 2"
+   from "hello world 3" — identical control lists, different composure —
+   and there is no honest way to express that as content.
+
+   Pins beat the random draw and the user's locks, because they define
+   which variant you are looking at. The one thing that beats a pin is
+   the SWEEP: sweeping a pinned gene must still show its whole range, or
+   you could never see what the pin chose from.
+   ─────────────────────────────────────────────────────────────────── */
+function applyPins(gm, exceptGene) {
+  const pins = manifest.pins;
+  if (!pins) return gm;
+  const out = { ...gm };
+  for (const k of Object.keys(pins)) {
+    if (k !== exceptGene) out[k] = pins[k];
+  }
+  return out;
+}
+
+/* Pin the locks, then drag anything out of bounds back inside — a
+   crossover child can inherit a value that has since been excluded. */
+function applyLocks(gm) {
+  const out = { ...gm, ...LOCKS };
+  for (const gene of GENES) {
+    if (LOCKS[gene.k] !== undefined) continue;
+    if (gene.t === 'e') {
+      const keep = allowedOptions(gene);
+      if (!keep.includes(out[gene.k])) out[gene.k] = keep[0];
+    } else {
+      const [lo, hi] = floatBounds(gene);
+      out[gene.k] = Math.max(lo, Math.min(hi, out[gene.k]));
+    }
+  }
+  return out;
+}
+
+const drawGenome = (seed) => applyPins(applyLocks(randomGenome(mulberry32(seed))));
+
+/* ── GENERATIONS ─────────────────────────────────────────────────────
+   Every batch is kept, so evolve is undoable. Without this a bad
+   evolve destroys your position: the previous generation is replaced,
+   and only the cards you happened to RATE survive (in `ratings`, which
+   stores whole genomes). Interactive evolution needs "that generation
+   was better, go back and breed from there" — otherwise you can only
+   ever move forward and hope.
+
+   Stepping back and then evolving BRANCHES: the forward history is
+   dropped, exactly like editing in the middle of an undo stack. So the
+   history is a single line you can rewind and diverge from, not a
+   tree — a tree would need naming and pruning UI to be usable, and the
+   move you actually want is "rewind and try again".
+
+   Generations hold the batch objects BY REFERENCE, so a vote cast on a
+   restored card lands in the history too.
+   ─────────────────────────────────────────────────────────────────── */
+const GEN_KEY = 'wt-parametric-lab-gens-v1';
+const GEN_CAP = 40;
+let generations = [], genIdx = -1;
+try {
+  const raw = JSON.parse(localStorage.getItem(GEN_KEY) || '{}');
+  generations = raw.gens || []; genIdx = raw.idx ?? generations.length - 1;
+} catch { generations = []; genIdx = -1; }
+const saveGens = () => {
+  try { localStorage.setItem(GEN_KEY, JSON.stringify({ gens: generations, idx: genIdx })); }
+  catch { /* quota — history is a convenience, never block on it */ }
+};
+
+function recordGeneration(label) {
+  if (genIdx < generations.length - 1) generations = generations.slice(0, genIdx + 1);
+  generations.push({ label, songKey: currentSongKey, items: batch });
+  if (generations.length > GEN_CAP) generations.shift();
+  genIdx = generations.length - 1;
+  saveGens(); renderGenNav();
+}
+
+function gotoGeneration(i) {
+  if (i < 0 || i >= generations.length) return;
+  genIdx = i;
+  const gen = generations[i];
+  // a generation belongs to the song it was bred under — restoring one
+  // from another song has to bring the manifest with it, or the cards
+  // re-render with the wrong controls
+  if (gen.songKey !== currentSongKey && SONGS[gen.songKey]) {
+    currentSongKey = gen.songKey;
+    manifest = JSON.parse(JSON.stringify(SONGS[currentSongKey]));
+    document.getElementById('songSel').value = currentSongKey;
+    buildManifestEditor();
+  }
+  batch = gen.items;
+  focusIdx = -1;
+  saveGens(); renderGrid(); renderGenNav();
+}
+
+function renderGenNav() {
+  const back = document.getElementById('genBack');
+  const fwd = document.getElementById('genFwd');
+  const lab = document.getElementById('genLabel');
+  if (!back) return;
+  const live = mode === 'batch' && generations.length > 0;
+  back.disabled = !live || genIdx <= 0;
+  fwd.disabled = !live || genIdx >= generations.length - 1;
+  lab.textContent = live
+    ? `${generations[genIdx]?.label || 'gen'} · ${genIdx + 1}/${generations.length}`
+    : 'gen —';
+}
+
+/* The NEUTRAL base: braun-plain, labels on, no jitter, no backdrop, no
+   hero. A sweep is only readable against a quiet control — a random base
+   throws four other loud genes into the comparison and you end up rating
+   the base, not the axis. Reroll gives random bases for a sanity check
+   that the choice survives a different context. */
+const NEUTRAL = {
+  school: 0.15, flow: 'rows', accent: 'none', voiceLit: 'lit',
+  knobStyle: 'ring', remixGlyph: 'dice', fineOrient: 'vertical',
+  fineWidth: 0.55, fineSpacing: 'even', mixerScatter: 0.15, panFill: 'noon',
+  orbInk: 'mono', autoPlace: 'column', autoShape: 'circle', cycleReadout: 'ring',
+  heroPick: 'first',
+  pairStyle: 'declared', playStyle: 'washCircle',
+  align: 'center', labels: 'below', readouts: 'on', dividers: 'none',
+  hero: 'off', jitter: 0, backdrop: 'none', chipStyle: 'wash',
+  knobSize: 1.1, margin: 14, gapScale: 1.1, orderSeed: 0.5, faderW: 5,
+};
+let sweepBase = 'neutral';          // 'neutral' | 'random'
+
+function sweepValues(key) {
+  const gene = GENES.find(g => g.k === key);
+  if (gene.t === 'e') return gene.o.slice();
+  const N = 8;
+  return Array.from({ length: N }, (_, i) => gene.min + (gene.max - gene.min) * i / (N - 1));
+}
+
+/* Every card in a sweep renders with the SAME seed, so the jitter draw,
+   the backdrop placement and the per-voice stable values are identical
+   and the swept gene is the only thing that moved. */
+function buildSweep() {
+  // `sweepGene` is exempt from the song's pins — otherwise sweeping a
+  // pinned gene would render eight identical cards.
+  const base = applyPins(applyLocks(sweepBase === 'neutral'
+    ? { ...NEUTRAL } : randomGenome(mulberry32(sweepSeed))), sweepGene);
+  batch = sweepValues(sweepGene).map(v => ({
+    seed: sweepSeed, genome: { ...base, [sweepGene]: v }, vote: 0, sweepVal: v,
+  }));
+  focusIdx = -1;
+  renderGrid();
+  renderGeneDesc();
+}
+
+/* What the swept gene does, plus the two ways a sweep can be silently
+   inert: the song contains nothing the gene acts on, or `school` is
+   sitting below the gene's gate and multiplying it to zero. Both look
+   identical on screen (8 identical cards) and both read as a bug. */
+function renderGeneDesc() {
+  const el = document.getElementById('geneDesc');
+  if (mode !== 'sweep') { el.innerHTML = ''; return; }
+  const gene = GENES.find(g => g.k === sweepGene);
+  const warns = [];
+  if (gene.needs && !gene.needs(manifest)) {
+    warns.push(`“${currentSongKey}” has no ${gene.needsLabel}, so every card will be identical — switch song, or add one in <b>edit manifest</b>.`);
+  }
+  const school = LOCKS.school ?? (sweepBase === 'neutral' ? NEUTRAL.school : null);
+  if (school != null && gene.gate != null && school <= gene.gate) {
+    warns.push(`<b>school</b> is ${school.toFixed(2)} and this gene only switches on above ${gene.gate} — the sweep is inert. Lock <b>school</b> higher first.`);
+  }
+  if (school != null && gene.scaledBySchool && school < 0.5) {
+    warns.push(`<b>school</b> multiplies this gene, and it is at ${school.toFixed(2)} — you are seeing ${Math.round(school * 100)}% of the effect. Lock <b>school</b> nearer 1 to judge it.`);
+  }
+  el.innerHTML = `<span class="dsc"><b>${gene.k}</b> — ${gene.d}</span>` +
+    warns.map(w => `<span class="warn">⚠ ${w}</span>`).join('');
+}
+
+function lockAt(idx) {
+  const item = batch[idx];
+  if (!item) return;
+  if (LOCKS[sweepGene] === item.sweepVal) delete LOCKS[sweepGene];
+  else LOCKS[sweepGene] = item.sweepVal;
+  saveLocks(); renderLocks(); renderGrid(); renderGeneDesc();
+}
+
+/* Is this swept value currently ruled out? */
+function isExcludedVal(gene, v) {
+  if (gene.t === 'e') return (EXCLUDES[gene.k] || []).includes(v);
+  const [lo, hi] = floatBounds(gene);
+  return v < lo - 1e-9 || v > hi + 1e-9;
+}
+
+function excludeAt(idx) {
+  const item = batch[idx];
+  if (!item) return;
+  const gene = GENES.find(g => g.k === sweepGene);
+  const v = item.sweepVal;
+
+  if (gene.t === 'e') {
+    const ex = EXCLUDES[sweepGene] || [];
+    const next = ex.includes(v) ? ex.filter(o => o !== v) : [...ex, v];
+    // never exclude the last survivor — that would strand the gene
+    if (next.length >= gene.o.length) return;
+    if (next.length) EXCLUDES[sweepGene] = next; else delete EXCLUDES[sweepGene];
+  } else {
+    const [lo, hi] = floatBounds(gene);
+    const step = (gene.max - gene.min) / 7;          // the sweep's own step
+    if (isExcludedVal(gene, v)) {                    // click again to restore
+      BOUNDS[sweepGene] = [Math.min(lo, v), Math.max(hi, v)];
+    } else if (v <= (lo + hi) / 2) {
+      BOUNDS[sweepGene] = [Math.min(v + step * 0.5, hi), hi];   // trim the bottom
+    } else {
+      BOUNDS[sweepGene] = [lo, Math.max(v - step * 0.5, lo)];   // trim the top
+    }
+    const b = BOUNDS[sweepGene];
+    if (b[0] <= gene.min && b[1] >= gene.max) delete BOUNDS[sweepGene];
+  }
+  // a lock inside the newly-excluded region no longer means anything
+  if (LOCKS[sweepGene] !== undefined && isExcludedVal(gene, LOCKS[sweepGene])) {
+    delete LOCKS[sweepGene];
+  }
+  saveLocks(); renderLocks(); renderGrid(); renderGeneDesc();
+}
+
+function renderLocks() {
+  buildGeneSel();                 // keep the picker's markers in step
+  const el = document.getElementById('locks');
+  const locked = Object.keys(LOCKS);
+  const narrowed = GENES.filter(g => LOCKS[g.k] === undefined && isNarrowed(g));
+  if (!locked.length && !narrowed.length) {
+    el.innerHTML = `<span class="none">nothing decided yet — <b>lock</b> pins a value, <b>✕</b> rules one out and keeps the rest</span>`;
+    return;
+  }
+  const lockChips = locked.map(k => {
+    const v = LOCKS[k];
+    return `<span class="lk">${k} = ${typeof v === 'number' ? v.toFixed(2) : v}
+      <button data-unlock="${k}" title="unlock">✕</button></span>`;
+  }).join('');
+  const exChips = narrowed.map(g => {
+    const txt = g.t === 'e'
+      ? `${g.k} ✕ ${(EXCLUDES[g.k] || []).join(' ✕ ')}`
+      : `${g.k} ${floatBounds(g)[0].toFixed(2)}–${floatBounds(g)[1].toFixed(2)}`;
+    return `<span class="ex">${txt}<button data-clear="${g.k}" title="clear">✕</button></span>`;
+  }).join('');
+  el.innerHTML = `<span class="none">${locked.length} locked · ${narrowed.length} narrowed
+    · ${GENES.length - locked.length - narrowed.length} open —</span>` + lockChips + exChips;
+}
+document.getElementById('locks').addEventListener('click', (e) => {
+  const un = e.target.closest('button[data-unlock]');
+  const cl = e.target.closest('button[data-clear]');
+  if (un) delete LOCKS[un.dataset.unlock];
+  else if (cl) { delete EXCLUDES[cl.dataset.clear]; delete BOUNDS[cl.dataset.clear]; }
+  else return;
+  saveLocks(); renderLocks();
+  mode === 'sweep' ? buildSweep() : renderGrid();
+});
+
+function setMode(m) {
+  /* ⛔ A mode button is not an action. Clicking `batch` while already
+     in batch mode used to fall through to newBatch(), silently
+     replacing the grid and burning a generation — two buttons doing
+     the same job, one of them by accident. (`batch.length` is the
+     boot guard: empty means nothing has been drawn yet.) */
+  if (mode === m && batch.length) return;
+  mode = m;
+  document.getElementById('modeBatch').classList.toggle('primary', m === 'batch');
+  document.getElementById('modeSweep').classList.toggle('primary', m === 'sweep');
+  document.getElementById('batchBar').style.display = m === 'batch' ? '' : 'none';
+  document.getElementById('sweepBar').style.display = m === 'sweep' ? '' : 'none';
+  document.getElementById('hint').innerHTML = m === 'batch'
+    ? `field sliver · spectrum · rail and the left play/volume column are FIXED chrome — the genome only owns the region right of the divider.<br>
+       click a card to zoom · ← → move focus · <b>L</b> like · <b>X</b> dislike · <b>N</b> new batch · <b>E</b> evolve · <b>[ ]</b> step generations`
+    : `one gene swept across its range, everything else held still. <b>lock</b> pins a value; <b>✕</b> rules one out
+       and keeps sampling the rest — several exclusions compose where a lock cannot.<br>
+       click a card to zoom · ← → move focus · <b>L</b> lock · <b>X</b> exclude · <b>R</b> reroll the base genome`;
+  /* Coming back from a sweep RESTORES where you were, rather than
+     rolling a fresh batch — peeking at a sweep should not cost you
+     your generation. */
+  if (m === 'sweep') buildSweep();
+  else if (generations.length && genIdx >= 0) gotoGeneration(Math.min(genIdx, generations.length - 1));
+  else newBatch();
+  renderGeneDesc(); renderGenNav();
+}
+
+function newBatch() {
+  const bias = document.getElementById('biasChk').checked && model;
+  const draws = bias ? BATCH * 8 : BATCH;
+  const cands = [];
+  for (let i = 0; i < draws; i++) {
+    const seed = newSeed();
+    cands.push({ seed, genome: drawGenome(seed), vote: 0 });
+  }
+  batch = bias ? cands.sort((a, b) => score(b.genome) - score(a.genome)).slice(0, BATCH) : cands;
+  focusIdx = -1;
+  renderGrid();
+  recordGeneration(bias ? 'biased' : 'random');
+}
+
+function evolve() {
+  const liked = ratings.filter(r => r.vote > 0).slice(-24);
+  if (liked.length < 2) { alert('Like at least 2 designs first.'); return; }
+  const rng = mulberry32(newSeed());
+  batch = [];
+  for (let i = 0; i < BATCH - 2; i++) {
+    const pa = liked[Math.floor(rng() * liked.length)];
+    const pb = liked[Math.floor(rng() * liked.length)];
+    batch.push({
+      seed: newSeed(),
+      genome: applyPins(applyLocks(mutate(crossover(pa.genome, pb.genome, rng), rng))),
+      vote: 0, bred: true, parents: [pa.seed, pb.seed],
+    });
+  }
+  for (let i = 0; i < 2; i++) {   // fresh blood
+    const seed = newSeed();
+    batch.push({ seed, genome: drawGenome(seed), vote: 0 });
+  }
+  focusIdx = -1;
+  renderGrid();
+  recordGeneration('evolved');
+}
+
+/* One card = one row, always. Re-voting REPLACES the row rather than
+   appending: pushing every click meant a double-tap silently gave that
+   genome twice the weight, and ▲-then-▼ left the training set holding
+   both opinions at once. Clicking the vote you already cast clears it —
+   an un-rated card is genuinely neutral (it leaves the training set),
+   which is the only honest way to say "I can't call this one". */
+function vote(idx, v) {
+  const item = batch[idx];
+  if (!item) return;
+  const repeat = item.vote === v;
+  item.vote = repeat ? 0 : v;
+  ratings = ratings.filter(r => r.seed !== item.seed);
+  if (!repeat) {
+    ratings.push({ seed: item.seed, genome: item.genome, songKey: currentSongKey, vote: v, ts: Date.now() });
+  }
+  saveRatings(); trainModel(); updateCard(idx); renderStats(); renderWeights();
+}
+
+function cardHTML(item, idx) {
+  if (mode === 'sweep') {
+    const v = item.sweepVal;
+    const gene = GENES.find(g => g.k === sweepGene);
+    const locked = LOCKS[sweepGene] === v;
+    const excl = isExcludedVal(gene, v);
+    return `
+      <div class="card ${locked ? 'locked' : ''} ${excl ? 'excluded' : ''} ${idx === focusIdx ? 'focus' : ''}" data-idx="${idx}">
+        ${render(manifest, item.genome, item.seed)}
+        <div class="meta">
+          <span class="sweepval">${sweepGene} <b>${typeof v === 'number' ? v.toFixed(2) : v}</b>${LAST_HERO ? ` · hero:${LAST_HERO}` : ''}</span>
+          <span class="votes">
+            <button class="wide" data-lock="${idx}">${locked ? 'locked' : 'lock'}</button>
+            <button class="wide ${excl ? 'on' : ''}" data-excl="${idx}"
+              title="${excl ? 'allow this again' : 'rule this out, keep sampling the rest'}">${excl ? 'out' : '✕'}</button>
+          </span>
+        </div>
+      </div>`;
+  }
+  const sc = score(item.genome);
+  return `
+    <div class="card ${item.vote > 0 ? 'liked' : item.vote < 0 ? 'disliked' : ''} ${idx === focusIdx ? 'focus' : ''}" data-idx="${idx}">
+      ${render(manifest, item.genome, item.seed)}
+      <div class="meta">
+        <span>#${item.seed.toString(16).slice(0, 6)}${item.bred ? ' ·bred' : ''} · t${item.genome.school.toFixed(2)} · ${item.genome.flow}${LAST_HERO ? ' · hero:' + LAST_HERO : ''}</span>
+        <span class="score">${sc != null ? Math.round(sc * 100) : '·'}</span>
+        <span class="votes">
+          <button data-vote="1" data-idx="${idx}">▲</button>
+          <button data-vote="-1" data-idx="${idx}">▼</button>
+        </span>
+      </div>
+    </div>`;
+}
+function renderGrid() {
+  document.getElementById('grid').innerHTML = batch.map(cardHTML).join('');
+  renderStats();
+}
+function updateCard(idx) {
+  const el = document.querySelector(`.card[data-idx="${idx}"]`);
+  if (el) el.outerHTML = cardHTML(batch[idx], idx);
+}
+function renderStats() {
+  const nLike = ratings.filter(r => r.vote > 0).length;
+  document.getElementById('stats').textContent =
+    `${manifest.controls.length} controls · ${ratings.length} rated (▲${nLike} ▼${ratings.length - nLike})` +
+    `${model ? ' · model live' : ` · ${Math.max(0, 8 - ratings.length)} more to train`}`;
+}
+function renderWeights() {
+  const el = document.getElementById('weights');
+  if (!model) { el.innerHTML = ''; return; }
+  const names = featureNames();
+  const pairs = names.map((n, i) => [n, model.w[i]]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 12);
+  const maxW = Math.max(...pairs.map(p => Math.abs(p[1])), 0.001);
+  el.innerHTML = '<h2>learned taste weights</h2>' + pairs.map(([n, w]) => `
+    <div class="wrow">
+      <span class="wname">${n}</span>
+      <span class="wbar ${w > 0 ? 'wpos' : 'wneg'}" style="width:${Math.abs(w) / maxW * 180}px"></span>
+      <span>${w > 0 ? '+' : ''}${w.toFixed(2)}</span>
+    </div>`).join('');
+}
+
+function openModal(idx) {
+  const item = batch[idx];
+  document.getElementById('modalPlate').innerHTML = render(manifest, item.genome, item.seed);
+  const lineage = item.parents
+    ? `bred from <b>#${item.parents[0].toString(16).slice(0, 6)}</b> + <b>#${item.parents[1].toString(16).slice(0, 6)}</b><br>`
+    : '';
+  document.getElementById('modalGenes').innerHTML =
+    `<b>#${item.seed.toString(16)}</b><br>${lineage}` +
+    GENES.map(g2 => {
+      const v = item.genome[g2.k];
+      return `${g2.k}: <b>${typeof v === 'number' ? v.toFixed(2) : v}</b>`;
+    }).join('<br>');
+  document.getElementById('modal').classList.add('open');
+}
+document.getElementById('modal').addEventListener('click', () =>
+  document.getElementById('modal').classList.remove('open'));
+
+/* ── song select + manifest editor (grouped by family) ────────────── */
+const sel = document.getElementById('songSel');
+for (const k of Object.keys(SONGS)) {
+  const o = document.createElement('option');
+  o.value = k; o.textContent = k;
+  if (k === currentSongKey) o.selected = true;
+  sel.appendChild(o);
+}
+sel.addEventListener('change', () => {
+  currentSongKey = sel.value;
+  manifest = JSON.parse(JSON.stringify(SONGS[currentSongKey]));
+  buildManifestEditor();
+  mode === 'sweep' ? buildSweep() : newBatch();
+});
+function buildManifestEditor() {
+  const ed = document.getElementById('manifestEditor');
+  const have = new Set(manifest.controls);
+  let html = `<div class="fam"><span class="famname">voices</span>
+    <label><input type="number" min="1" max="8" value="${manifest.voices}" data-voices="1"></label></div>`;
+  for (const fam of FAMILY_ORDER) {
+    const ids = Object.keys(PARAMS).filter(id => PARAMS[id].family === fam);
+    if (!ids.length) continue;
+    html += `<div class="fam"><span class="famname">${fam}</span>` + ids.map(id =>
+      `<label><input type="checkbox" data-pid="${id}" ${have.has(id) ? 'checked' : ''}> ${id}</label>`).join('') + `</div>`;
+  }
+  const live = PAIRS.filter(p => have.has(p.a) && have.has(p.b));
+  html += `<div class="pairnote">active couplings: ${live.length
+    ? live.map(p => `${p.a}+${p.b} → ${p.style}`).join(' · ') : 'none'}</div>`;
+  ed.innerHTML = html;
+  ed.querySelectorAll('input').forEach(inp => inp.addEventListener('change', () => {
+    if (inp.dataset.voices) {
+      manifest.voices = Math.max(1, Math.min(8, +inp.value || 1));
+    } else {
+      const pid = inp.dataset.pid;
+      manifest.controls = inp.checked
+        ? [...manifest.controls, pid]
+        : manifest.controls.filter(c => c !== pid);
+      buildManifestEditor();
+      document.getElementById('manifestEditor').classList.add('open');
+    }
+    // the manifest decides whether several genes have anything to act
+    // on, so the inert-sweep warning has to be re-evaluated here too
+    mode === 'sweep' ? buildSweep() : renderGrid();
+  }));
+}
+buildManifestEditor();
+document.getElementById('editManifest').addEventListener('click', () =>
+  document.getElementById('manifestEditor').classList.toggle('open'));
+
+document.getElementById('genBack').addEventListener('click', () => gotoGeneration(genIdx - 1));
+document.getElementById('genFwd').addEventListener('click', () => gotoGeneration(genIdx + 1));
+document.getElementById('newBatch').addEventListener('click', newBatch);
+document.getElementById('evolve').addEventListener('click', evolve);
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify({
+    songs: SONGS, locks: LOCKS, ratings,
+    weights: model ? { names: featureNames(), w: model.w, b: model.b } : null,
+  }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'parametric-taste.json';
+  a.click();
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  if (!confirm('Wipe all ratings?')) return;
+  ratings = []; saveRatings(); model = null;
+  renderStats(); renderWeights(); renderGrid();
+});
+
+document.getElementById('grid').addEventListener('click', (e) => {
+  const lk = e.target.closest('button[data-lock]');
+  if (lk) { lockAt(+lk.dataset.lock); e.stopPropagation(); return; }
+  const ex = e.target.closest('button[data-excl]');
+  if (ex) { excludeAt(+ex.dataset.excl); e.stopPropagation(); return; }
+  const btn = e.target.closest('button[data-vote]');
+  if (btn) { vote(+btn.dataset.idx, +btn.dataset.vote); e.stopPropagation(); return; }
+  const card = e.target.closest('.card');
+  if (card) { focusIdx = +card.dataset.idx; openModal(focusIdx); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const move = (d) => {
+    const prev = focusIdx;
+    focusIdx = Math.max(0, Math.min(batch.length - 1, (focusIdx < 0 ? 0 : focusIdx + d)));
+    if (prev >= 0) updateCard(prev);
+    updateCard(focusIdx);
+    document.querySelector(`.card[data-idx="${focusIdx}"]`)?.scrollIntoView({ block: 'nearest' });
+  };
+  switch (e.key.toLowerCase()) {
+    case 'arrowright': case 'j': move(1); e.preventDefault(); break;
+    case 'arrowleft':  case 'k': move(-1); e.preventDefault(); break;
+    case 'l':
+      if (focusIdx < 0) break;
+      if (mode === 'sweep') lockAt(focusIdx); else { vote(focusIdx, 1); move(1); }
+      break;
+    case 'x':
+      if (focusIdx < 0) break;
+      if (mode === 'sweep') excludeAt(focusIdx); else { vote(focusIdx, -1); move(1); }
+      break;
+    case 'r': if (mode === 'sweep') { sweepSeed = newSeed(); buildSweep(); } break;
+    case '[': if (mode === 'batch') gotoGeneration(genIdx - 1); break;
+    case ']': if (mode === 'batch') gotoGeneration(genIdx + 1); break;
+    case 'n': if (mode === 'batch') newBatch(); break;
+    case 'e': if (mode === 'batch') evolve(); break;
+    case 'escape': document.getElementById('modal').classList.remove('open'); break;
+  }
+});
+
+/* ── sweep controls ───────────────────────────────────────────────── */
+/* The picker doubles as the progress readout: a locked gene shows its
+   padlock and the value it is pinned to, so "what have I already
+   decided" is answerable without leaving the dropdown. Rebuilt from
+   renderLocks so it can never drift out of step with the chips.
+   (A locked gene is still sweepable — that is how you change your
+   mind; the card holding the current value reads LOCKED.) */
+function buildGeneSel() {
+  const geneSel = document.getElementById('geneSel');
+  geneSel.innerHTML = '';
+  for (const gene of GENES) {
+    const o = document.createElement('option');
+    o.value = gene.k;
+    const lv = LOCKS[gene.k];
+    if (lv !== undefined) {
+      o.textContent = `🔒  ${gene.k} = ${typeof lv === 'number' ? lv.toFixed(2) : lv}`;
+    } else if (isNarrowed(gene)) {
+      o.textContent = gene.t === 'e'
+        ? `⊘  ${gene.k}  (${allowedOptions(gene).length} of ${gene.o.length} left)`
+        : `⊘  ${gene.k}  (${floatBounds(gene)[0].toFixed(2)}–${floatBounds(gene)[1].toFixed(2)})`;
+    } else {
+      o.textContent = `      ${gene.k}  (${gene.t === 'f' ? `${gene.min}–${gene.max}` : gene.o.join(' · ')})`;
+    }
+    if (gene.k === sweepGene) o.selected = true;
+    geneSel.appendChild(o);
+  }
+}
+buildGeneSel();
+document.getElementById('geneSel').addEventListener('change', (e) => {
+  sweepGene = e.target.value; buildSweep();
+});
+document.getElementById('baseSel').addEventListener('change', (e) => {
+  sweepBase = e.target.value; buildSweep();
+});
+document.getElementById('reroll').addEventListener('click', () => {
+  sweepSeed = newSeed();
+  if (sweepBase === 'neutral') {   // reroll only means something for a random base
+    sweepBase = 'random';
+    document.getElementById('baseSel').value = 'random';
+  }
+  buildSweep();
+});
+document.getElementById('modeBatch').addEventListener('click', () => setMode('batch'));
+document.getElementById('modeSweep').addEventListener('click', () => setMode('sweep'));
+document.getElementById('exportBtn2').addEventListener('click', () =>
+  document.getElementById('exportBtn').click());
+
+trainModel(); renderWeights(); renderLocks(); setMode('sweep'); renderGenNav();
+</script>
+</body>
+</html>

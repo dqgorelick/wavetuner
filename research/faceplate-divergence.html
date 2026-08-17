@@ -1,0 +1,1114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faceplate Divergence</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=Instrument+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ground:#0a0a0b; --panel:#141416; --panel2:#101012;
+    --ink:#a2a2a6; --ink-dim:#6b6b70; --hi:#dcdcde;
+    --hairline:rgba(255,255,255,.13); --hairline-soft:rgba(255,255,255,.07);
+    --accent:#ce9178; --accent2:#4ec9b0;
+    --v0:#ff4136; --v1:#2ecc40; --v2:#0074d9; --v3:#ffdc00; --v4:#bb8fce;
+    --disp:'Jost', 'Futura', 'Century Gothic', sans-serif;
+    --body:'Instrument Sans', 'Helvetica Neue', Arial, sans-serif;
+    --mono:'IBM Plex Mono', 'SF Mono', Consolas, monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} }
+  body{
+    background:var(--ground); color:var(--ink);
+    font-family:var(--body); font-size:15px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .sheet{max-width:1140px; margin:0 auto; padding:48px 28px 90px}
+
+  /* ---- masthead ---- */
+  header.mast{
+    border:1px solid var(--hairline); padding:34px 34px 30px; margin-bottom:44px;
+    position:relative; background:var(--panel2);
+  }
+  header.mast::after{
+    content:""; position:absolute; inset:6px; border:1px solid var(--hairline-soft); pointer-events:none;
+  }
+  .mast-eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--accent); margin-bottom:14px;
+  }
+  h1{
+    font-family:var(--disp); font-weight:600; color:var(--hi);
+    font-size:clamp(30px, 5vw, 46px); letter-spacing:.14em; text-transform:uppercase;
+    line-height:1.1; text-wrap:balance;
+  }
+  .mast-sub{max-width:62ch; margin-top:16px; color:var(--ink)}
+  .mast-meta{
+    display:flex; gap:26px; flex-wrap:wrap; margin-top:22px; padding-top:18px;
+    border-top:1px solid var(--hairline-soft);
+    font-family:var(--mono); font-size:11px; color:var(--ink-dim); letter-spacing:.06em;
+  }
+  .mast-meta b{color:var(--ink); font-weight:500}
+
+  /* ---- silkscreen section boxes (the ARP 2600 motif) ---- */
+  section.silk{
+    border:1px solid var(--hairline); padding:34px 30px 30px; margin-bottom:40px; position:relative;
+  }
+  section.silk > .silk-label{
+    position:absolute; top:-9px; left:22px; background:var(--ground); padding:0 12px;
+    font-family:var(--disp); font-weight:500; font-size:13px; letter-spacing:.28em;
+    text-transform:uppercase; color:var(--hi);
+  }
+  section.silk > .silk-num{
+    position:absolute; top:-9px; right:22px; background:var(--ground); padding:0 10px;
+    font-family:var(--mono); font-size:11px; color:var(--ink-dim); letter-spacing:.12em;
+  }
+  .lede{max-width:68ch; margin-bottom:26px}
+  .lede em{color:var(--hi); font-style:normal}
+
+  /* ---- tiles ---- */
+  .tiles{display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:22px}
+  .tile{border:1px solid var(--hairline-soft); background:var(--panel); display:flex; flex-direction:column}
+  .tile svg{display:block; width:100%; height:auto}
+  .tile-body{padding:16px 18px 18px; border-top:1px solid var(--hairline-soft); flex:1}
+  .tile-title{
+    display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:6px;
+  }
+  .tile-title h3{
+    font-family:var(--disp); font-weight:500; font-size:15px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--hi);
+  }
+  .cost{
+    font-family:var(--mono); font-size:10px; letter-spacing:.08em; white-space:nowrap;
+    padding:2px 8px; border:1px solid var(--hairline); border-radius:2px; color:var(--ink-dim);
+  }
+  .cost.render{color:var(--accent2); border-color:rgba(78,201,176,.35)}
+  .cost.vocab{color:var(--accent); border-color:rgba(206,145,120,.35)}
+  .cost.packer{color:var(--v4); border-color:rgba(187,143,206,.35)}
+  .tile-anchors{
+    font-family:var(--mono); font-size:10.5px; color:var(--ink-dim); letter-spacing:.04em; margin-bottom:8px;
+  }
+  .tile-body p{font-size:13.5px; line-height:1.55}
+  .tile-body code, td code, p code, li code{
+    font-family:var(--mono); font-size:.9em; color:var(--accent2); background:rgba(78,201,176,.07);
+    padding:0 4px; border-radius:2px;
+  }
+
+  /* ---- generic small diagrams ---- */
+  .diagrid{display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:18px}
+  .dia{border:1px solid var(--hairline-soft); background:var(--panel)}
+  .dia svg{display:block; width:100%; height:auto}
+  .dia-cap{padding:12px 15px 14px; border-top:1px solid var(--hairline-soft); font-size:13px}
+  .dia-cap b{
+    display:block; font-family:var(--disp); font-weight:500; font-size:13px;
+    letter-spacing:.12em; text-transform:uppercase; color:var(--hi); margin-bottom:3px;
+  }
+
+  /* ---- tables ---- */
+  .tablewrap{overflow-x:auto; border:1px solid var(--hairline-soft)}
+  table{border-collapse:collapse; width:100%; font-size:13px; min-width:640px}
+  th{
+    font-family:var(--disp); font-weight:500; font-size:11px; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--ink-dim); text-align:left;
+    padding:10px 14px; border-bottom:1px solid var(--hairline); background:var(--panel2);
+  }
+  td{padding:9px 14px; border-bottom:1px solid var(--hairline-soft); vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.name{color:var(--hi); font-weight:500; white-space:nowrap}
+  td.mono, .mono{font-family:var(--mono); font-size:12px}
+  a{color:var(--accent2); text-decoration:none; border-bottom:1px solid rgba(78,201,176,.3)}
+  a:hover, a:focus-visible{color:var(--hi); border-bottom-color:var(--hi)}
+  a:focus-visible{outline:2px solid var(--accent2); outline-offset:2px}
+
+  h4.sub{
+    font-family:var(--disp); font-weight:500; font-size:13px; letter-spacing:.22em;
+    text-transform:uppercase; color:var(--accent); margin:30px 0 14px;
+  }
+  h4.sub:first-of-type{margin-top:0}
+  ul.plain{list-style:none}
+  ul.plain li{padding:7px 0; border-bottom:1px solid var(--hairline-soft); font-size:13.5px}
+  ul.plain li:last-child{border-bottom:none}
+  ul.plain b{color:var(--hi); font-weight:500}
+  .two-col{display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:0 40px}
+
+  .note{
+    border-left:2px solid var(--accent); padding:10px 16px; margin:22px 0;
+    background:rgba(206,145,120,.05); font-size:13.5px; max-width:75ch;
+  }
+  .note b{color:var(--accent); font-weight:500}
+
+  footer{
+    margin-top:50px; padding-top:20px; border-top:1px solid var(--hairline-soft);
+    font-family:var(--mono); font-size:11px; color:var(--ink-dim); letter-spacing:.06em;
+    display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+
+  /* svg text defaults */
+  svg text{font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<header class="mast">
+  <div class="mast-eyebrow">wavetuner · parametric faceplates · divergence round</div>
+  <h1>Faceplate Divergence</h1>
+  <p class="mast-sub">The system as built is <em>one style family</em> — monochrome technical
+  minimalism with a single composure dial (<span class="mono">school</span>, Braun ⇄ Bauhaus).
+  This sheet explores what sits outside it: twelve style directions, a grammar for auto / arp /
+  playhead residents, eight packers beyond shelves and columns, and the mood-board sources
+  behind all of it. Sketches are moods, not renders — every one is drawn at the pane's
+  393 × 292 proportion.</p>
+  <div class="mast-meta">
+    <span><b>2026-08-17</b> exploration</span>
+    <span>companion to <b>EXPLORE-faceplate-divergence.md</b></span>
+    <span>trial via <b>?style= / ?packer=</b> session params — export-inert</span>
+  </div>
+</header>
+
+<!-- ============================================================= -->
+<section class="silk" id="styles">
+  <span class="silk-label">Twelve Directions</span><span class="silk-num">01</span>
+  <p class="lede">Each direction is a point; the generator should get the <em>axes</em>
+  (ground · ornament · label mode · color logic · material — the map at the end of this
+  section). Cost chips: <span class="cost render">render</span> = drawing change only,
+  <span class="cost vocab">vocab</span> = GENES change (batch it — featurize shift, fixtures
+  re-export, Swift re-port), <span class="cost packer">packer</span> = layout algorithm first.</p>
+
+  <div class="tiles">
+
+  <!-- 1. Silkscreen Schematic -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Silkscreen schematic sketch: blue-grey panel with orange signal-flow lines connecting knobs inside thin white function boxes">
+      <rect width="393" height="292" fill="#25323b"/>
+      <!-- flow lines -->
+      <polyline points="83,96 148,96 148,96 196,96" fill="none" stroke="#e8834a" stroke-width="1.6"/>
+      <polyline points="238,96 288,96" fill="none" stroke="#e8834a" stroke-width="1.6"/>
+      <polyline points="310,118 310,168 250,168" fill="none" stroke="#e8834a" stroke-width="1.6"/>
+      <polyline points="60,120 60,205 96,205" fill="none" stroke="#e8834a" stroke-width="1.2" opacity=".6"/>
+      <!-- TONE box -->
+      <rect x="34" y="62" width="140" height="72" fill="none" stroke="#dfe5e8" stroke-width="1" opacity=".75"/>
+      <rect x="44" y="56" width="42" height="12" fill="#25323b"/>
+      <text x="46" y="66" font-size="9" fill="#dfe5e8" letter-spacing="2">TONE</text>
+      <circle cx="62" cy="96" r="19" fill="none" stroke="#dfe5e8" stroke-width="1.6"/>
+      <line x1="62" y1="96" x2="72" y2="82" stroke="#dfe5e8" stroke-width="1.6"/>
+      <circle cx="126" cy="96" r="15" fill="none" stroke="#dfe5e8" stroke-width="1.4"/>
+      <line x1="126" y1="96" x2="133" y2="85" stroke="#dfe5e8" stroke-width="1.4"/>
+      <!-- FILTER box -->
+      <rect x="192" y="62" width="90" height="72" fill="none" stroke="#dfe5e8" stroke-width="1" opacity=".75"/>
+      <rect x="202" y="56" width="52" height="12" fill="#25323b"/>
+      <text x="204" y="66" font-size="9" fill="#dfe5e8" letter-spacing="2">FILTER</text>
+      <circle cx="237" cy="97" r="21" fill="none" stroke="#dfe5e8" stroke-width="1.6"/>
+      <circle cx="237" cy="97" r="11" fill="none" stroke="#dfe5e8" stroke-width="1" opacity=".7"/>
+      <line x1="237" y1="97" x2="249" y2="83" stroke="#dfe5e8" stroke-width="1.6"/>
+      <!-- SPACE box -->
+      <rect x="292" y="62" width="70" height="72" fill="none" stroke="#dfe5e8" stroke-width="1" opacity=".75"/>
+      <rect x="300" y="56" width="46" height="12" fill="#25323b"/>
+      <text x="302" y="66" font-size="9" fill="#dfe5e8" letter-spacing="2">SPACE</text>
+      <circle cx="327" cy="97" r="16" fill="none" stroke="#dfe5e8" stroke-width="1.4"/>
+      <line x1="327" y1="97" x2="335" y2="85" stroke="#dfe5e8" stroke-width="1.4"/>
+      <!-- scope -->
+      <rect x="96" y="152" width="154" height="56" fill="none" stroke="#dfe5e8" stroke-width="1" opacity=".75"/>
+      <polyline points="104,182 120,160 138,200 156,164 174,196 192,168 210,192 228,174 242,182" fill="none" stroke="#e8834a" stroke-width="1.6"/>
+      <!-- voices -->
+      <rect x="34" y="152" width="52" height="106" fill="none" stroke="#dfe5e8" stroke-width="1" opacity=".75"/>
+      <rect x="42" y="146" width="40" height="12" fill="#25323b"/>
+      <text x="44" y="156" font-size="9" fill="#dfe5e8" letter-spacing="1.6">VOICES</text>
+      <g stroke="#dfe5e8" stroke-width="3" stroke-linecap="round">
+        <line x1="46" y1="170" x2="46" y2="244"/><line x1="58" y1="182" x2="58" y2="244"/>
+        <line x1="70" y1="176" x2="70" y2="244"/><line x1="82" y1="190" x2="82" y2="244" opacity=".999" transform="translate(-4 0)"/>
+      </g>
+      <g stroke="#e8834a" stroke-width="2"><line x1="42" y1="192" x2="50" y2="192"/><line x1="54" y1="206" x2="62" y2="206"/><line x1="66" y1="198" x2="74" y2="198"/><line x1="74" y1="214" x2="82" y2="214"/></g>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Silkscreen Schematic</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">ARP 2600 · Serge · block-diagram panels</div>
+      <p>Printed lines draw the <em>real</em> signal flow (shape → fold → filter → reverb, from
+      the manifest + engine chain); families sit in thin silkscreen boxes named in the border
+      break. Unlike the hardware it quotes, ours is true per-song. <code>ornament: flowlines</code>;
+      strongest with the signal-path packer.</p>
+    </div>
+  </div>
+
+  <!-- 2. Color-Block Paper -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Color-block paper sketch: light paper ground with tinted family rectangles holding dark controls">
+      <rect width="393" height="292" fill="#efe9dc"/>
+      <rect x="28" y="28" width="150" height="140" fill="#c65b4e" opacity=".28"/>
+      <rect x="186" y="28" width="179" height="86" fill="#d9a441" opacity=".30"/>
+      <rect x="186" y="122" width="179" height="46" fill="#4a6fa5" opacity=".26"/>
+      <rect x="28" y="176" width="337" height="88" fill="#3f7d6d" opacity=".22"/>
+      <g fill="none" stroke="#3a3630" stroke-width="1.8">
+        <circle cx="70" cy="72" r="20"/><circle cx="132" cy="72" r="20"/>
+        <circle cx="100" cy="130" r="15"/>
+        <circle cx="240" cy="70" r="22"/><circle cx="240" cy="70" r="12"/>
+        <circle cx="316" cy="70" r="16"/>
+      </g>
+      <g stroke="#3a3630" stroke-width="1.8">
+        <line x1="70" y1="72" x2="81" y2="57"/><line x1="132" y1="72" x2="141" y2="58"/>
+        <line x1="100" y1="130" x2="107" y2="119"/><line x1="240" y1="70" x2="253" y2="54"/>
+        <line x1="316" y1="70" x2="324" y2="58"/>
+      </g>
+      <rect x="206" y="134" width="80" height="22" rx="11" fill="none" stroke="#3a3630" stroke-width="1.6"/>
+      <rect x="206" y="134" width="46" height="22" rx="11" fill="#3a3630"/>
+      <g stroke="#3a3630" stroke-width="4" stroke-linecap="round">
+        <line x1="70" y1="200" x2="70" y2="248"/><line x1="110" y1="208" x2="110" y2="248"/>
+        <line x1="150" y1="204" x2="150" y2="248"/><line x1="190" y1="214" x2="190" y2="248"/>
+      </g>
+      <g fill="#3a3630"><rect x="240" y="212" width="13" height="13" rx="2.5"/><rect x="262" y="212" width="13" height="13" rx="2.5"/></g>
+      <g fill="none" stroke="#3a3630" stroke-width="1.4"><rect x="284" y="212" width="13" height="13" rx="2.5"/><rect x="306" y="212" width="13" height="13" rx="2.5"/></g>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Color-Block Paper</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">Serge paper faces · Mondrian</div>
+      <p>Family sections become filled tinted zones on paper — the wash does the grouping that
+      hairlines do today. Deliberately violates the house “no fills except state” rule; that's
+      why it reads as a different instrument. <code>sectionGround: none|wash|block</code>;
+      reopens the paper-palette question.</p>
+    </div>
+  </div>
+
+  <!-- 3. Naked Circuit -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Naked circuit sketch: PCB green ground with gold traces and pads under the controls">
+      <rect width="393" height="292" fill="#12332a"/>
+      <g fill="none" stroke="#c9a953" stroke-width="1.4" opacity=".85">
+        <polyline points="66,90 66,146 130,146 130,196"/>
+        <polyline points="118,84 200,84 200,110"/>
+        <polyline points="222,132 222,180 296,180"/>
+        <polyline points="216,110 300,110 300,86"/>
+        <polyline points="40,220 180,220 180,246"/>
+        <polyline points="330,120 330,220 250,220"/>
+      </g>
+      <g fill="#0d281f" stroke="#c9a953" stroke-width="1.2">
+        <circle cx="130" cy="146" r="3.4"/><circle cx="200" cy="110" r="3.4"/><circle cx="330" cy="120" r="3.4"/><circle cx="180" cy="246" r="3.4"/><circle cx="40" cy="220" r="3.4"/>
+      </g>
+      <!-- pads + knobs -->
+      <g>
+        <circle cx="90" cy="84" r="27" fill="none" stroke="#c9a953" stroke-width="2.4" opacity=".55"/>
+        <circle cx="90" cy="84" r="20" fill="#12332a" stroke="#cfd6cd" stroke-width="1.6"/>
+        <line x1="90" y1="84" x2="101" y2="70" stroke="#cfd6cd" stroke-width="1.6"/>
+        <circle cx="222" cy="110" r="24" fill="none" stroke="#c9a953" stroke-width="2.4" opacity=".55"/>
+        <circle cx="222" cy="110" r="17" fill="#12332a" stroke="#cfd6cd" stroke-width="1.6"/>
+        <line x1="222" y1="110" x2="231" y2="97" stroke="#cfd6cd" stroke-width="1.6"/>
+        <circle cx="300" cy="86" r="18" fill="none" stroke="#c9a953" stroke-width="2" opacity=".55"/>
+        <circle cx="300" cy="86" r="12.5" fill="#12332a" stroke="#cfd6cd" stroke-width="1.4"/>
+        <line x1="300" y1="86" x2="306" y2="76" stroke="#cfd6cd" stroke-width="1.4"/>
+      </g>
+      <text x="120" y="76" font-size="8" fill="#cfd6cd" opacity=".7">R12</text>
+      <text x="243" y="140" font-size="8" fill="#cfd6cd" opacity=".7">C4</text>
+      <text x="308" y="204" font-size="8" fill="#cfd6cd" opacity=".7">U3</text>
+      <!-- fader strip on pads -->
+      <g stroke="#c9a953" stroke-width="6" stroke-linecap="round" opacity=".4">
+        <line x1="96" y1="196" x2="96" y2="252"/><line x1="130" y1="196" x2="130" y2="252"/><line x1="164" y1="196" x2="164" y2="252"/>
+      </g>
+      <g stroke="#cfd6cd" stroke-width="3" stroke-linecap="round">
+        <line x1="96" y1="210" x2="96" y2="252"/><line x1="130" y1="222" x2="130" y2="252"/><line x1="164" y1="216" x2="164" y2="252"/>
+      </g>
+      <rect x="250" y="206" width="70" height="28" rx="4" fill="none" stroke="#c9a953" stroke-width="1.2" opacity=".7"/>
+      <polyline points="258,222 270,210 282,230 294,214 306,226 312,220" fill="none" stroke="#cfd6cd" stroke-width="1.4"/>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Naked Circuit</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">Pocket Operators · Landscape Stereo Field</div>
+      <p>The plate as its own PCB: trace-and-pad under-layer, controls seated on pads,
+      <code>R12</code>-style refdes micro-labels. Traces follow the same derived routing as the
+      schematic — two skins over one graph. Gate <code>hero: off</code>; a giant knob on a
+      board reads wrong.</p>
+    </div>
+  </div>
+
+  <!-- 4. Test Bench -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Test bench sketch: beige panel, dark graticule oscilloscope screen with green trace, knobs with tick skirts and amber readouts">
+      <rect width="393" height="292" fill="#ded8c8"/>
+      <!-- scope w/ graticule -->
+      <rect x="30" y="30" width="220" height="130" rx="4" fill="#16211c"/>
+      <g stroke="#7fe3a0" stroke-width=".5" opacity=".22">
+        <line x1="30" y1="56" x2="250" y2="56"/><line x1="30" y1="82" x2="250" y2="82"/><line x1="30" y1="108" x2="250" y2="108"/><line x1="30" y1="134" x2="250" y2="134"/>
+        <line x1="58" y1="30" x2="58" y2="160"/><line x1="86" y1="30" x2="86" y2="160"/><line x1="114" y1="30" x2="114" y2="160"/><line x1="142" y1="30" x2="142" y2="160"/><line x1="170" y1="30" x2="170" y2="160"/><line x1="198" y1="30" x2="198" y2="160"/><line x1="226" y1="30" x2="226" y2="160"/>
+      </g>
+      <line x1="30" y1="95" x2="250" y2="95" stroke="#7fe3a0" stroke-width=".7" opacity=".4"/>
+      <line x1="140" y1="30" x2="140" y2="160" stroke="#7fe3a0" stroke-width=".7" opacity=".4"/>
+      <polyline points="38,95 58,52 80,138 102,60 124,130 146,68 168,124 190,76 212,114 234,92 244,95" fill="none" stroke="#7fe3a0" stroke-width="1.8"/>
+      <!-- playhead sweep -->
+      <line x1="168" y1="32" x2="168" y2="158" stroke="#e8a33d" stroke-width="1.4" opacity=".9"/>
+      <!-- knobs with skirts -->
+      <g fill="none" stroke="#3c382f" stroke-width="1.6">
+        <circle cx="300" cy="70" r="24"/><circle cx="300" cy="150" r="18"/><circle cx="66" cy="210" r="20"/><circle cx="140" cy="210" r="20"/>
+      </g>
+      <g stroke="#3c382f" stroke-width="1.6">
+        <line x1="300" y1="70" x2="313" y2="53"/><line x1="300" y1="150" x2="309" y2="137"/>
+        <line x1="66" y1="210" x2="77" y2="196"/><line x1="140" y1="210" x2="149" y2="195"/>
+      </g>
+      <g stroke="#3c382f" stroke-width="1">
+        <line x1="272" y1="52" x2="277" y2="56"/><line x1="266" y1="70" x2="272" y2="70"/><line x1="272" y1="88" x2="277" y2="84"/><line x1="286" y1="98" x2="289" y2="93"/><line x1="314" y1="98" x2="311" y2="93"/><line x1="328" y1="88" x2="323" y2="84"/><line x1="334" y1="70" x2="328" y2="70"/><line x1="328" y1="52" x2="323" y2="56"/>
+      </g>
+      <!-- amber readouts -->
+      <rect x="204" y="196" width="64" height="26" rx="2" fill="#221c12"/>
+      <text x="212" y="214" font-size="13" fill="#e8a33d" letter-spacing="1">2430</text>
+      <rect x="282" y="196" width="52" height="26" rx="2" fill="#221c12"/>
+      <text x="290" y="214" font-size="13" fill="#e8a33d" letter-spacing="1">SQR</text>
+      <!-- annunciators -->
+      <rect x="204" y="238" width="42" height="16" rx="2" fill="#e8a33d" opacity=".9"/>
+      <text x="211" y="250" font-size="8" fill="#221c12" letter-spacing="1.4">AUTO</text>
+      <rect x="254" y="238" width="42" height="16" rx="2" fill="none" stroke="#3c382f" stroke-width="1"/>
+      <text x="263" y="250" font-size="8" fill="#3c382f" letter-spacing="1.4">HOLD</text>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Test Bench</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">HP · Tektronix · cassette futurism</div>
+      <p>The style with the strongest claim on the subject — it <em>is</em> an oscilloscope app.
+      Graticule scope, engraved tick skirts, amber tabular readouts, annunciator chips. And the
+      auto-playhead becomes a literal sweep. <code>scopeFrame: graticule</code>,
+      <code>chipStyle: annunciator</code>.</p>
+    </div>
+  </div>
+
+  <!-- 5. Dot-Matrix Discipline -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Dot-matrix sketch: black grid ground, segment-arc knobs, red LED cells and amber seven-segment numerals">
+      <rect width="393" height="292" fill="#0e0e10"/>
+      <defs>
+        <pattern id="dm-grid" width="16" height="16" patternUnits="userSpaceOnUse">
+          <circle cx="8" cy="8" r=".9" fill="#2b2b30"/>
+        </pattern>
+      </defs>
+      <rect width="393" height="292" fill="url(#dm-grid)"/>
+      <!-- segment knobs -->
+      <g fill="none" stroke-linecap="butt">
+        <circle cx="72" cy="80" r="24" stroke="#3a3a40" stroke-width="7" stroke-dasharray="10 4" transform="rotate(135 72 80)"/>
+        <circle cx="72" cy="80" r="24" stroke="#d84b40" stroke-width="7" stroke-dasharray="42 200" transform="rotate(135 72 80)"/>
+        <circle cx="152" cy="80" r="24" stroke="#3a3a40" stroke-width="7" stroke-dasharray="10 4" transform="rotate(135 152 80)"/>
+        <circle cx="152" cy="80" r="24" stroke="#d84b40" stroke-width="7" stroke-dasharray="84 200" transform="rotate(135 152 80)"/>
+        <circle cx="232" cy="80" r="24" stroke="#3a3a40" stroke-width="7" stroke-dasharray="10 4" transform="rotate(135 232 80)"/>
+        <circle cx="232" cy="80" r="24" stroke="#d84b40" stroke-width="7" stroke-dasharray="118 200" transform="rotate(135 232 80)"/>
+        <circle cx="312" cy="80" r="24" stroke="#3a3a40" stroke-width="7" stroke-dasharray="10 4" transform="rotate(135 312 80)"/>
+        <circle cx="312" cy="80" r="24" stroke="#d84b40" stroke-width="7" stroke-dasharray="20 200" transform="rotate(135 312 80)"/>
+      </g>
+      <!-- 7-seg readouts -->
+      <g font-size="15" fill="#e8a33d" letter-spacing="2">
+        <text x="52" y="132">88.2</text><text x="134" y="132">04.1</text><text x="214" y="132">72.0</text><text x="298" y="132">0.3</text>
+      </g>
+      <!-- LED matrix cells -->
+      <g>
+        <g fill="#d84b40"><rect x="56" y="176" width="18" height="18" rx="2"/><rect x="80" y="176" width="18" height="18" rx="2"/><rect x="128" y="176" width="18" height="18" rx="2"/><rect x="200" y="176" width="18" height="18" rx="2"/><rect x="272" y="176" width="18" height="18" rx="2"/></g>
+        <g fill="#232326"><rect x="104" y="176" width="18" height="18" rx="2"/><rect x="152" y="176" width="18" height="18" rx="2"/><rect x="176" y="176" width="18" height="18" rx="2"/><rect x="224" y="176" width="18" height="18" rx="2"/><rect x="248" y="176" width="18" height="18" rx="2"/><rect x="296" y="176" width="18" height="18" rx="2"/><rect x="320" y="176" width="18" height="18" rx="2"/></g>
+      </g>
+      <!-- strict faders -->
+      <g stroke="#3a3a40" stroke-width="5"><line x1="72" y1="216" x2="72" y2="260"/><line x1="152" y1="216" x2="152" y2="260"/><line x1="232" y1="216" x2="232" y2="260"/><line x1="312" y1="216" x2="312" y2="260"/></g>
+      <g stroke="#d0d0d4" stroke-width="5"><line x1="72" y1="230" x2="72" y2="260"/><line x1="152" y1="240" x2="152" y2="260"/><line x1="232" y1="224" x2="232" y2="260"/><line x1="312" y1="246" x2="312" y2="260"/></g>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Dot-Matrix Discipline</h3><span class="cost render">render</span></div>
+      <div class="tile-anchors">Elektron · LED step grids</div>
+      <p>A corner of the existing space made total: <code>segments</code>/<code>band</code> knobs
+      only, jitter locked 0, seven-segment numerals, backlit matrix cells. A recipe's locks
+      almost reach it today — the cheapest first trial of a “total look.”</p>
+    </div>
+  </div>
+
+  <!-- 6. Mandala -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Mandala sketch: black ground, radially symmetric rings of controls around a central button, faint occult linework">
+      <rect width="393" height="292" fill="#0a0a0c"/>
+      <g fill="none" stroke="#8a8a92" opacity=".28" stroke-width=".8">
+        <circle cx="196" cy="146" r="52"/><circle cx="196" cy="146" r="92"/><circle cx="196" cy="146" r="126"/>
+        <line x1="196" y1="20" x2="196" y2="272"/><line x1="70" y1="146" x2="322" y2="146"/>
+        <line x1="107" y1="57" x2="285" y2="235"/><line x1="285" y1="57" x2="107" y2="235"/>
+      </g>
+      <!-- center retune + ring -->
+      <circle cx="196" cy="146" r="24" fill="none" stroke="#d6d6da" stroke-width="1.8"/>
+      <path d="M 196 114 A 32 32 0 1 1 165 156" fill="none" stroke="#bb8fce" stroke-width="2"/>
+      <circle cx="190" cy="146" r="2.4" fill="#d6d6da"/><circle cx="202" cy="146" r="2.4" fill="#d6d6da"/>
+      <!-- inner ring: voices -->
+      <g fill="none" stroke="#d6d6da" stroke-width="1.5">
+        <circle cx="196" cy="94" r="11"/><circle cx="241" cy="120" r="11"/><circle cx="241" cy="172" r="11"/>
+        <circle cx="196" cy="198" r="11"/><circle cx="151" cy="172" r="11"/><circle cx="151" cy="120" r="11"/>
+      </g>
+      <g stroke="#d6d6da" stroke-width="1.5">
+        <line x1="196" y1="94" x2="202" y2="86"/><line x1="241" y1="120" x2="249" y2="115"/><line x1="241" y1="172" x2="249" y2="177"/>
+        <line x1="196" y1="198" x2="202" y2="206"/><line x1="151" y1="172" x2="143" y2="177"/><line x1="151" y1="120" x2="143" y2="115"/>
+      </g>
+      <!-- outer ring: tone/filter knobs, mirrored -->
+      <g fill="none" stroke="#9a9aa2" stroke-width="1.6">
+        <circle cx="196" cy="54" r="16"/><circle cx="288" cy="146" r="16"/><circle cx="196" cy="238" r="16"/><circle cx="104" cy="146" r="16"/>
+      </g>
+      <g stroke="#9a9aa2" stroke-width="1.6">
+        <line x1="196" y1="54" x2="205" y2="42"/><line x1="288" y1="146" x2="299" y2="137"/><line x1="196" y1="238" x2="205" y2="227"/><line x1="104" y1="146" x2="113" y2="136"/>
+      </g>
+      <!-- outer pips -->
+      <g fill="#bb8fce" opacity=".8">
+        <circle cx="286" cy="66" r="3"/><circle cx="322" cy="106" r="3"/><circle cx="322" cy="186" r="3"/><circle cx="286" cy="226" r="3"/>
+        <circle cx="106" cy="66" r="3"/><circle cx="70" cy="106" r="3"/><circle cx="70" cy="186" r="3"/><circle cx="106" cy="226" r="3"/>
+      </g>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Mandala</h3><span class="cost packer">packer</span></div>
+      <div class="tile-anchors">Soma Lyra-8 · Patterning</div>
+      <p>Radial symmetric layout: retune (or scope) at center, voices on the inner ring,
+      tone/filter/space outward, mirrored linework. The full break from shelf grammar — needs
+      the radial packer, a polar ERGO pass, and tangential-or-absent labels.</p>
+    </div>
+  </div>
+
+  <!-- 7. Wordless Glyphs -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Wordless glyphs sketch: warm wood ground, black glyphs instead of labels, controls as plain circles, colored banana-jack dots">
+      <rect width="393" height="292" fill="#ab8d60"/>
+      <g stroke="#8f7248" stroke-width="1" opacity=".5">
+        <path d="M0 40 C 120 34, 260 48, 393 38" fill="none"/>
+        <path d="M0 120 C 140 112, 240 130, 393 118" fill="none"/>
+        <path d="M0 210 C 120 202, 280 218, 393 206" fill="none"/>
+      </g>
+      <!-- controls -->
+      <g fill="none" stroke="#241d12" stroke-width="2">
+        <circle cx="80" cy="90" r="22"/><circle cx="170" cy="90" r="22"/><circle cx="260" cy="90" r="22"/><circle cx="335" cy="90" r="16"/>
+      </g>
+      <g fill="#241d12">
+        <circle cx="88" cy="76" r="3"/><circle cx="180" cy="78" r="3"/><circle cx="268" cy="75" r="3"/><circle cx="341" cy="79" r="2.6"/>
+      </g>
+      <!-- glyphs under controls (wave / fold / rolloff / decay pips) -->
+      <g fill="none" stroke="#241d12" stroke-width="2" stroke-linecap="round">
+        <path d="M64 132 q 8 -12 16 0 q 8 12 16 0"/>
+        <path d="M154 132 l 8 -10 l 8 10 l 8 -10 l 8 10"/>
+        <path d="M244 126 h 14 q 10 0 14 12"/>
+      </g>
+      <g fill="#241d12">
+        <circle cx="325" cy="130" r="3.4"/><circle cx="336" cy="130" r="2.6"/><circle cx="346" cy="130" r="1.9"/><circle cx="354" cy="130" r="1.3"/>
+      </g>
+      <!-- fader group, glyph-marked -->
+      <g stroke="#241d12" stroke-width="4" stroke-linecap="round">
+        <line x1="72" y1="180" x2="72" y2="248"/><line x1="106" y1="192" x2="106" y2="248"/><line x1="140" y1="186" x2="140" y2="248"/>
+      </g>
+      <!-- banana dots -->
+      <g>
+        <circle cx="240" cy="200" r="6" fill="#c0392b"/><circle cx="266" cy="200" r="6" fill="#2c67a8"/><circle cx="292" cy="200" r="6" fill="#2e7d4f"/><circle cx="318" cy="200" r="6" fill="#d9a441"/>
+        <circle cx="253" cy="228" r="6" fill="#2e7d4f"/><circle cx="279" cy="228" r="6" fill="#d9a441"/><circle cx="305" cy="228" r="6" fill="#c0392b"/>
+      </g>
+      <path d="M182 214 q 10 -16 20 0 q 10 16 20 0" fill="none" stroke="#241d12" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Wordless Glyphs</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">Ciat-Lonbarde · TE pictograms</div>
+      <p>Labels replaced by generated pictograms — the wave itself for shape, a rolloff curve
+      for filter, decaying pips for reverb. Readouts become tiny bars. Localizes for free;
+      a11y names stay verbatim. <code>labelMode: text|glyph|hidden</code>.</p>
+    </div>
+  </div>
+
+  <!-- 8. Poster Plate -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Poster plate sketch: black ground, large diagonal orange art field, one huge hero knob, small satellite controls">
+      <rect width="393" height="292" fill="#0d0d0f"/>
+      <polygon points="0,292 200,0 320,0 60,292" fill="#ce9178" opacity=".14"/>
+      <path d="M-10 230 C 80 140, 150 260, 240 150 S 380 120, 400 60" fill="none" stroke="#ce9178" stroke-width="1.2" opacity=".5"/>
+      <!-- hero knob 2.4x -->
+      <circle cx="150" cy="130" r="62" fill="none" stroke="#dcdcde" stroke-width="2.4"/>
+      <path d="M 150 48 A 82 82 0 0 1 226 100" fill="none" stroke="#5c5c62" stroke-width="1.4"/>
+      <line x1="150" y1="130" x2="186" y2="82" stroke="#dcdcde" stroke-width="2.4"/>
+      <text x="126" y="216" font-size="10" fill="#8a8a90" letter-spacing="3">FILTER</text>
+      <!-- satellites, off-grid -->
+      <g fill="none" stroke="#9a9aa0" stroke-width="1.5">
+        <circle cx="300" cy="88" r="15"/><circle cx="330" cy="170" r="13"/><circle cx="288" cy="234" r="13"/>
+      </g>
+      <g stroke="#9a9aa0" stroke-width="1.5">
+        <line x1="300" y1="88" x2="308" y2="77"/><line x1="330" y1="170" x2="337" y2="160"/><line x1="288" y1="234" x2="295" y2="225"/>
+      </g>
+      <g stroke="#9a9aa0" stroke-width="3.4" stroke-linecap="round">
+        <line x1="46" y1="242" x2="46" y2="276"/><line x1="66" y1="250" x2="66" y2="276"/><line x1="86" y1="246" x2="86" y2="276"/><line x1="106" y1="256" x2="106" y2="276"/>
+      </g>
+      <line x1="238" y1="40" x2="238" y2="270" stroke="#3c3c42" stroke-width="1"/>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Poster Plate</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">Make Noise · Bauhaus, past the current dial</div>
+      <p><code>school: 1</code> is still polite. Add a generative art layer derived from the
+      patch (the fold curve, the wave at ghost scale), push hero to 2.2–2.5×, compose on the
+      diagonal. The art sits under ~<code>INK(0.08)</code> so it stays a ground, not a second
+      picture.</p>
+    </div>
+  </div>
+
+  <!-- 9. Functional Candy -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Functional candy sketch: dark panel with 808-style colored step buttons and candy knob caps color-coded by family">
+      <rect width="393" height="292" fill="#17181a"/>
+      <!-- candy knobs: hue = family -->
+      <g>
+        <circle cx="76" cy="84" r="24" fill="#e8834a"/><line x1="76" y1="84" x2="88" y2="68" stroke="#17181a" stroke-width="3"/>
+        <circle cx="156" cy="84" r="24" fill="#e8834a"/><line x1="156" y1="84" x2="166" y2="66" stroke="#17181a" stroke-width="3"/>
+        <circle cx="240" cy="84" r="26" fill="#ffdc00"/><line x1="240" y1="84" x2="254" y2="66" stroke="#17181a" stroke-width="3"/>
+        <circle cx="322" cy="84" r="20" fill="#4a90d9"/><line x1="322" y1="84" x2="332" y2="70" stroke="#17181a" stroke-width="3"/>
+      </g>
+      <g font-size="8.5" letter-spacing="2">
+        <text x="58" y="126" fill="#e8834a">SHAPE</text><text x="142" y="126" fill="#e8834a">FOLD</text>
+        <text x="228" y="126" fill="#ffdc00">LPF</text><text x="304" y="126" fill="#4a90d9">REVERB</text>
+      </g>
+      <!-- voice faders keep spectrum -->
+      <g stroke-width="4" stroke-linecap="round">
+        <line x1="66" y1="156" x2="66" y2="212" stroke="#ff4136"/><line x1="96" y1="166" x2="96" y2="212" stroke="#2ecc40"/>
+        <line x1="126" y1="160" x2="126" y2="212" stroke="#0074d9"/><line x1="156" y1="172" x2="156" y2="212" stroke="#ffdc00"/>
+      </g>
+      <!-- red action button -->
+      <circle cx="330" cy="180" r="18" fill="#d84b40"/>
+      <circle cx="324" cy="180" r="2.2" fill="#17181a"/><circle cx="336" cy="180" r="2.2" fill="#17181a"/>
+      <!-- 808 step row -->
+      <g>
+        <rect x="34" y="238" width="36" height="24" rx="3" fill="#d84b40"/><rect x="78" y="238" width="36" height="24" rx="3" fill="#d84b40"/>
+        <rect x="122" y="238" width="36" height="24" rx="3" fill="#e8834a"/><rect x="166" y="238" width="36" height="24" rx="3" fill="#e8834a"/>
+        <rect x="210" y="238" width="36" height="24" rx="3" fill="#ffdc00"/><rect x="254" y="238" width="36" height="24" rx="3" fill="#ffdc00"/>
+        <rect x="298" y="238" width="36" height="24" rx="3" fill="#efe9dc"/><rect x="342" y="238" width="20" height="24" rx="3" fill="#efe9dc"/>
+      </g>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Functional Candy</h3><span class="cost vocab">vocab</span></div>
+      <div class="tile-anchors">TR-808 · Casio VL-1</div>
+      <p>Color logic flips from decoration to meaning: hue = family (tone orange, filter
+      yellow, space blue, action red; voices keep the spectrum). The loudest direction and the
+      most learnable — color teaches the plate. Must survive the CVD check
+      (<code>PALETTE-CVD-REPORT.md</code> exists for a reason).</p>
+    </div>
+  </div>
+
+  <!-- 10. One-Bit -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="One-bit sketch: white ground, hard black outlines, dithered fills for state">
+      <defs>
+        <pattern id="dith" width="4" height="4" patternUnits="userSpaceOnUse">
+          <rect width="4" height="4" fill="#f2f2ef"/>
+          <rect x="0" y="0" width="1.4" height="1.4" fill="#141414"/>
+          <rect x="2" y="2" width="1.4" height="1.4" fill="#141414"/>
+        </pattern>
+      </defs>
+      <rect width="393" height="292" fill="#f2f2ef"/>
+      <!-- scope, dithered -->
+      <rect x="30" y="34" width="190" height="92" fill="url(#dith)" stroke="#141414" stroke-width="2"/>
+      <polyline points="40,80 62,48 86,112 110,54 134,106 158,62 182,100 206,76 212,80" fill="none" stroke="#141414" stroke-width="2.4"/>
+      <!-- knobs -->
+      <g fill="none" stroke="#141414" stroke-width="2.4">
+        <circle cx="278" cy="66" r="22"/><circle cx="344" cy="66" r="16"/><circle cx="278" cy="134" r="16"/>
+      </g>
+      <circle cx="344" cy="134" r="16" fill="url(#dith)" stroke="#141414" stroke-width="2.4"/>
+      <g stroke="#141414" stroke-width="2.4">
+        <line x1="278" y1="66" x2="290" y2="50"/><line x1="344" y1="66" x2="352" y2="54"/>
+        <line x1="278" y1="134" x2="286" y2="122"/><line x1="344" y1="134" x2="352" y2="123"/>
+      </g>
+      <!-- faders -->
+      <g stroke="#141414" stroke-width="5" stroke-linecap="butt">
+        <line x1="52" y1="170" x2="52" y2="252"/><line x1="92" y1="186" x2="92" y2="252"/><line x1="132" y1="176" x2="132" y2="252"/><line x1="172" y1="196" x2="172" y2="252"/>
+      </g>
+      <!-- mute squares: filled / dithered / outline -->
+      <rect x="226" y="196" width="20" height="20" fill="#141414"/>
+      <rect x="258" y="196" width="20" height="20" fill="url(#dith)" stroke="#141414" stroke-width="2"/>
+      <rect x="290" y="196" width="20" height="20" fill="none" stroke="#141414" stroke-width="2"/>
+      <rect x="322" y="196" width="20" height="20" fill="#141414"/>
+      <text x="226" y="248" font-size="10" fill="#141414" letter-spacing="2">1-BIT / DITHER = STATE</text>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>One-Bit</h3><span class="cost render">render</span></div>
+      <div class="tile-anchors">Playdate · Return of the Obra Dinn</div>
+      <p>Two colors, zero grays — state carried by ordered dither. A third entry in
+      <code>THEMES</code>, not new genes: the cheapest radical direction on the board. The
+      ink-alpha grammar (0.85 / 0.3 / 0.12) needs a dither mapping table and the visibility
+      floor re-derived.</p>
+    </div>
+  </div>
+
+  <!-- 11. Ambient Field -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Ambient field sketch: deep blue gradient, soft floating orbs loosely clustered, ghost wave behind">
+      <defs>
+        <linearGradient id="amb" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0a1420"/><stop offset="1" stop-color="#1b2c40"/>
+        </linearGradient>
+      </defs>
+      <rect width="393" height="292" fill="url(#amb)"/>
+      <path d="M-10 160 C 60 80, 120 240, 200 140 S 330 60, 400 170" fill="none" stroke="#8fb3d9" stroke-width="1.4" opacity=".18"/>
+      <path d="M-10 190 C 70 120, 140 250, 220 170 S 340 100, 400 200" fill="none" stroke="#8fb3d9" stroke-width="1" opacity=".1"/>
+      <!-- voice cluster -->
+      <g opacity=".85">
+        <circle cx="96" cy="196" r="26" fill="#ff4136" opacity=".34"/><circle cx="96" cy="196" r="12" fill="#ff4136" opacity=".6"/>
+        <circle cx="146" cy="222" r="22" fill="#2ecc40" opacity=".30"/><circle cx="146" cy="222" r="10" fill="#2ecc40" opacity=".55"/>
+        <circle cx="120" cy="158" r="20" fill="#0074d9" opacity=".30"/><circle cx="120" cy="158" r="9" fill="#0074d9" opacity=".55"/>
+        <circle cx="168" cy="180" r="18" fill="#ffdc00" opacity=".26"/><circle cx="168" cy="180" r="8" fill="#ffdc00" opacity=".5"/>
+      </g>
+      <!-- tone cluster -->
+      <g opacity=".8">
+        <circle cx="284" cy="96" r="30" fill="#9ec2e8" opacity=".2"/><circle cx="284" cy="96" r="14" fill="#cfe0f2" opacity=".5"/>
+        <circle cx="330" cy="140" r="20" fill="#9ec2e8" opacity=".18"/><circle cx="330" cy="140" r="9" fill="#cfe0f2" opacity=".45"/>
+      </g>
+      <!-- space -->
+      <circle cx="316" cy="224" r="24" fill="#bb8fce" opacity=".2"/><circle cx="316" cy="224" r="10" fill="#bb8fce" opacity=".45"/>
+      <!-- grain cloud witness -->
+      <g fill="#cfe0f2">
+        <circle cx="60" cy="72" r="1.4" opacity=".8"/><circle cx="74" cy="58" r="1.1" opacity=".6"/><circle cx="88" cy="80" r="1.6" opacity=".7"/>
+        <circle cx="102" cy="64" r="1" opacity=".5"/><circle cx="112" cy="86" r="1.4" opacity=".65"/><circle cx="126" cy="70" r="1.2" opacity=".55"/>
+        <circle cx="96" cy="48" r="1" opacity=".4"/><circle cx="138" cy="88" r="1" opacity=".45"/><circle cx="70" cy="92" r="1.1" opacity=".5"/><circle cx="120" cy="52" r="1.3" opacity=".5"/>
+      </g>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Ambient Field</h3><span class="cost packer">packer</span></div>
+      <div class="tile-anchors">Bloom · Borderlands Granular</div>
+      <p>The panel dissolves: no dividers, no labels, controls as soft orbs gravity-clustered by
+      family, the scope full-bleed behind everything. Probably granular-recipe-only — and it's
+      the direction that finally gives grains their witness: a cloud, not a wave.</p>
+    </div>
+  </div>
+
+  <!-- 12. Material Plate -->
+  <div class="tile">
+    <svg viewBox="0 0 393 292" role="img" aria-label="Material plate sketch: dark panel with soft-gradient knob caps, highlight rims, inset fader tracks">
+      <defs>
+        <radialGradient id="cap" cx=".38" cy=".3" r=".9">
+          <stop offset="0" stop-color="#37373b"/><stop offset="1" stop-color="#101012"/>
+        </radialGradient>
+        <linearGradient id="inset" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#0a0a0b"/><stop offset="1" stop-color="#1f1f22"/>
+        </linearGradient>
+      </defs>
+      <rect width="393" height="292" fill="#1b1b1d"/>
+      <g stroke="#242427" stroke-width="1"><line x1="0" y1="60" x2="393" y2="60" opacity=".5"/><line x1="0" y1="150" x2="393" y2="150" opacity=".5"/></g>
+      <!-- knobs -->
+      <g>
+        <ellipse cx="80" cy="112" rx="26" ry="6" fill="#000" opacity=".4"/>
+        <circle cx="80" cy="100" r="26" fill="url(#cap)"/>
+        <path d="M 60 82 A 26 26 0 0 1 100 82" fill="none" stroke="#4c4c52" stroke-width="1.4"/>
+        <line x1="80" y1="100" x2="93" y2="83" stroke="#d9d9dc" stroke-width="2.2"/>
+        <ellipse cx="170" cy="110" rx="21" ry="5" fill="#000" opacity=".4"/>
+        <circle cx="170" cy="100" r="21" fill="url(#cap)"/>
+        <path d="M 154 86 A 21 21 0 0 1 186 86" fill="none" stroke="#4c4c52" stroke-width="1.2"/>
+        <line x1="170" y1="100" x2="180" y2="86" stroke="#d9d9dc" stroke-width="2"/>
+        <ellipse cx="252" cy="108" rx="17" ry="4" fill="#000" opacity=".4"/>
+        <circle cx="252" cy="100" r="17" fill="url(#cap)"/>
+        <line x1="252" y1="100" x2="260" y2="88" stroke="#d9d9dc" stroke-width="1.8"/>
+        <ellipse cx="326" cy="108" rx="17" ry="4" fill="#000" opacity=".4"/>
+        <circle cx="326" cy="100" r="17" fill="url(#cap)"/>
+        <line x1="326" y1="100" x2="334" y2="89" stroke="#d9d9dc" stroke-width="1.8"/>
+      </g>
+      <g font-size="8" fill="#7c7c82" letter-spacing="2">
+        <text x="62" y="146">SHAPE</text><text x="156" y="146">DRIVE</text><text x="242" y="146">LPF</text><text x="312" y="146">VERB</text>
+      </g>
+      <!-- inset faders -->
+      <g>
+        <rect x="72" y="180" width="9" height="76" rx="4.5" fill="url(#inset)"/>
+        <rect x="74" y="198" width="5" height="56" rx="2.5" fill="#ff4136" opacity=".85"/>
+        <rect x="112" y="180" width="9" height="76" rx="4.5" fill="url(#inset)"/>
+        <rect x="114" y="210" width="5" height="44" rx="2.5" fill="#2ecc40" opacity=".85"/>
+        <rect x="152" y="180" width="9" height="76" rx="4.5" fill="url(#inset)"/>
+        <rect x="154" y="202" width="5" height="52" rx="2.5" fill="#0074d9" opacity=".85"/>
+        <rect x="192" y="180" width="9" height="76" rx="4.5" fill="url(#inset)"/>
+        <rect x="194" y="218" width="5" height="36" rx="2.5" fill="#ffdc00" opacity=".85"/>
+      </g>
+      <!-- soft scope -->
+      <rect x="248" y="180" width="112" height="72" rx="6" fill="#141416"/>
+      <rect x="248" y="180" width="112" height="72" rx="6" fill="none" stroke="#2c2c30" stroke-width="1"/>
+      <polyline points="256,216 272,192 290,238 308,198 326,232 344,208 354,216" fill="none" stroke="#c9c9cd" stroke-width="1.6"/>
+    </svg>
+    <div class="tile-body">
+      <div class="tile-title"><h3>Material Plate</h3><span class="cost render">render</span></div>
+      <div class="tile-anchors">Braun hardware · Arturia, restrained</div>
+      <p>Rams, not photorealism: two-stop gradient caps, a highlight rim, inset fader tracks,
+      soft ground shadow. The only direction that changes rendering without touching one layout
+      decision — <code>material: flat|soft|engraved</code> can sweep independently of everything
+      else.</p>
+    </div>
+  </div>
+
+  </div><!-- /tiles -->
+
+  <h4 class="sub">The axis map — twelve points, five dials</h4>
+  <div class="tablewrap"><table>
+    <tr><th>axis</th><th>values across the twelve</th></tr>
+    <tr><td class="name">ground</td><td class="mono">glass (now) · paper · pcb · graticule · field · 1-bit</td></tr>
+    <tr><td class="name">ornament</td><td class="mono">none (now) · flowlines · traces · mandala · artfield</td></tr>
+    <tr><td class="name">label mode</td><td class="mono">text (now) · glyph · refdes · hidden</td></tr>
+    <tr><td class="name">color logic</td><td class="mono">mono-accent (now) · family-coded · candy · two-tone</td></tr>
+    <tr><td class="name">material</td><td class="mono">flat (now) · soft · engraved</td></tr>
+  </table></div>
+  <p class="note"><b>Sample axes, not brands.</b> Named styles are moods to rate against; the
+  generator gets the dials. This also keeps outputs clear of trade dress — Teenage Engineering
+  in particular protects panel layouts aggressively.</p>
+</section>
+
+<!-- ============================================================= -->
+<section class="silk" id="residents">
+  <span class="silk-label">UI Residents — auto · arp · playhead</span><span class="silk-num">02</span>
+  <p class="lede">Current law: transport is chrome, the plate admits only <em>immediate</em>
+  controls, auto lives in the sequencer pane (§3j), and the countdown survives on-plate as a
+  display (<span class="mono">cycleReadout: ring | bar</span>). The divergence below either
+  extends the display grammar (safe) or fuses auto into an element the plate already owns
+  (the one defensible rule-bend).</p>
+
+  <h4 class="sub">The flywheel — auto joins retune, not the rail</h4>
+  <div class="diagrid">
+    <div class="dia">
+      <svg viewBox="0 0 250 160" role="img" aria-label="Flywheel diagram: retune button with dwell ring; tap retunes, hold toggles auto">
+        <rect width="250" height="160" fill="#141416"/>
+        <circle cx="80" cy="80" r="30" fill="none" stroke="#dcdcde" stroke-width="2"/>
+        <circle cx="72" cy="80" r="3" fill="#dcdcde"/><circle cx="88" cy="80" r="3" fill="#dcdcde"/>
+        <circle cx="80" cy="80" r="40" fill="none" stroke="#2c2c30" stroke-width="3"/>
+        <path d="M 80 40 A 40 40 0 1 1 42 92" fill="none" stroke="#ce9178" stroke-width="3"/>
+        <g font-size="9" fill="#a2a2a6">
+          <text x="140" y="52">tap → retune now</text>
+          <text x="140" y="80">hold → auto on/off</text>
+          <text x="140" y="108">ring → live dwell</text>
+        </g>
+        <g stroke="#4c4c52" stroke-width="1">
+          <line x1="112" y1="48" x2="136" y2="48"/><line x1="122" y1="80" x2="136" y2="76"/><line x1="115" y1="106" x2="136" y2="104"/>
+        </g>
+      </svg>
+      <div class="dia-cap"><b>The flywheel</b>Zero new elements, zero space: retune (already
+      w 1.0, already wearing the cycle ring) gains auto as a <em>mode of itself</em>. Tap =
+      retune, long-press = auto, ring track brightens when armed. The control stays immediate —
+      arguably not a chrome-rule break at all.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 160" role="img" aria-label="Arp step strip and direction dial drawings">
+        <rect width="250" height="160" fill="#141416"/>
+        <!-- step strip -->
+        <g>
+          <rect x="24" y="34" width="16" height="22" rx="2" fill="#ce9178"/>
+          <rect x="44" y="34" width="16" height="22" rx="2" fill="#ce9178" opacity=".55"/>
+          <rect x="64" y="34" width="16" height="22" rx="2" fill="none" stroke="#4c4c52"/>
+          <rect x="84" y="34" width="16" height="22" rx="2" fill="none" stroke="#4c4c52"/>
+          <rect x="104" y="34" width="16" height="22" rx="2" fill="none" stroke="#4c4c52"/>
+          <rect x="124" y="34" width="16" height="22" rx="2" fill="none" stroke="#4c4c52"/>
+        </g>
+        <text x="24" y="74" font-size="8" fill="#6b6b70" letter-spacing="2">STEP STRIP · LIT IN PLAY ORDER</text>
+        <!-- direction dial -->
+        <circle cx="60" cy="118" r="24" fill="none" stroke="#dcdcde" stroke-width="1.8"/>
+        <path d="M48 126 l 8 -8 l 0 5 l 8 -8 l 0 5 l 8 -8" fill="none" stroke="#4ec9b0" stroke-width="2" stroke-linecap="round"/>
+        <text x="98" y="112" font-size="9" fill="#a2a2a6">direction dial —</text>
+        <text x="98" y="126" font-size="9" fill="#a2a2a6">the face draws the contour,</text>
+        <text x="98" y="140" font-size="9" fill="#a2a2a6">not an arrow</text>
+      </svg>
+      <div class="dia-cap"><b>Arp residents</b>Same four cataloged params, better drawings: a
+      step strip in the <code>segments</code> grammar (doubles as the on/off indicator), a
+      direction dial whose face is the contour. Immediacy split: <code>arpOn</code> +
+      <code>arpDir</code> → plate; <code>arpBpm</code> is shared transport tempo → pane.
+      All still blocked on <code>ArpPatch</code>.</div>
+    </div>
+  </div>
+
+  <h4 class="sub">A progress grammar, not a progress bar</h4>
+  <div class="diagrid">
+    <div class="dia">
+      <svg viewBox="0 0 250 120" role="img" aria-label="Scope playhead sweep">
+        <rect width="250" height="120" fill="#141416"/>
+        <rect x="30" y="22" width="190" height="76" fill="none" stroke="#2c2c30" stroke-width="1.4"/>
+        <polyline points="38,60 62,32 90,88 118,40 146,80 174,48 202,72 212,60" fill="none" stroke="#8a8a92" stroke-width="1.6"/>
+        <line x1="146" y1="24" x2="146" y2="96" stroke="#ce9178" stroke-width="1.8"/>
+      </svg>
+      <div class="dia-cap"><b>Scope playhead</b>A 1px sweep crossing the witness over the
+      dwell. On the Test Bench style it is literally an oscilloscope trigger sweep — the most
+      WaveTuner answer to “progress bar.”</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 120" role="img" aria-label="Perimeter fuse progress">
+        <rect width="250" height="120" fill="#141416"/>
+        <rect x="40" y="24" width="170" height="72" fill="none" stroke="#2c2c30" stroke-width="2"/>
+        <path d="M 125 24 H 210 V 96 H 92" fill="none" stroke="#ce9178" stroke-width="2"/>
+        <circle cx="92" cy="96" r="3" fill="#ce9178"/>
+      </svg>
+      <div class="dia-cap"><b>Perimeter fuse</b>A hairline consumed clockwise around the
+      pane's border. Loud on Poster / One-Bit plates, silent everywhere else.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 120" role="img" aria-label="Divider runner progress dot">
+        <rect width="250" height="120" fill="#141416"/>
+        <line x1="34" y1="60" x2="216" y2="60" stroke="#2c2c30" stroke-width="1.4"/>
+        <line x1="34" y1="60" x2="142" y2="60" stroke="#5c5c62" stroke-width="1.4"/>
+        <circle cx="142" cy="60" r="4" fill="#ce9178"/>
+      </svg>
+      <div class="dia-cap"><b>Divider runner</b>A dot traveling an existing hairline — the
+      cycle bar dissolved into chrome the plate already has. The Braun-end answer.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 120" role="img" aria-label="Spectrum stem countdown">
+        <rect width="250" height="120" fill="#141416"/>
+        <line x1="30" y1="88" x2="220" y2="88" stroke="#2c2c30" stroke-width="1.4"/>
+        <g stroke-width="3" stroke-linecap="round">
+          <line x1="58" y1="88" x2="58" y2="34" stroke="#2c2c30"/>
+          <line x1="94" y1="88" x2="94" y2="48" stroke="#2c2c30"/>
+          <line x1="128" y1="88" x2="128" y2="42" stroke="#8a8a92"/>
+          <line x1="164" y1="88" x2="164" y2="56" stroke="#8a8a92"/>
+          <line x1="196" y1="88" x2="196" y2="30" stroke="#dcdcde"/>
+        </g>
+      </svg>
+      <div class="dia-cap"><b>Stem countdown</b>Spectrum-bar stems dim one per subdivision;
+      the root dims last. Progress lives where pitch already lives.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 120" role="img" aria-label="Hero knob drain wedge">
+        <rect width="250" height="120" fill="#141416"/>
+        <circle cx="125" cy="60" r="34" fill="none" stroke="#dcdcde" stroke-width="2"/>
+        <path d="M 125 60 L 125 18 A 42 42 0 0 1 162 40 Z" fill="#ce9178" opacity=".35" transform="translate(0 0)"/>
+        <line x1="125" y1="60" x2="146" y2="34" stroke="#dcdcde" stroke-width="2"/>
+      </svg>
+      <div class="dia-cap"><b>Hero drain</b>When hero is on, a wedge drains inside the hero's
+      own ring — the focal object carries the clock. The Bauhaus-end answer.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 120" role="img" aria-label="Chord position pips with active pip filling">
+        <rect width="250" height="120" fill="#141416"/>
+        <g>
+          <circle cx="65" cy="60" r="6" fill="#8a8a92"/>
+          <circle cx="95" cy="60" r="6" fill="#8a8a92"/>
+          <circle cx="125" cy="60" r="7" fill="none" stroke="#ce9178" stroke-width="1.6"/>
+          <path d="M 125 53 A 7 7 0 0 1 131.6 64.5 L 125 60 Z" fill="#ce9178"/>
+          <circle cx="155" cy="60" r="6" fill="none" stroke="#4c4c52" stroke-width="1.4"/>
+          <circle cx="185" cy="60" r="6" fill="none" stroke="#4c4c52" stroke-width="1.4"/>
+        </g>
+      </svg>
+      <div class="dia-cap"><b>Pip trail</b>The chord-position pips already owed
+      (TODO-songs P1), with the active pip filling as its dwell runs. Finite songs only —
+      parametric keeps the ring grammar; there is no position in ∞.</div>
+    </div>
+  </div>
+  <p class="note"><b>One clock, many faces.</b> Every form reads the same
+  <code>CYCLE_PROGRESS</code>, and the F5 lesson stands: a paused form vanishes — it never
+  freezes, because a frozen ring is a lie.</p>
+</section>
+
+<!-- ============================================================= -->
+<section class="silk" id="packers">
+  <span class="silk-label">Eight Packers</span><span class="silk-num">03</span>
+  <p class="lede">Beyond shelves and columns. Every candidate keeps the contracts: seeded
+  determinism (fixed iterations, no wall-clock), re-lay-never-re-roll, the 50 pt knob cull,
+  an ERGO pass (or its polar equivalent), one picture per plate, shrink-to-fit last. Trialed
+  behind <span class="mono">?packer=</span> — and each will need its own cap constant
+  discovered by rating, the way 1,600 votes gave rows its caps (2 rows 68 % liked · 4+ rows
+  ≤ 10 %).</p>
+
+  <div class="diagrid">
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Signal-path packer wireframe: chain of boxes with arrows and a parallel voice bus">
+        <rect width="250" height="150" fill="#141416"/>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.3">
+          <rect x="20" y="34" width="38" height="34"/><rect x="76" y="34" width="38" height="34"/><rect x="132" y="34" width="38" height="34"/><rect x="188" y="34" width="42" height="34"/>
+        </g>
+        <g stroke="#ce9178" stroke-width="1.4">
+          <line x1="58" y1="51" x2="76" y2="51"/><line x1="114" y1="51" x2="132" y2="51"/><line x1="170" y1="51" x2="188" y2="51"/>
+        </g>
+        <g fill="#ce9178"><polygon points="74,48 79,51 74,54"/><polygon points="130,48 135,51 130,54"/><polygon points="186,48 191,51 186,54"/></g>
+        <rect x="20" y="96" width="210" height="28" fill="none" stroke="#4c4c52" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <g font-size="8" fill="#6b6b70"><text x="24" y="30">OSC</text><text x="80" y="30">FOLD</text><text x="136" y="30">FILT</text><text x="192" y="30">VERB</text><text x="24" y="118" letter-spacing="1">VOICE BUS</text></g>
+      </svg>
+      <div class="dia-cap"><b>1 · Signal-path</b>Blocks ordered along the real audio chain,
+      voices as a parallel bus. The layout <em>means</em> something — and it's the cheapest
+      radical packer: columns with an engine-derived section order, <code>orderSeed</code>
+      gated off.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Radial rings packer wireframe">
+        <rect width="250" height="150" fill="#141416"/>
+        <g fill="none" stroke="#4c4c52" stroke-dasharray="3 3">
+          <circle cx="125" cy="75" r="26"/><circle cx="125" cy="75" r="48"/><circle cx="125" cy="75" r="68"/>
+        </g>
+        <circle cx="125" cy="75" r="9" fill="none" stroke="#ce9178" stroke-width="1.6"/>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.2">
+          <rect x="117" y="41" width="16" height="12"/><rect x="150" y="62" width="16" height="12"/><rect x="117" y="96" width="16" height="12"/><rect x="84" y="62" width="16" height="12"/>
+          <rect x="117" y="17" width="16" height="14"/><rect x="172" y="68" width="16" height="14"/><rect x="117" y="118" width="16" height="14"/><rect x="62" y="68" width="16" height="14"/>
+        </g>
+      </svg>
+      <div class="dia-cap"><b>2 · Radial rings</b>Polar packer: center anchor, voices ring 1,
+      tone/filter ring 2. Caps become RING_CAP + per-ring arc budgets; level/pan marriage =
+      mirrored placement. Needs a polar ERGO.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Bento treemap packer wireframe">
+        <rect width="250" height="150" fill="#141416"/>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.3">
+          <rect x="20" y="20" width="120" height="70"/><rect x="148" y="20" width="82" height="110"/>
+          <rect x="20" y="98" width="120" height="32"/>
+        </g>
+        <rect x="148" y="20" width="82" height="110" fill="#ce9178" opacity=".07"/>
+        <rect x="20" y="20" width="120" height="70" fill="#4ec9b0" opacity=".06"/>
+        <g font-size="8" fill="#6b6b70"><text x="26" y="34">VOICES</text><text x="154" y="34">TONE</text><text x="26" y="112">SPACE</text></g>
+      </svg>
+      <div class="dia-cap"><b>3 · Bento treemap</b>Guillotine split, cell area ∝ family
+      weight-sum, each cell packs internally with existing row logic. With section washes
+      (§01.2) this is the Serge plate. Enforce min cell aspect; re-split on slivers.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Perimeter bezel packer wireframe: controls around the edge, scope center">
+        <rect width="250" height="150" fill="#141416"/>
+        <rect x="62" y="44" width="126" height="62" fill="none" stroke="#ce9178" stroke-width="1.4"/>
+        <polyline points="70,75 88,54 108,96 128,60 148,90 168,68 180,75" fill="none" stroke="#8a8a92" stroke-width="1.3"/>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.2">
+          <rect x="24" y="20" width="18" height="14"/><rect x="70" y="20" width="18" height="14"/><rect x="116" y="20" width="18" height="14"/><rect x="162" y="20" width="18" height="14"/><rect x="208" y="20" width="18" height="14"/>
+          <rect x="24" y="116" width="18" height="14"/><rect x="70" y="116" width="18" height="14"/><rect x="116" y="116" width="18" height="14"/><rect x="162" y="116" width="18" height="14"/><rect x="208" y="116" width="18" height="14"/>
+          <rect x="24" y="62" width="14" height="18"/><rect x="212" y="62" width="14" height="18"/>
+        </g>
+      </svg>
+      <div class="dia-cap"><b>4 · Perimeter bezel</b>Controls ring the pane edge, the scope
+      huge at center — <code>scopePlace: hero</code> at its conclusion. ERGO inverts: the
+      bottom edge is prime thumb territory, so action goes there deliberately.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Spectral registration packer wireframe: control stacks aligned to pitch stems">
+        <rect width="250" height="150" fill="#141416"/>
+        <line x1="20" y1="40" x2="230" y2="40" stroke="#2c2c30" stroke-width="1.4"/>
+        <g stroke-width="2.4" stroke-linecap="round">
+          <line x1="52" y1="40" x2="52" y2="18" stroke="#ff4136"/><line x1="88" y1="40" x2="88" y2="24" stroke="#2ecc40"/>
+          <line x1="146" y1="40" x2="146" y2="20" stroke="#0074d9"/><line x1="204" y1="40" x2="204" y2="26" stroke="#ffdc00"/>
+        </g>
+        <g fill="none" stroke-width="1.2">
+          <g stroke="#ff4136" opacity=".8"><rect x="44" y="54" width="16" height="12"/><rect x="44" y="72" width="16" height="12"/><rect x="44" y="90" width="16" height="12"/></g>
+          <g stroke="#2ecc40" opacity=".8"><rect x="80" y="54" width="16" height="12"/><rect x="80" y="72" width="16" height="12"/><rect x="80" y="90" width="16" height="12"/></g>
+          <g stroke="#0074d9" opacity=".8"><rect x="138" y="54" width="16" height="12"/><rect x="138" y="72" width="16" height="12"/><rect x="138" y="90" width="16" height="12"/></g>
+          <g stroke="#ffdc00" opacity=".8"><rect x="196" y="54" width="16" height="12"/><rect x="196" y="72" width="16" height="12"/><rect x="196" y="90" width="16" height="12"/></g>
+        </g>
+        <rect x="60" y="114" width="130" height="20" fill="none" stroke="#4c4c52" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="66" y="128" font-size="8" fill="#6b6b70" letter-spacing="1">NON-VOICE BAND</text>
+      </svg>
+      <div class="dia-cap"><b>5 · Spectral registration</b><code>mixerScatter</code>
+      generalized plate-wide: every per-voice stack x-registers to its stem. The plate becomes
+      a continuation of the spectrum. Close pitches resolve by marriage-snap — stems never
+      move.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Orbit clusters packer wireframe: dashed gravity wells with bodies and springs">
+        <rect width="250" height="150" fill="#141416"/>
+        <g fill="none" stroke="#4c4c52" stroke-dasharray="3 3">
+          <ellipse cx="76" cy="62" rx="46" ry="34"/><ellipse cx="180" cy="52" rx="38" ry="26"/><ellipse cx="150" cy="112" rx="42" ry="24"/>
+        </g>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.3">
+          <circle cx="60" cy="56" r="9"/><circle cx="88" cy="72" r="9"/><circle cx="76" cy="44" r="7"/>
+          <circle cx="170" cy="48" r="9"/><circle cx="196" cy="58" r="7"/>
+          <circle cx="134" cy="112" r="8"/><circle cx="166" cy="116" r="8"/>
+        </g>
+        <path d="M 143 112 l 4 -3 l 4 6 l 4 -6 l 4 6 l 4 -3" fill="none" stroke="#ce9178" stroke-width="1.2"/>
+      </svg>
+      <div class="dia-cap"><b>6 · Orbit clusters</b>Seeded force-relax — fixed 120 iterations,
+      mulberry32 stream, round to 0.5 pt — so it stays deterministic. Families as wells, glued
+      pairs as stiff springs. Cull + ERGO run after, as repairs. Pairs with Ambient Field.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Diagonal cascade packer wireframe: staircase rows with hero at origin">
+        <rect width="250" height="150" fill="#141416"/>
+        <circle cx="52" cy="42" r="22" fill="none" stroke="#ce9178" stroke-width="1.6"/>
+        <line x1="52" y1="42" x2="64" y2="27" stroke="#ce9178" stroke-width="1.6"/>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.2">
+          <rect x="92" y="34" width="20" height="16"/><rect x="118" y="34" width="20" height="16"/>
+          <rect x="118" y="72" width="20" height="16"/><rect x="144" y="72" width="20" height="16"/><rect x="170" y="72" width="20" height="16"/>
+          <rect x="150" y="110" width="20" height="16"/><rect x="176" y="110" width="20" height="16"/><rect x="202" y="110" width="20" height="16"/>
+        </g>
+        <line x1="60" y1="60" x2="210" y2="126" stroke="#4c4c52" stroke-width="1" stroke-dasharray="3 4"/>
+      </svg>
+      <div class="dia-cap"><b>7 · Diagonal cascade</b>Rows with a monotonic offset ramp, hero
+      at the origin — composed asymmetry instead of jitter noise. It's the rows packer plus a
+      deterministic schedule: a reason the excluded rows code stays alive.</div>
+    </div>
+    <div class="dia">
+      <svg viewBox="0 0 250 150" role="img" aria-label="Nested containment packer wireframe: labeled family boxes holding controls">
+        <rect width="250" height="150" fill="#141416"/>
+        <g fill="none" stroke="#8a8a92" stroke-width="1.2">
+          <rect x="20" y="26" width="104" height="104"/><rect x="134" y="26" width="96" height="56"/><rect x="134" y="92" width="96" height="38"/>
+        </g>
+        <g fill="#141416"><rect x="28" y="21" width="42" height="10"/><rect x="142" y="21" width="34" height="10"/><rect x="142" y="87" width="40" height="10"/></g>
+        <g font-size="8" fill="#a2a2a6" letter-spacing="1.6"><text x="30" y="29">VOICES</text><text x="144" y="29">TONE</text><text x="144" y="95">SPACE</text></g>
+        <g fill="none" stroke="#5c5c62" stroke-width="1.1">
+          <circle cx="48" cy="62" r="10"/><circle cx="86" cy="62" r="10"/><circle cx="48" cy="100" r="10"/><circle cx="86" cy="100" r="10"/>
+          <circle cx="162" cy="54" r="11"/><circle cx="200" cy="54" r="11"/><circle cx="164" cy="111" r="9"/><circle cx="198" cy="111" r="9"/>
+        </g>
+      </svg>
+      <div class="dia-cap"><b>8 · Nested containment</b>Family boxes drawn as panels-in-panel,
+      boxes packed by the column packer. Grouping becomes explicit borders — which frees
+      <code>gapScale</code> to go tight without losing legibility. Exactly what dense 6-voice
+      plates need.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section class="silk" id="moodboard">
+  <span class="silk-label">Mood Board — Sources &amp; References</span><span class="silk-num">04</span>
+
+  <h4 class="sub">Where to collect</h4>
+  <div class="two-col">
+    <ul class="plain">
+      <li><b><a href="https://modulargrid.net" rel="noopener">ModularGrid</a></b> — every eurorack module as a uniform front-panel PNG; the best raw dataset for panel study</li>
+      <li><b><a href="https://www.vintagesynth.com" rel="noopener">Vintage Synth Explorer</a></b> — photo + spec pages, by brand</li>
+      <li><b><a href="https://www.matrixsynth.com" rel="noopener">Matrixsynth</a></b> — decades-deep photo blog, incl. rare/DIY</li>
+      <li><b><a href="https://www.perfectcircuit.com/signal/" rel="noopener">Perfect Circuit · Signal</a></b> — editorial photography + panel-designer interviews</li>
+      <li><b><a href="https://reverb.com" rel="noopener">Reverb listings</a></b> — hi-res multi-angle photos of anything</li>
+      <li><b><a href="https://120years.net" rel="noopener">120 Years of Electronic Music</a></b> — historical instrument archive</li>
+      <li><b><a href="https://www.are.na/search/synthesizer" rel="noopener">Are.na</a></b> — curated “synthesizer” / “control panel” channels; has a Figma mood-board plugin</li>
+    </ul>
+    <ul class="plain">
+      <li><b><a href="https://fontsinuse.com" rel="noopener">Fonts In Use</a></b> — synth typography IDs: Minimoog = Futura caps; 808/303 = modified ITC Serif Gothic; SH-series = Data70</li>
+      <li><b><a href="https://www.modwiggler.com/forum/viewtopic.php?t=47734" rel="noopener">MOD WIGGLER synth-fonts megathread</a></b> — the rest of the type detective work</li>
+      <li><b><a href="https://www.hudsandguis.com" rel="noopener">HUDS+GUIS</a></b> + <a href="https://scifiinterfaces.com" rel="noopener">scifiinterfaces.com</a> — fictional-UI archives</li>
+      <li><b><a href="https://www.gameuidatabase.com" rel="noopener">Game UI Database</a></b> — Playdate, Sable, Mini Metro, Obra Dinn</li>
+      <li><b><a href="https://bjooks.com" rel="noopener">Bjooks</a></b> — <em>Push Turn Move</em> (THE text on interface design in electronic music), <em>Patch &amp; Tweak</em>, <em>Synth Gems 1</em></li>
+      <li><b><a href="https://synthpanels.design" rel="noopener">Synth Panels Designer</a></b> — free Inkscape extension; its component libraries are a ready-made taxonomy of faceplate primitives</li>
+      <li><b><a href="https://www.papernoise.net" rel="noopener">Papernoise</a></b> — Mutable Instruments panel-design case studies, public</li>
+    </ul>
+  </div>
+
+  <h4 class="sub">Thirty anchors</h4>
+  <div class="tablewrap"><table>
+    <tr><th>reference</th><th>design language</th><th>useful divergence</th></tr>
+    <tr><td class="name">Minimoog Model D</td><td>Walnut + matte black + cream Futura caps, witness marks</td><td>The warm-heritage pole: wood frame, high-contrast scales</td></tr>
+    <tr><td class="name">Roland TR-808</td><td>Black + red/orange/yellow/cream step coding</td><td>Functional color: hue by function, re-derivable by a generator</td></tr>
+    <tr><td class="name">Roland TB-303</td><td>Silver, candy caps, chunky serif-gothic</td><td>Type alone carries an era — swap the font, new faceplate</td></tr>
+    <tr><td class="name">ARP 2600</td><td>Blue-grey + orange silkscreen signal flow</td><td>Panel-as-block-diagram; graphics explain routing</td></tr>
+    <tr><td class="name">Buchla 200e</td><td>Blond wood, colored banana jacks</td><td>Color = signal type — a rule system, ideal for generation</td></tr>
+    <tr><td class="name">Serge</td><td>Paper faces, color-blocked grids</td><td>Literally a printed 2D artboard — the most generatable hardware</td></tr>
+    <tr><td class="name">EMS Synthi VCS3</td><td>Pin-matrix centerpiece, lab-wood box</td><td>The matrix-grid motif; one big grid as the whole plate</td></tr>
+    <tr><td class="name">Verbos</td><td>Cream, red/blue 70s-revival diagrams</td><td>Warm-retro modular; two-accent constraint</td></tr>
+    <tr><td class="name">Make Noise</td><td>Black + white illustrative panel art</td><td>Generative illustration layers under functional labels</td></tr>
+    <tr><td class="name">Mutable Instruments</td><td>Cream minimal, pastel accents, icon language</td><td>The modern clean pole; a public design-token discipline</td></tr>
+    <tr><td class="name">Elektron</td><td>Dark grid, orthogonal matrix, micro-type</td><td>Everything snaps to a module grid — parametric-native</td></tr>
+    <tr><td class="name">Erica Synths</td><td>Black industrial, oversized knobs</td><td>Brutalist high-contrast; accessibility-max variants</td></tr>
+    <tr><td class="name">TE OP-1</td><td>Ulm-school pictograms, color-coded keys</td><td>Icon-first labeling; replace text with pictograms</td></tr>
+    <tr><td class="name">TE Pocket Operators</td><td>Exposed PCB as faceplate</td><td>The naked-circuit skin; cheap charm</td></tr>
+    <tr><td class="name">TE EP-133 K.O. II</td><td>Industrial grey, giant segment displays</td><td>Segment typography + molded relief as a layer</td></tr>
+    <tr><td class="name">Casio VL-1</td><td>Calculator-instrument, rainbow strip</td><td>Toy/appliance pole; multi-hue label strip on mono body</td></tr>
+    <tr><td class="name">Critter &amp; Guitari</td><td>Bright anodize + wooden keys</td><td>One loud color field, minimal print</td></tr>
+    <tr><td class="name">Soma Lyra-8</td><td>Black occult symmetry, sensor pads</td><td>Ritual radial layouts, esoteric glyphs</td></tr>
+    <tr><td class="name">Ciat-Lonbarde</td><td>Salvage wood, wordless glyphs, bananas</td><td>Label-free semantics — how far can plates drop text?</td></tr>
+    <tr><td class="name">Folktek</td><td>Etched metal illustration</td><td>Dense generative linework as the surface itself</td></tr>
+    <tr><td class="name">Bastl</td><td>Plywood + colorful silkscreen</td><td>Craft warmth: texture + hand-registered print offsets</td></tr>
+    <tr><td class="name">Arturia V Collection</td><td>Photoreal wood, metal, screws</td><td>The realism pole; parametric materials + lighting</td></tr>
+    <tr><td class="name">Ableton devices</td><td>Flat vector information design</td><td>The zero-ornament pole; plate as pure data-viz</td></tr>
+    <tr><td class="name">u-he skins</td><td>Semi-skeuomorph, community alternate skins</td><td>Direct precedent: one synth, many faceplates</td></tr>
+    <tr><td class="name">Vital / Serum</td><td>Dark dashboard + neon live waveforms</td><td>Viz-first — closest to the existing Lissajous identity</td></tr>
+    <tr><td class="name">Korg Gadget</td><td>A family of invented mini-hardware identities</td><td>The best model for what a generator should feel like</td></tr>
+    <tr><td class="name">Borderlands · TC-11 · Fluss</td><td>Grain clouds, geometry, physics balls</td><td>The no-panel pole; a plate can dissolve into interaction</td></tr>
+    <tr><td class="name">Patterning 3</td><td>Radial concentric sequencer</td><td>The circular-plate family</td></tr>
+    <tr><td class="name">Eno / Chilvers Bloom</td><td>Near-empty gradient, generative ripples</td><td>Ambient-minimal; plate as slow generative artwork</td></tr>
+    <tr><td class="name">Braun/Rams · HP · Tektronix</td><td>Grey precision, one accent, graticules</td><td>“Instrument, not toy” — graticules suit a scope app perfectly</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================= -->
+<section class="silk" id="first">
+  <span class="silk-label">If Only Three Things Get Tried</span><span class="silk-num">05</span>
+  <ul class="plain">
+    <li><b>1 · The <code>?style=</code> / <code>?packer=</code> session params.</b> The enabling
+    mechanism, patterned on <code>?voices</code> — banner chip while active, never leaks into
+    exports or the app sim. Everything else is a sketch until the lab can draw it without the
+    pipeline paying.</li>
+    <li><b>2 · Test Bench + the scope playhead.</b> Strongest claim on the subject — it is an
+    oscilloscope app — mostly enum-value cost, and it answers the auto-playhead ask with the
+    most WaveTuner answer possible: progress as a sweep on a scope.</li>
+    <li><b>3 · Signal-path packer + flowlines.</b> Layout that means something, implementable
+    as a gated variant of the column packer, and it sets up the PCB skin for free.</li>
+  </ul>
+  <p class="note"><b>Cost discipline:</b> new enum values and new genes shift
+  <code>featurize</code> — taste-model re-fit, fixtures re-export, Swift re-port. Batch every
+  survivor of the rating sessions into <em>one</em> “vocabulary v2” round; never trickle them.</p>
+</section>
+
+<footer>
+  <span>wavetuner · faceplate divergence · 2026-08-17</span>
+  <span>full text: EXPLORE-faceplate-divergence.md</span>
+</footer>
+
+</div>
+</body>
+</html>

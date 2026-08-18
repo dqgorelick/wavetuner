@@ -5,8 +5,10 @@
   "type": "module",
   "homepage": "https://dqgorelick.github.io/wavetuner/",
   "scripts": {
+    "predev": "./native/grains/bundle-worklet.sh",
     "dev": "vite",
     "dev:hydra": "VITE_VISUAL_BACKEND=hydra vite",
+    "prebuild": "./native/grains/bundle-worklet.sh",
     "build": "vite build",
     "build:hydra": "VITE_VISUAL_BACKEND=hydra vite build",
     "lint": "eslint .",

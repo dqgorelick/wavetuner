@@ -72,6 +72,59 @@ behavior applies to the panels unchanged.
 - Detune: per-voice DetuneSlider and the ALL curve edit the same
   `droneStereo.detuneCurve`; effective Hz = curve × master `detuneHz`
   (web keeps its variable master, unlike iOS's pinned 10 Hz).
+- **Pitch lock** (2026-08-11, iOS `AudioEngine.pitchLocked` parity): the
+  `.vp-lock` button under the octave jogger freezes the slot's NOMINAL Hz.
+  `setFrequency(i, hz, {force})` / `setAllFrequenciesBatch(f, {force})` /
+  `glideToFrequencies(..., {force})` refuse a locked slot unless forced.
+  Forced (the mover IS the voice's own editor, or the whole state is being
+  loaded): `setSlotHz` / `setSlotRatio` / `stepSlotRatio`, the anchor's own
+  set in `setRootHz`, `restoreSnapshot` (undo + recall), `patches/apply.js`,
+  and the ALL panel's transpose APPLY. Unforced (the lock holds): root-follow
+  propagation, Align / Load, dice + generative, orb drags, the global detune
+  orb. The global transpose is a separate multiplier on the audio nodes, not
+  a rewrite of `frequencyValues`, so a locked voice still moves with it —
+  same as iOS. The flag is session-only; iOS persists it, web does not yet.
+
+## Look rules
+
+- **Borderless (2026-08-11).** Every button in the panel is a filled shape,
+  never an outlined one: chips, ✕, octave rocker, lock, keypad keys + SET,
+  octave chevrons, just/equal, the ALL voice-count pill. Selection is carried
+  by the FILL — `color-mix(lane colour, transparent 78%)` — so there is no
+  ring to thicken or brighten. Four exceptions, all deliberate: the mute cell
+  (its ring IS the muted state, and matches the fill exactly when sounding),
+  the keypad buffer (a transparent border that only appears, red, on invalid
+  input), the checkbox box, and the note keyboard's piano keys (the borders
+  are the key edges; a black key with no edge disappears into the panel).
+- **Radius: 4px** (`--vp-radius`, keypad-sized keys `--vp-radius-sm: 3px`) —
+  the CONSOLE's mute-cell radius, so the lanes and the menu beside them read
+  as one object. Was 8px. Circles (fader balls, pan dials) and the capsule
+  fader tracks are not cells and keep their own geometry.
+- The ✕ heads the panel's right COLUMN: a 38px slot matching the octave
+  rocker and the lock beneath it, wearing the same chip chassis. The 38 came
+  out of the mute slot (44 → 38) and the head's gap (8 → 6), NOT off the face
+  chips, which land on their worst-case labels with ~0px to spare.
+- The panel's mute cell (`.vp-mute`) is the CONSOLE's mute cell in colour:
+  one `--cell-fill` at 50% of the lane colour serving as both the sounding
+  fill and the outline both states wear, ink number, `background-clip:
+  padding-box`. Do not re-introduce a full-saturation fill — it outshouts
+  the 0.7 level fader next to it.
+- The stereo-detune slider is the level fader on its side: same capsule
+  track / fill / ball geometry as `.vfader`, in grey, because it trims a
+  voice rather than being one.
+- ≥769px BOTH panels drop `.vp-lane` — the per-voice panel's pan + level and
+  the ALL panel's bus pan + bus gain are each already on screen in the
+  console lane one column to the left — and the bars take the width back.
+  The ≤768px sheet covers the console, so it keeps the lane.
+- Each panel's trailing edge is a 38px COLUMN: ✕ in the header, then the
+  octave rocker (vertical in both panels) and, on the per-voice panel, the
+  pitch lock. Nothing else may sit in that column's width.
+- ALL panel transpose block (Dan, 2026-08-11): the frequency offset and the
+  note offset sit at the DIAL'S TWO ENDS above it (`.ap-transpose-ends`,
+  leading = Hz, trailing = cents; caption-dim at 0, full ink off centre —
+  the `live` class). Under the dial, `.ap-transpose-foot` reads
+  TRANSPOSE · RESET · APPLY, the same row grammar as the stereo-detune
+  section below it. No "TRANSPOSE:" prefix above.
 
 ## Verified
 
@@ -80,3 +133,15 @@ above-band geometry, coarse/fine/octave/keypad/note-key/cents-dial commits,
 ALL transpose dial + jogger + RESET glide + APPLY fold, curve editor, voice
 −/+. Mobile-width pass pending (blocked on a concurrent SettingsPanel WIP
 crash at the time of writing).
+
+ALL panel: headless (scratchpad `probe-all.mjs`, 12/12 at 1280 and 390) —
+lane drops on desktop and stays on mobile, the rocker is vertical and
+column-aligned under the ✕, the readout spans the dial's ends above it and
+the foot row sits below, zeros are dim with the actions disabled, and APPLY
+still folds the offset with the sounding pitch unchanged.
+
+Pitch lock: headless (scratchpad `probe-lock.mjs`, 14/14) — button toggles
+the flag; `setFrequency` and the batch setter are refused while the batch
+still moves the neighbours; a root move leaves it; the panel's own commit
+and a forced restore still land; the flag stays on its own slot across
+voice-count grow and shrink.
